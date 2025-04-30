@@ -179,48 +179,20 @@ class MPMSolverState(RBC):
 
     def __init__(self, scene):
         self._scene = scene
-        self._pos = gs.zeros(
-            (scene.sim._B, scene.sim.mpm_solver.n_particles, 3),
-            dtype=float,
-            requires_grad=scene.requires_grad,
-            scene=self._scene,
-        )
-        self._vel = gs.zeros(
-            (scene.sim._B, scene.sim.mpm_solver.n_particles, 3),
-            dtype=float,
-            requires_grad=scene.requires_grad,
-            scene=self._scene,
-        )
-        self._C = gs.zeros(
-            (scene.sim._B, scene.sim.mpm_solver.n_particles, 3, 3),
-            dtype=float,
-            requires_grad=scene.requires_grad,
-            scene=self._scene,
-        )
-        self._F = gs.zeros(
-            (scene.sim._B, scene.sim.mpm_solver.n_particles, 3, 3),
-            dtype=float,
-            requires_grad=scene.requires_grad,
-            scene=self._scene,
-        )
-        self._Jp = gs.zeros(
-            (
-                scene.sim._B,
-                scene.sim.mpm_solver.n_particles,
-            ),
-            dtype=float,
-            requires_grad=scene.requires_grad,
-            scene=self._scene,
-        )
-        self._active = gs.zeros(
-            (
-                scene.sim._B,
-                scene.sim.mpm_solver.n_particles,
-            ),
-            dtype=int,
-            requires_grad=False,
-            scene=self._scene,
-        )
+
+        base_shape = (scene.sim._B, scene.sim.mpm_solver.n_particles)
+        args = {
+            "dtype": float,
+            "requires_grad": scene.requires_grad,
+            "scene": self._scene,
+        }
+
+        self._pos = gs.zeros(base_shape + (3,), **args)
+        self._vel = gs.zeros(base_shape + (3,), **args)
+        self._C = gs.zeros(base_shape + (3, 3), **args)
+        self._F = gs.zeros(base_shape + (3, 3), **args)
+        self._Jp = gs.zeros(base_shape + (3, 3), **args)
+        self._active = gs.zeros(base_shape, dtype=int, requires_grad=False, scene=self._scene)
 
     def serializable(self):
         self._scene = None

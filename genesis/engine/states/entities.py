@@ -50,43 +50,32 @@ class MPMEntityState(RBC):
         self._entity = entity
         self._s_global = s_global
         base_shape = (self.entity.sim._B, self._entity.n_particles)
+        args = {
+            "dtype": float,
+            "requires_grad": self._entity.scene.requires_grad,
+            "scene": self._entity.scene,
+        }
 
-        self._pos = gs.zeros(
-            base_shape + (3,),
-            dtype=float,
-            requires_grad=self._entity.scene.requires_grad,
-            scene=self._entity.scene,
-        )
-        self._vel = gs.zeros(
-            base_shape + (3,),
-            dtype=float,
-            requires_grad=self._entity.scene.requires_grad,
-            scene=self._entity.scene,
-        )
+        self._pos = gs.zeros(base_shape + (3,), **args)
+        self._vel = gs.zeros(base_shape + (3,), **args)
         self._C = gs.zeros(
-            base_shape + (3, 3,),
-            dtype=float,
-            requires_grad=self._entity.scene.requires_grad,
-            scene=self._entity.scene,
+            base_shape
+            + (
+                3,
+                3,
+            ),
+            **args,
         )
         self._F = gs.zeros(
-            base_shape + (3, 3,),
-            dtype=float,
-            requires_grad=self._entity.scene.requires_grad,
-            scene=self._entity.scene,
+            base_shape
+            + (
+                3,
+                3,
+            ),
+            **args,
         )
-        self._Jp = gs.zeros(
-            base_shape,
-            dtype=float,
-            requires_grad=self._entity.scene.requires_grad,
-            scene=self._entity.scene,
-        )
-        self._active = gs.zeros(
-            base_shape,
-            dtype=int,
-            requires_grad=False,
-            scene=self._entity.scene,
-        )
+        self._Jp = gs.zeros(base_shape, **args)
+        self._active = gs.zeros(base_shape, **args)
 
     def serializable(self):
         self._entity = None
@@ -140,19 +129,14 @@ class SPHEntityState(RBC):
         self._entity = entity
         self._s_global = s_global
         base_shape = (self.entity.sim._B, self._entity.n_particles)
+        args = {
+            "dtype": float,
+            "requires_grad": False,
+            "scene": self._entity.scene,
+        }
 
-        self._pos = gs.zeros(
-            base_shape + (3,),
-            dtype=float,
-            requires_grad=False,
-            scene=self._entity.scene,
-        )
-        self._vel = gs.zeros(
-            base_shape + (3,),
-            dtype=float,
-            requires_grad=False,
-            scene=self._entity.scene,
-        )
+        self._pos = gs.zeros(base_shape + (3,), **args)
+        self._vel = gs.zeros(base_shape + (3,), **args)
 
     @property
     def entity(self):
@@ -180,13 +164,14 @@ class FEMEntityState:
         self._entity = entity
         self._s_global = s_global
         base_shape = (self.entity.sim._B, self._entity.n_vertices, 3)
+        args = {
+            "dtype": float,
+            "requires_grad": False,
+            "scene": self.entity.scene,
+        }
 
-        self._pos = gs.zeros(
-            base_shape, dtype=float, requires_grad=False, scene=self.entity.scene
-        )
-        self._vel = gs.zeros(
-            base_shape, dtype=float, requires_grad=False, scene=self.entity.scene
-        )
+        self._pos = gs.zeros(base_shape, **args)
+        self._vel = gs.zeros(base_shape, **args)
         self._active = gs.zeros(
             (
                 self.entity.sim._B,
