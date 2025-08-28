@@ -13,6 +13,7 @@ from genesis.options.solvers import (
     FEMOptions,
     MPMOptions,
     PBDOptions,
+    RODOptions,
     RigidOptions,
     SFOptions,
     SPHOptions,
@@ -28,6 +29,7 @@ from .solvers import (
     FEMSolver,
     MPMSolver,
     PBDSolver,
+    RODSolver,
     RigidSolver,
     SFSolver,
     SPHSolver,
@@ -86,6 +88,7 @@ class Simulator(RBC):
         fem_options: FEMOptions,
         sf_options: SFOptions,
         pbd_options: PBDOptions,
+        rod_options: RODOptions,
     ):
         self._scene = scene
 
@@ -100,6 +103,7 @@ class Simulator(RBC):
         self.fem_options = fem_options
         self.sf_options = sf_options
         self.pbd_options = pbd_options
+        self.rod_options = rod_options
 
         self._dt: float = options.dt
         self._substep_dt: float = options.dt / options.substeps
@@ -118,6 +122,7 @@ class Simulator(RBC):
         self.mpm_solver = MPMSolver(self.scene, self, self.mpm_options)
         self.sph_solver = SPHSolver(self.scene, self, self.sph_options)
         self.pbd_solver = PBDSolver(self.scene, self, self.pbd_options)
+        self.rod_solver = RODSolver(self.scene, self, self.rod_options)
         self.fem_solver = FEMSolver(self.scene, self, self.fem_options)
         self.sf_solver = SFSolver(self.scene, self, self.sf_options)
 
@@ -129,6 +134,7 @@ class Simulator(RBC):
                 self.mpm_solver,
                 self.sph_solver,
                 self.pbd_solver,
+                self.rod_solver,
                 self.fem_solver,
                 self.sf_solver,
             ]
@@ -173,6 +179,9 @@ class Simulator(RBC):
 
         elif isinstance(material, gs.materials.PBD.Base):
             entity = self.pbd_solver.add_entity(self.n_entities, material, morph, surface)
+
+         elif isinstance(material, gs.materials.ROD.Base):
+            entity = self.rod_solver.add_entity(self.n_entities, material, morph, surface)
 
         elif isinstance(material, gs.materials.FEM.Base):
             entity = self.fem_solver.add_entity(self.n_entities, material, morph, surface)
