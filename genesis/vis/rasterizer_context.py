@@ -5,6 +5,7 @@ import gstaichi as ti
 
 import genesis as gs
 import genesis.utils.geom as gu
+import genesis.utils.rod as ru
 import genesis.utils.mesh as mu
 import genesis.utils.particle as pu
 
@@ -105,6 +106,7 @@ class RasterizerContext:
         self.on_mpm()
         self.on_sph()
         self.on_pbd()
+        self.on_rod()
         self.on_fem()
 
         # segmentation mapping
@@ -680,6 +682,26 @@ class RasterizerContext:
                     if normal_data is not None:
                         buffer_updates[self._scene.get_buffer_id(node, "normal")] = normal_data
 
+    def on_rod(self):
+        if self.sim.rod_solver.is_active():
+            for rod_entity in self.sim.rod_solver.entities:
+                if rod_entity.surface.vis_mode == "recon":
+                    self.add_dynamic_node(rod_entity, None)
+
+    def update_rod(self, buffer_updates):
+        if self.sim.rod_solver.is_active():
+            idx = self.rendered_envs_idx[0]
+            # TODO: is this correct?
+            verts_all = self.sim.rod_solver.vertices.vert.to_numpy()[0, :, idx]
+            
+            for rod_entity in self.sim.rod_solver.entities:
+                if rod_entity.surface.vis_mode == "recon":
+                    mesh = ru.mesh_from_centerline(
+                        verts = verts_all
+                    )
+                    mesh.visual = mu.surface_uvs_to_trimesh_visual(rod_entity.surface, n_verts=len(mesh.vertices))
+                    self.add_dynamic_node(rod_entity, pyrender.Mesh.from_trimesh(mesh, smooth=False))
+
     def on_fem(self):
         if self.sim.fem_solver.is_active():
             vertices_all, triangles_all = self.sim.fem_solver.get_state_render(self.sim.cur_substep_local)
@@ -856,6 +878,7 @@ class RasterizerContext:
         self.update_mpm(self.buffer)
         self.update_sph(self.buffer)
         self.update_pbd(self.buffer)
+        self.update_rod(self.buffer)
         self.update_fem(self.buffer)
 
     def add_light(self, light):
