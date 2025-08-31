@@ -180,7 +180,7 @@ class Simulator(RBC):
         elif isinstance(material, gs.materials.PBD.Base):
             entity = self.pbd_solver.add_entity(self.n_entities, material, morph, surface)
 
-         elif isinstance(material, gs.materials.ROD.Base):
+        elif isinstance(material, gs.materials.ROD.Base):
             entity = self.rod_solver.add_entity(self.n_entities, material, morph, surface)
 
         elif isinstance(material, gs.materials.FEM.Base):

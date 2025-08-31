@@ -45,12 +45,15 @@ class RodEntity(Entity):
         Starting index of this entity's elements in the global element array (default is 0).
     """
 
-    def __init__(self, scene, solver, material, morph, surface, idx, v_start=0, e_start=0):
+    def __init__(
+        self, scene, solver, material, morph, surface, idx, 
+        v_start=0, e_start=0, iv_start=0
+    ):
         super().__init__(idx, scene, morph, solver, material, surface)
 
-        self._v_start = v_start  # offset for vertex index of elements
-        self._el_start = el_start  # offset for element index
-        self._s_start = s_start  # offset for surface triangles
+        self._v_start = v_start     # offset for vertex index
+        self._e_start = e_start     # offset for edge index
+        self._iv_start = iv_start   # offset for internal vertex index
         self._step_global_added = None
 
         self.sample()
@@ -152,84 +155,6 @@ class RodEntity(Entity):
         if not is_valid:
             gs.raise_exception("Tensor shape not supported.")
 
-    def set_actuation(self, actu):
-        """
-        Set the actuation signal for the FEM entity.
-
-        Parameters
-        ----------
-        actu : torch.Tensor or array-like
-            The actuation tensor. Can be:
-            - (): a single scalar for all groups.
-            - (n_groups,): group-level actuation.
-            - (n_envs, n_groups): batch of group-level actuation signals.
-
-        Raises
-        ------
-        Exception
-            If the tensor shape is not supported or per-element actuation is attempted.
-        """
-        self._assert_active()
-
-        actu = to_gs_tensor(actu)
-
-        n_groups = getattr(self.material, "n_groups", 1)
-
-        is_valid = False
-        if actu.ndim == 0:
-            self._tgt["actu"] = actu.tile((self._sim._B, n_groups))
-            is_valid = True
-        elif actu.ndim == 1:
-            if actu.shape == (n_groups,):
-                self._tgt["actu"] = actu.unsqueeze(0).tile((self._sim._B, 1))
-                is_valid = True
-            elif actu.shape == (self.n_elements,):
-                gs.raise_exception("Cannot set per-element actuation.")
-        elif actu.ndim == 2:
-            if actu.shape == (self._sim._B, n_groups):
-                self._tgt["actu"] = actu
-                is_valid = True
-        if not is_valid:
-            gs.raise_exception("Tensor shape not supported.")
-
-    def set_muscle(self, muscle_group=None, muscle_direction=None):
-        """
-        Set the muscle group and/or muscle direction for the FEM entity.
-
-        Parameters
-        ----------
-        muscle_group : torch.Tensor or array-like, optional
-            Tensor of shape (n_elements,) specifying the muscle group ID for each element.
-
-        muscle_direction : torch.Tensor or array-like, optional
-            Tensor of shape (n_elements, 3) specifying unit direction vectors for muscle forces.
-
-        Raises
-        ------
-        AssertionError
-            If tensor shapes are incorrect or normalization fails.
-        """
-
-        self._assert_active()
-
-        if muscle_group is not None:
-            n_groups = getattr(self.material, "n_groups", 1)
-            max_group_id = muscle_group.max().item()
-
-            muscle_group = to_gs_tensor(muscle_group)
-
-            assert muscle_group.shape == (self.n_elements,)
-            assert isinstance(max_group_id, int) and max_group_id < n_groups
-
-            self.set_muscle_group(muscle_group)
-
-        if muscle_direction is not None:
-            muscle_direction = to_gs_tensor(muscle_direction)
-            assert muscle_direction.shape == (self.n_elements, 3)
-            assert ((1.0 - muscle_direction.norm(dim=-1)).abs() < gs.EPS).all()
-
-            self.set_muscle_direction(muscle_direction)
-
     def get_state(self):
         state = RODEntityState(self, self._sim.cur_step_global)
         self.get_frame(
@@ -314,18 +239,36 @@ class RodEntity(Entity):
             )
 
         # Convert to appropriate numpy array types
-        edge_np = self.edges.astype(gs.np_int, copy=False)
-        verts_numpy = tensor_to_array(self.init_positions, dtype=gs.np_float)
+        verts_np = tensor_to_array(self.init_positions, dtype=gs.np_float)
 
         # TODO: @junyi, maybe want to add more material parameters or others
-        self._solver._kernel_add_elements(
-            f=self._sim.cur_substep_local,
-            mat_idx=self._material.idx,
-            mat_friction_mu=self._material.friction_mu,
+        self._solver._kernel_add_rods(
+            rod_idx=self.idx,
+            is_loop=self.morph.is_loop,
+            use_inextensible=self.material.use_inextensible,
+            stretching_stiffness=self.material.stretching_stiffness,
+            bending_stiffness=self.material.bending_stiffness,
+            twisting_stiffness=self.material.twisting_stiffness,
+            damping_coefficient=self.material.damping_coefficient,
+            plastic_yield=self.material.plastic_yield,
+            plastic_creep=self.material.plastic_creep,
             v_start=self._v_start,
             e_start=self._e_start,
-            verts=verts_numpy,
-            elems=edge_np,
+            iv_start=self._iv_start,
+        )
+
+        self._solver._kernel_add_elements(
+            f=self._sim.cur_substep_local,
+            rod_idx=self.idx,
+            v_start=self._v_start,
+            e_start=self._e_start,
+            iv_start=self._iv_start,
+            segment_mass=self.material.segment_mass,
+            segment_radius=self.material.segment_radius,
+            static_friction=self.material.static_friction,
+            kinetic_friction=self.material.kinetic_friction,
+            fixed=self.morph.fixed_states, # NOTE: here is a numpy array # dynamic set
+            verts=verts_np,
         )
         self.active = True
 
