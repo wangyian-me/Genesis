@@ -1,15 +1,9 @@
-import igl
 import numpy as np
 import gstaichi as ti
 import torch
 
 import genesis as gs
-import genesis.utils.element as eu
 import genesis.utils.geom as gu
-import genesis.utils.mesh as mu
-from genesis.engine.entities.rigid_entity import RigidLink
-from genesis.engine.couplers import SAPCoupler
-from genesis.engine.states.cache import QueriedStates
 from genesis.engine.states.entities import RODEntityState
 from genesis.utils.misc import ALLOCATE_TENSOR_WARNING, to_gs_tensor, tensor_to_array
 
@@ -19,7 +13,7 @@ from .base_entity import Entity
 @ti.data_oriented
 class RodEntity(Entity):
     """
-    A finite element method (FEM)-based entity for deformable simulation.
+    A discrete linear object (DLO)-based entity for rod simulation.
 
     This class represents a deformable object using tetrahedral elements. It interfaces with
     the physics solver to handle state updates, checkpointing, gradients, and actuation
@@ -41,8 +35,10 @@ class RodEntity(Entity):
         Unique identifier of the entity within the scene.
     v_start : int, optional
         Starting index of this entity's vertices in the global vertex array (default is 0).
-    el_start : int, optional
-        Starting index of this entity's elements in the global element array (default is 0).
+    e_start : int, optional
+        Starting index of this entity's edges in the global edge array (default is 0).
+    iv_start : int, optional
+        Starting index of this entity's internal vertices in the global internal vertex array (default is 0).
     """
 
     def __init__(
@@ -59,9 +55,6 @@ class RodEntity(Entity):
         self.sample()
 
         self.init_tgt_vars()
-        self.init_ckpt()
-
-        self._queried_states = QueriedStates()
 
         self.active = False  # This attribute is only used in forward pass. It should NOT be used during backward pass.
 
@@ -71,7 +64,7 @@ class RodEntity(Entity):
 
     def set_position(self, pos):
         """
-        Set the target position(s) for the FEM entity.
+        Set the target position(s) for the Rod entity.
 
         Parameters
         ----------
@@ -88,7 +81,7 @@ class RodEntity(Entity):
             If the tensor shape is not supported.
         """
         self._assert_active()
-        gs.logger.warning("Manally setting element positions. This is not recommended and could break gradient flow.")
+        gs.logger.warning("Manually setting element positions. This is not recommended and could break gradient flow.")
 
         pos = to_gs_tensor(pos)
 
@@ -115,7 +108,7 @@ class RodEntity(Entity):
 
     def set_velocity(self, vel):
         """
-        Set the target velocity(ies) for the FEM entity.
+        Set the target velocity(ies) for the Rod entity.
 
         Parameters
         ----------
@@ -132,7 +125,7 @@ class RodEntity(Entity):
             If the tensor shape is not supported.
         """
         self._assert_active()
-        gs.logger.warning("Manally setting element velocities. This is not recommended and could break gradient flow.")
+        gs.logger.warning("Manually setting element velocities. This is not recommended and could break gradient flow.")
 
         vel = to_gs_tensor(vel)
 
@@ -182,17 +175,14 @@ class RodEntity(Entity):
     # ----------------------------------- instantiation ----------------------------------
     # ------------------------------------------------------------------------------------
 
-    def instantiate(self, verts, edges):
+    def instantiate(self, verts):
         """
-        Initialize FEM entity with given vertices and elements.
+        Initialize Rod entity with given vertices.
 
         Parameters
         ----------
         verts : np.ndarray
             Array of vertex positions with shape (n_vertices, 3).
-
-        elems : np.ndarray
-            Array of tetrahedral elements with shape (n_elements, 4), indexing into verts.
 
         Raises
         ------
@@ -200,6 +190,7 @@ class RodEntity(Entity):
             If no vertices are provided.
         """
         verts = verts.astype(gs.np_float, copy=False)
+        n_verts = verts.shape[0]
 
         # rotate
         R = gu.quat_to_R(np.array(self.morph.quat, dtype=gs.np_float))
@@ -211,6 +202,14 @@ class RodEntity(Entity):
 
         self.init_positions = gs.tensor(init_positions)
         self.init_positions_COM_offset = self.init_positions - gs.tensor(verts_COM)
+
+        edges = list()
+        is_loop = self.morph.is_loop
+        n_edges = n_verts if is_loop else n_verts - 1
+        for i in range(n_edges):
+            # NOTE: check this
+            edges.append(verts[(i + 1) % n_verts] - verts[i])
+        edges = np.array(edges, dtype=gs.np_float)
 
         self.edges = edges
 
@@ -224,12 +223,10 @@ class RodEntity(Entity):
             If the morph type is unsupported.
         """
 
-        rope = np.load(self._morph.file)
-        verts = rope["verts"]
-        verts += self._morph.pos
-        edges = rope["edges"]
+        vertices = np.load(self.morph.file)
+        vertices = vertices + self.morph.pos
 
-        self.instantiate(verts, edges)
+        self.instantiate(vertices)
 
     def _add_to_solver(self, in_backward=False):
         if not in_backward:
@@ -240,16 +237,16 @@ class RodEntity(Entity):
 
         # Convert to appropriate numpy array types
         verts_np = tensor_to_array(self.init_positions, dtype=gs.np_float)
+        edges_np = tensor_to_array(self.edges, dtype=gs.np_float)
 
         # TODO: @junyi, maybe want to add more material parameters or others
         self._solver._kernel_add_rods(
             rod_idx=self.idx,
             is_loop=self.morph.is_loop,
             use_inextensible=self.material.use_inextensible,
-            stretching_stiffness=self.material.stretching_stiffness,
-            bending_stiffness=self.material.bending_stiffness,
-            twisting_stiffness=self.material.twisting_stiffness,
-            damping_coefficient=self.material.damping_coefficient,
+            stretching_stiffness=self.material.K,
+            bending_stiffness=self.material.E,
+            twisting_stiffness=self.material.G,
             plastic_yield=self.material.plastic_yield,
             plastic_creep=self.material.plastic_creep,
             v_start=self._v_start,
@@ -257,7 +254,16 @@ class RodEntity(Entity):
             iv_start=self._iv_start,
         )
 
-        self._solver._kernel_add_elements(
+        self._solver._kernel_finalize_rest_states(
+            rod_idx=self.idx,
+            v_start=self._v_start,
+            e_start=self._e_start,
+            iv_start=self._iv_start,
+            verts_rest=verts_np,
+            edges_rest=edges_np,
+        )
+
+        self._solver._kernel_finalize_states(
             f=self._sim.cur_substep_local,
             rod_idx=self.idx,
             v_start=self._v_start,
@@ -267,8 +273,8 @@ class RodEntity(Entity):
             segment_radius=self.material.segment_radius,
             static_friction=self.material.static_friction,
             kinetic_friction=self.material.kinetic_friction,
-            fixed=self.morph.fixed_states, # NOTE: here is a numpy array # dynamic set
             verts=verts_np,
+            edges=edges_np,
         )
         self.active = True
 
@@ -282,7 +288,7 @@ class RodEntity(Entity):
 
         This defines which physical properties (e.g., position, velocity) will be tracked for checkpointing and buffering.
         """
-        self._tgt_keys = ["vel", "pos"]
+        self._tgt_keys = ["vel", "pos", "act"]
 
     def init_tgt_vars(self):
         """
@@ -300,67 +306,6 @@ class RodEntity(Entity):
             self._tgt[key] = None
             self._tgt_buffer[key] = list()
 
-    def init_ckpt(self):
-        """
-        Initialize the checkpoint storage dictionary.
-
-        Creates an empty container for storing simulation checkpoints.
-        """
-
-        self._ckpt = dict()
-
-    def save_ckpt(self, ckpt_name):
-        """
-        Save the current target state buffers to a named checkpoint.
-
-        Parameters
-        ----------
-        ckpt_name : str
-            The name to identify the checkpoint.
-
-        Notes
-        -----
-        After saving, the internal target buffers are cleared to prepare for new input.
-        """
-
-        if not ckpt_name in self._ckpt:
-            self._ckpt[ckpt_name] = {
-                "_tgt_buffer": dict(),
-            }
-
-        for key in self._tgt_keys:
-            self._ckpt[ckpt_name]["_tgt_buffer"][key] = list(self._tgt_buffer[key])
-            self._tgt_buffer[key].clear()
-
-    def load_ckpt(self, ckpt_name):
-        """
-        Load a previously saved target state buffer from a named checkpoint.
-
-        Parameters
-        ----------
-        ckpt_name : str
-            The name of the checkpoint to load.
-
-        Raises
-        ------
-        KeyError
-            If the checkpoint name is not found.
-        """
-
-        for key in self._tgt_keys:
-            self._tgt_buffer[key] = list(self._ckpt[ckpt_name]["_tgt_buffer"][key])
-
-    def reset_grad(self):
-        """
-        Clear all stored gradient-related buffers.
-
-        This resets the target buffer and clears any queried states used for gradient tracking.
-        """
-
-        for key in self._tgt_keys:
-            self._tgt_buffer[key].clear()
-        self._queried_states.clear()
-
     def process_input(self, in_backward=False):
         """
         Push position, velocity, and activation target states into the simulator.
@@ -370,51 +315,8 @@ class RodEntity(Entity):
         in_backward : bool, default=False
             Whether the simulation is in the backward (gradient) pass.
         """
-        if in_backward:
-            # use negative index because buffer length might not be full
-            index = self._sim.cur_step_local - self._sim.max_steps_local
-            for key in self._tgt_keys:
-                self._tgt[key] = self._tgt_buffer[key][index]
-
-        else:
-            for key in self._tgt_keys:
-                self._tgt_buffer[key].append(self._tgt[key])
-
-        # set_pos followed by set_vel, because set_pos resets velocity.
-        if self._tgt["pos"] is not None:
-            self._tgt["pos"].assert_contiguous()
-            self._tgt["pos"].assert_sceneless()
-            self.set_pos(self._sim.cur_substep_local, self._tgt["pos"])
-
-        if self._tgt["vel"] is not None:
-            self._tgt["vel"].assert_contiguous()
-            self._tgt["vel"].assert_sceneless()
-            self.set_vel(self._sim.cur_substep_local, self._tgt["vel"])
-
-        for key in self._tgt_keys:
-            self._tgt[key] = None
-
-    def process_input_grad(self):
-        """
-        Process gradients of input states and propagate them backward.
-
-        Notes
-        -----
-        Automatically applies the backward hooks for position, velocity, and actuation tensors.
-        Clears the gradients in the solver to avoid double accumulation.
-        """
-        _tgt_vel = self._tgt_buffer["vel"].pop()
-        _tgt_pos = self._tgt_buffer["pos"].pop()
-
-        if _tgt_vel is not None and _tgt_vel.requires_grad:
-            _tgt_vel._backward_from_ti(self.set_vel_grad, self._sim.cur_substep_local)
-
-        if _tgt_pos is not None and _tgt_pos.requires_grad:
-            _tgt_pos._backward_from_ti(self.set_pos_grad, self._sim.cur_substep_local)
-
-        if _tgt_vel is not None or _tgt_pos is not None:
-            # manually zero the grad since manually setting state breaks gradient flow
-            self.clear_grad(self._sim.cur_substep_local)
+        # TODO: implement this
+        pass
 
     def _assert_active(self):
         if not self.active:
@@ -437,9 +339,9 @@ class RodEntity(Entity):
             Tensor of shape (n_envs, n_vertices, 3) containing new positions.
         """
 
-        self._solver._kernel_set_elements_pos(
+        self._solver._kernel_set_vertices_pos(
             f=f,
-            element_v_start=self._v_start,
+            v_start=self._v_start,
             n_vertices=self.n_vertices,
             pos=pos,
         )
@@ -457,9 +359,9 @@ class RodEntity(Entity):
             Tensor of shape (n_envs, n_vertices, 3) containing gradients of positions.
         """
 
-        self._solver._kernel_set_elements_pos_grad(
+        self._solver._kernel_set_vertices_pos_grad(
             f=f,
-            element_v_start=self._v_start,
+            v_start=self._v_start,
             n_vertices=self.n_vertices,
             pos_grad=pos_grad,
         )
@@ -477,9 +379,9 @@ class RodEntity(Entity):
             Tensor of shape (n_envs, n_vertices, 3) containing velocities.
         """
 
-        self._solver._kernel_set_elements_vel(
+        self._solver._kernel_set_vertices_vel(
             f=f,
-            element_v_start=self._v_start,
+            v_start=self._v_start,
             n_vertices=self.n_vertices,
             vel=vel,
         )
@@ -497,154 +399,33 @@ class RodEntity(Entity):
             Tensor of shape (n_envs, n_vertices, 3) containing gradients of velocities.
         """
 
-        self._solver._kernel_set_elements_vel_grad(
+        self._solver._kernel_set_vertices_vel_grad(
             f=f,
-            element_v_start=self._v_start,
+            v_start=self._v_start,
             n_vertices=self.n_vertices,
             vel_grad=vel_grad,
         )
 
-    def set_active(self, f, active):
+    @gs.assert_built
+    def set_fixed_states(self, f, fixed_states):
         """
-        Set the active status of each element.
+        Set the fixed status of each vertex.
 
         Parameters
         ----------
         f : int
             Current substep/frame index.
 
-        active : int
-            Activity flag (gs.ACTIVE or gs.INACTIVE).
+        fixed_states : gs.Tensor
+            Tensor of shape (n_envs, n_vertices).
         """
 
-        self._solver._kernel_set_active(
+        self._solver._kernel_set_fixed_states(
             f=f,
-            element_el_start=self._el_start,
-            n_elements=self.n_elements,
-            active=active,
+            v_start=self._v_start,
+            n_vertices=self.n_vertices,
+            fixed=fixed_states,
         )
-    def _sanitize_input_tensor(self, tensor, dtype, unbatched_ndim=1):
-        _tensor = torch.as_tensor(tensor, dtype=dtype, device=gs.device)
-
-        if _tensor.ndim < unbatched_ndim + 1:
-            _tensor = _tensor.repeat((self._sim._B, *((1,) * max(1, _tensor.ndim))))
-            if self._sim._B > 1:
-                gs.logger.debug(ALLOCATE_TENSOR_WARNING)
-        else:
-            _tensor = _tensor.contiguous()
-            if _tensor is not tensor:
-                gs.logger.debug(ALLOCATE_TENSOR_WARNING)
-
-            if len(_tensor) != self._sim._B:
-                gs.raise_exception("Input tensor batch size must match the number of environments.")
-
-        if _tensor.ndim != unbatched_ndim + 1:
-            gs.raise_exception(f"Input tensor ndim is {_tensor.ndim}, should be {unbatched_ndim + 1}.")
-
-        return _tensor
-
-    def _sanitize_input_verts_idx(self, verts_idx_local):
-        verts_idx = self._sanitize_input_tensor(verts_idx_local, dtype=gs.tc_int, unbatched_ndim=1) + self._v_start
-        assert ((verts_idx >= 0) & (verts_idx < self._solver.n_vertices)).all(), "Vertex indices out of bounds."
-        return verts_idx
-
-    def _sanitize_input_poss(self, poss):
-        poss = self._sanitize_input_tensor(poss, dtype=gs.tc_float, unbatched_ndim=2)
-        assert poss.ndim == 3 and poss.shape[2] == 3, "Position tensor must have shape (B, num_verts, 3)."
-        return poss
-
-    def set_vertex_constraints(
-        self, verts_idx, target_poss=None, link=None, is_soft_constraint=False, stiffness=0.0, envs_idx=None
-    ):
-        """
-        Set vertex constraints for specified vertices.
-
-        Parameters
-        ----------
-            verts_idx : array_like
-                List of vertex indices to constrain.
-            target_poss : array_like, shape (len(verts_idx), 3), optional
-                List of target positions [x, y, z] for each vertex. If not provided, the initial positions are used.
-            link : RigidLink
-                Optional rigid link for the vertices to follow, maintaining relative position.
-            is_soft_constraint: bool
-                By default, use a hard constraint directly sets position and zero velocity.
-                A soft constraint uses a spring force to pull the vertex towards the target position.
-            stiffness : float
-                Specify a spring stiffness for a soft constraint. Critical damping is applied.
-            envs_idx : array_like, optional
-                List of environment indices to apply the constraints to. If None, applies to all environments.
-        """
-        if self._solver._use_implicit_solver:
-            if not self._solver._enable_vertex_constraints:
-                gs.logger.warning("Ignoring vertex constraint; FEM implicit solver needs to enable vertex constraints.")
-                return
-
-        if not self._solver._constraints_initialized:
-            self._solver.init_constraints()
-
-        envs_idx = self._scene._sanitize_envs_idx(envs_idx)
-        verts_idx = self._sanitize_input_verts_idx(verts_idx)
-
-        if target_poss is None:
-            target_poss = torch.zeros(
-                (verts_idx.shape[0], verts_idx.shape[1], 3), dtype=gs.tc_float, device=gs.device, requires_grad=False
-            )
-            self._kernel_get_verts_pos(self._sim.cur_substep_local, target_poss, verts_idx)
-        target_poss = self._sanitize_input_poss(target_poss)
-
-        assert (
-            len(envs_idx) == len(target_poss) == len(verts_idx)
-        ), "First dimension should match number of environments."
-        assert target_poss.shape[1] == verts_idx.shape[1], "Target position should be provided for each vertex."
-
-        if link is None:
-            link_init_pos = torch.zeros((self._sim._B, 3), dtype=gs.tc_float, device=gs.device)
-            link_init_quat = torch.zeros((self._sim._B, 4), dtype=gs.tc_float, device=gs.device)
-            link_idx = -1
-        else:
-            assert isinstance(link, RigidLink), "Only RigidLink is supported for vertex constraints."
-            link_init_pos = self._sanitize_input_tensor(link.get_pos(), dtype=gs.tc_float)
-            link_init_quat = self._sanitize_input_tensor(link.get_quat(), dtype=gs.tc_float)
-            link_idx = link.idx
-
-        self._solver._kernel_set_vertex_constraints(
-            self._sim.cur_substep_local,
-            verts_idx,
-            target_poss,
-            is_soft_constraint,
-            stiffness,
-            link_idx,
-            link_init_pos,
-            link_init_quat,
-            envs_idx,
-        )
-
-    def update_constraint_targets(self, verts_idx, target_poss, envs_idx=None):
-        """Update target positions for existing constraints."""
-        if not self._solver._constraints_initialized:
-            gs.logger.warning("Ignoring update_constraint_targets; constraints have not been initialized.")
-            return
-
-        envs_idx = self._scene._sanitize_envs_idx(envs_idx)
-        verts_idx = self._sanitize_input_verts_idx(verts_idx)
-        target_poss = self._sanitize_input_poss(target_poss)
-        assert target_poss.shape[1] == verts_idx.shape[1], "Target position should be provided for each vertex."
-
-        self._solver._kernel_update_constraint_targets(verts_idx, target_poss, envs_idx)
-
-    def remove_vertex_constraints(self, verts_idx=None, envs_idx=None):
-        """Remove constraints from specified vertices, or all if None."""
-        if not self._solver._constraints_initialized:
-            gs.logger.warning("Ignoring remove_vertex_constraints; constraints have not been initialized.")
-            return
-
-        if verts_idx is None:
-            self._solver.vertex_constraints.is_constrained.fill(0)
-        else:
-            verts_idx = self._sanitize_input_verts_idx(verts_idx)
-            envs_idx = self._scene._sanitize_envs_idx(envs_idx)
-            self._solver._kernel_remove_specific_constraints(verts_idx, envs_idx)
 
     @ti.kernel
     def _kernel_get_verts_pos(self, f: ti.i32, pos: ti.types.ndarray(), verts_idx: ti.types.ndarray()):
@@ -652,12 +433,12 @@ class RodEntity(Entity):
         for i_v, i_b in ti.ndrange(verts_idx.shape[0], verts_idx.shape[1]):
             i_global = verts_idx[i_v, i_b] + self.v_start
             for j in ti.static(range(3)):
-                pos[i_b, i_v, j] = self._solver.elements_v[f, i_global, i_b].pos[j]
+                pos[i_b, i_v, j] = self._solver.vertices[f, i_global, i_b].vert[j]
 
     @ti.kernel
     def get_frame(self, f: ti.i32, pos: ti.types.ndarray(), vel: ti.types.ndarray()):
         """
-        Fetch the position, velocity, and activation state of the FEM entity at a specific substep.
+        Fetch the position, velocity, and activation state of the Rod entity at a specific substep.
 
         Parameters
         ----------
@@ -674,8 +455,8 @@ class RodEntity(Entity):
         for i_v, i_b in ti.ndrange(self.n_vertices, self._sim._B):
             i_global = i_v + self.v_start
             for j in ti.static(range(3)):
-                pos[i_b, i_v, j] = self._solver.elements_v[f, i_global, i_b].pos[j]
-                vel[i_b, i_v, j] = self._solver.elements_v[f, i_global, i_b].vel[j]
+                pos[i_b, i_v, j] = self._solver.vertices[f, i_global, i_b].vert[j]
+                vel[i_b, i_v, j] = self._solver.vertices[f, i_global, i_b].vel[j]
 
     @ti.kernel
     def clear_grad(self, f: ti.i32):
@@ -695,8 +476,8 @@ class RodEntity(Entity):
         # TODO: not well-tested
         for i_v, i_b in ti.ndrange(self.n_vertices, self._sim._B):
             i_global = i_v + self.v_start
-            self._solver.elements_v.grad[f, i_global, i_b].pos = 0
-            self._solver.elements_v.grad[f, i_global, i_b].vel = 0
+            self._solver.vertices.grad[f, i_global, i_b].vert = 0
+            self._solver.vertices.grad[f, i_global, i_b].vel = 0
 
     # ------------------------------------------------------------------------------------
     # ----------------------------------- properties -------------------------------------
@@ -704,8 +485,24 @@ class RodEntity(Entity):
 
     @property
     def n_vertices(self):
-        """Number of vertices in the FEM entity."""
+        """Number of vertices in the Rod entity."""
         return len(self.init_positions)
+
+    @property
+    def n_edges(self):
+        """Number of edges in the Rod entity."""
+        return len(self.edges)
+
+    @property
+    def n_internal_vertices(self):
+        """Number of internal vertices in the Rod entity."""
+        return len(self.init_positions) if self.morph.is_loop else len(self.init_positions) - 2
+
+    @property
+    def n_dofs(self):
+        """Number of degrees of freedom (DOFs) in the Rod entity."""
+        # 3 for each vertex + 1 for each edge
+        return 3 * self.n_vertices + self.n_edges
 
     @property
     def v_start(self):
@@ -713,11 +510,16 @@ class RodEntity(Entity):
         return self._v_start
 
     @property
-    def morph(self):
-        """Morph specification used to generate the FEM mesh."""
-        return self._morph
+    def e_start(self):
+        """Global edge index offset for this entity."""
+        return self._e_start
+
+    @property
+    def iv_start(self):
+        """Global internal vertex index offset for this entity."""
+        return self._iv_start
 
     @property
     def material(self):
-        """Material properties of the FEM entity."""
+        """Material properties of the Rod entity."""
         return self._material

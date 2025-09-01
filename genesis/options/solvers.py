@@ -663,3 +663,34 @@ class SFOptions(Options):
     inlet_vel: Optional[tuple[int, int, int]] = (0, 0, 1)
     inlet_quat: Optional[tuple[int, int, int, int]] = (1, 0, 0, 0)
     inlet_s: Optional[float] = 400.0
+
+
+class RODOptions(Options):
+    """
+    Options configuring the RODSolver.
+
+    Parameters
+    ----------
+    dt : float, optional
+        Time duration for each simulation step in seconds. If none, it will inherit from `SimOptions`. Defaults to None.
+    gravity : tuple, optional
+        Gravity force in N/kg. If none, it will inherit from `SimOptions`. Defaults to None.
+    damping : float, optional
+        Damping factor. Defaults to 0.0.
+    floor_height : float, optional
+        Height of the floor in meters. If none, it will inherit from `SimOptions`. Defaults to None.
+    floor_normal : tuple, optional
+        Normal vector of the floor. Defaults to (0.0, 0.0, 1.0).
+    adjacent_gap : int, optional
+        Gap between adjacent segments to disable collision. Defaults to 2.
+    n_pbd_iters : int, optional
+        Number of PBD iterations per time step. Defaults to 10.
+    """
+
+    dt: Optional[float] = None
+    gravity: Optional[tuple] = None
+    damping: Optional[float] = 0.0
+    floor_height: float = None
+    floor_normal: tuple = (0.0, 0.0, 1.0)
+    adjacent_gap: int = 2
+    n_pbd_iters: int = 10

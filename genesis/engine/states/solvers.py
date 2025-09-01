@@ -295,3 +295,41 @@ class FEMSolverState:
     @property
     def active(self):
         return self._active
+
+
+class RODSolverState:
+    def __init__(self, scene):
+        self._scene = scene
+        args = {
+            "dtype": gs.tc_float,
+            "requires_grad": scene.requires_grad,
+            "scene": self._scene,
+        }
+        self._pos = gs.zeros((scene.sim._B, scene.sim.rod_solver.n_vertices, 3), **args)
+        self._vel = gs.zeros((scene.sim._B, scene.sim.rod_solver.n_vertices, 3), **args)
+        args["dtype"] = gs.tc_bool
+        args["requires_grad"] = False
+        self._fixed = gs.zeros((scene.sim._B, scene.sim.rod_solver.n_vertices), **args)
+
+    def serializable(self):
+        self._scene = None
+
+        self._pos = self._pos.detach()
+        self._vel = self._vel.detach()
+        self._fixed = self._fixed.detach()
+
+    @property
+    def scene(self):
+        return self._scene
+
+    @property
+    def pos(self):
+        return self._pos
+
+    @property
+    def vel(self):
+        return self._vel
+
+    @property
+    def fixed(self):
+        return self._fixed

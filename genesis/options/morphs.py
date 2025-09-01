@@ -1218,3 +1218,53 @@ class Terrain(Morph):
     @property
     def subterrain_params(self):
         return self._subterrain_parameters
+
+
+############################ Rod ############################
+
+class Rod(Morph):
+    """
+    Morph loaded from a file.
+
+    Parameters
+    ----------
+    file : str
+        The path to the file.
+    scale : float or tuple, optional
+        The scaling factor for the size of the entity. If a float, it scales uniformly.
+        If a 3-tuple, it scales along each axis. Defaults to 1.0.
+        Note that 3-tuple scaling is only supported for `gs.morphs.Mesh`.
+    pos : tuple, shape (3,), optional
+        The position of the entity in meters. Defaults to (0.0, 0.0, 0.0).
+    euler : tuple, shape (3,), optional
+        The euler angle of the entity in degrees. This follows scipy's extrinsic x-y-z rotation convention.
+        Defaults to (0.0, 0.0, 0.0).
+    quat : tuple, shape (4,), optional
+        The quaternion (w-x-y-z convention) of the entity. If specified, `euler` will be ignored. Defaults to None.
+    is_loop : bool, optional
+        Whether the rod is a loop. Defaults to False.
+    """
+
+    file: str = ""
+    scale: Union[float, tuple] = 1.0
+    is_loop: bool = False
+
+    def __init__(self, **data):
+        super().__init__(**data)
+
+        if isinstance(self.file, str):
+            file = os.path.abspath(self.file)
+
+            if not os.path.exists(file):
+                file = os.path.join(gs.utils.get_assets_dir(), self.file)
+
+            if not os.path.exists(file):
+                gs.raise_exception(f"File not found in either current directory or assets directory: '{self.file}'.")
+
+            self.file = file
+
+    def _repr_type(self):
+        return f"<gs.morphs.{self.__class__.__name__}(file='{self.file}')>"
+
+    def is_format(self, format):
+        return self.file.lower().endswith(format)
