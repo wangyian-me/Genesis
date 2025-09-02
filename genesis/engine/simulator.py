@@ -13,7 +13,7 @@ from genesis.options.solvers import (
     FEMOptions,
     MPMOptions,
     PBDOptions,
-    RODOptions,
+    RodOptions,
     RigidOptions,
     SFOptions,
     SPHOptions,
@@ -29,7 +29,7 @@ from .solvers import (
     FEMSolver,
     MPMSolver,
     PBDSolver,
-    RODSolver,
+    RodSolver,
     RigidSolver,
     SFSolver,
     SPHSolver,
@@ -88,7 +88,7 @@ class Simulator(RBC):
         fem_options: FEMOptions,
         sf_options: SFOptions,
         pbd_options: PBDOptions,
-        rod_options: RODOptions,
+        rod_options: RodOptions,
     ):
         self._scene = scene
 
@@ -122,7 +122,7 @@ class Simulator(RBC):
         self.mpm_solver = MPMSolver(self.scene, self, self.mpm_options)
         self.sph_solver = SPHSolver(self.scene, self, self.sph_options)
         self.pbd_solver = PBDSolver(self.scene, self, self.pbd_options)
-        self.rod_solver = RODSolver(self.scene, self, self.rod_options)
+        self.rod_solver = RodSolver(self.scene, self, self.rod_options)
         self.fem_solver = FEMSolver(self.scene, self, self.fem_options)
         self.sf_solver = SFSolver(self.scene, self, self.sf_options)
 

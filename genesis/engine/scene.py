@@ -25,7 +25,7 @@ from genesis.options import (
     FEMOptions,
     MPMOptions,
     PBDOptions,
-    RODOptions,
+    RodOptions,
     ProfilingOptions,
     RigidOptions,
     SFOptions,
@@ -76,8 +76,8 @@ class Scene(RBC):
         The options configuring the sf_solver (``scene.sim.SFSolver``).
     pbd_options : gs.options.PBDOptions
         The options configuring the pbd_solver (``scene.sim.PBDSolver``).
-    rod_options : gs.options.RODOptions
-        The options configuring the rod_solver (``scene.sim.RODSolver``).
+    rod_options : gs.options.RodOptions
+        The options configuring the rod_solver (``scene.sim.RodSolver``).
     vis_options : gs.options.VisOptions
         The options configuring the visualization system (``scene.visualizer``). Visualizer controls both the interactive viewer and the cameras.
     viewer_options : gs.options.ViewerOptions
@@ -102,7 +102,7 @@ class Scene(RBC):
         fem_options: FEMOptions | None = None,
         sf_options: SFOptions | None = None,
         pbd_options: PBDOptions | None = None,
-        rod_options: RODOptions | None = None,
+        rod_options: RodOptions | None = None,
         vis_options: VisOptions | None = None,
         viewer_options: ViewerOptions | None = None,
         profiling_options: ProfilingOptions | None = None,
@@ -121,7 +121,7 @@ class Scene(RBC):
         fem_options = fem_options or FEMOptions()
         sf_options = sf_options or SFOptions()
         pbd_options = pbd_options or PBDOptions()
-        rod_options = rod_options or RODOptions()
+        rod_options = rod_options or RodOptions()
         vis_options = vis_options or VisOptions()
         viewer_options = viewer_options or ViewerOptions()
         profiling_options = profiling_options or ProfilingOptions()
@@ -231,7 +231,7 @@ class Scene(RBC):
         fem_options: FEMOptions,
         sf_options: SFOptions,
         pbd_options: PBDOptions,
-        rod_options: RODOptions,
+        rod_options: RodOptions,
         vis_options: VisOptions,
         viewer_options: ViewerOptions,
         profiling_options: ProfilingOptions,

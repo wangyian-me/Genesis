@@ -665,7 +665,7 @@ class SFOptions(Options):
     inlet_s: Optional[float] = 400.0
 
 
-class RODOptions(Options):
+class RodOptions(Options):
     """
     Options configuring the RODSolver.
 

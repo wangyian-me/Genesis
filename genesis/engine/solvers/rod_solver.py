@@ -406,8 +406,8 @@ class RodSolver(Solver):
 
         # plane colliders
         self._n_planes = 1  # NOTE: only floor for now
-
-        self.planes_info[0].normal = self._floor_normal
+        for j in range(3):
+            self.planes_info[0].normal[j] = self._floor_normal[j]
         self.planes_info[0].point = self._floor_normal * self._floor_height
         self.planes_info[0].mu_s = 0.3
         self.planes_info[0].mu_k = 0.25
