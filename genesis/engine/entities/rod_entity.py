@@ -224,6 +224,8 @@ class RodEntity(Entity):
         """
 
         vertices = np.load(self.morph.file)
+        assert vertices.ndim == 2, f"Loaded vertices should be of shape (n_vertices, 3), got {vertices.shape}."
+        assert vertices.shape[1] == 3, f"Loaded vertices should be of shape (n_vertices, 3), got {vertices.shape}."
         vertices = vertices + self.morph.pos
 
         self.instantiate(vertices)
@@ -232,7 +234,7 @@ class RodEntity(Entity):
         if not in_backward:
             self._step_global_added = self._sim.cur_step_global
             gs.logger.info(
-                f"Entity {self.uid} added. class: {self.__class__.__name__}, morph: {self.morph.__class__.__name__}, size: ({self.n_elements}, {self.n_vertices}), material: {self.material}."
+                f"Entity {self.uid}({self.idx}) added. class: {self.__class__.__name__}, morph: {self.morph.__class__.__name__}, #verts: {self.n_vertices}, loop: {self.morph.is_loop}, material: {self.material}."
             )
 
         # Convert to appropriate numpy array types
@@ -252,9 +254,11 @@ class RodEntity(Entity):
             v_start=self._v_start,
             e_start=self._e_start,
             iv_start=self._iv_start,
+            n_verts=self.n_vertices,
         )
 
         self._solver._kernel_finalize_rest_states(
+            f=self._sim.cur_substep_local,
             rod_idx=self.idx,
             v_start=self._v_start,
             e_start=self._e_start,

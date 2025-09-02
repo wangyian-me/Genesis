@@ -184,8 +184,8 @@ class RodSolver(Solver):
         )
 
         # keep track of gradients for time-stepping
-        self.gradients = ti.Vector.field(
-            3, dtype=gs.ti_float, needs_grad=False,
+        self.gradients = ti.field(
+            dtype=gs.ti_float, needs_grad=False,
             shape=self._batch_shape(self._n_dofs)
         )
 
@@ -273,7 +273,7 @@ class RodSolver(Solver):
 
         # internal vertex state (dynamic)
         struct_internal_vertex_state = ti.types.struct(
-            kb=gs.ti_vec2,          # current curvature binormal
+            kb=gs.ti_vec3,          # current curvature binormal
             twist=gs.ti_float,      # current twist
         )
 
@@ -403,14 +403,7 @@ class RodSolver(Solver):
         self._n_edges = self.n_edges
         self._n_internal_vertices = self.n_internal_vertices
         self._n_dofs = self.n_dofs
-
-        # plane colliders
         self._n_planes = 1  # NOTE: only floor for now
-        for j in range(3):
-            self.planes_info[0].normal[j] = self._floor_normal[j]
-        self.planes_info[0].point = self._floor_normal * self._floor_height
-        self.planes_info[0].mu_s = 0.3
-        self.planes_info[0].mu_k = 0.25
 
         if self.is_active():
             self.init_rod_fields()
@@ -422,6 +415,14 @@ class RodSolver(Solver):
                 entity._add_to_solver()
 
             self.init_constraints()
+
+        # default plane collider
+        point = np.asarray(self._floor_normal) * self._floor_height
+        for j in range(3):
+            self.planes_info[0].point[j] = point[j]
+            self.planes_info[0].normal[j] = self._floor_normal[j]    
+        self.planes_info[0].mu_s = 0.3
+        self.planes_info[0].mu_k = 0.25
 
     def add_entity(self, idx, material, morph, surface):
 
@@ -613,7 +614,7 @@ class RodSolver(Solver):
             yield_amount = elastic_kappa_norm - yield_thres
             if yield_amount > 0.:
                 delta_rest_kappa = creep_rate * (yield_amount / elastic_kappa_norm) * elastic_kappa
-                self.internal_vertices_info[i_iv].kappa_rest += delta_rest_kappa
+                self.internal_vertices_ng[f, i_iv, i_b].kappa_rest += delta_rest_kappa
 
             kappa1_rest_i = self.internal_vertices_ng[f, i_iv, i_b].kappa_rest[0]
             kappa2_rest_i = self.internal_vertices_ng[f, i_iv, i_b].kappa_rest[1]
@@ -663,12 +664,12 @@ class RodSolver(Solver):
                 ti.atomic_add(self.vertices_ng[f, v_e, i_b].f_b[k], -gradient_dx_i[k + 6])
 
             gradient_kappa1_i_theta_i = - ti.Vector([
-                tm.dot(kb, self.d1s[e_s]) * 0.5,
-                tm.dot(kb, self.d1s[e_e]) * 0.5
+                tm.dot(kb, self.edges[f, e_s, i_b].d1) * 0.5,
+                tm.dot(kb, self.edges[f, e_e, i_b].d1) * 0.5
             ])
             gradient_kappa2_i_theta_i = - ti.Vector([
-                tm.dot(kb, self.d2s[e_s]) * 0.5,
-                tm.dot(kb, self.d2s[e_e]) * 0.5
+                tm.dot(kb, self.edges[f, e_s, i_b].d2) * 0.5,
+                tm.dot(kb, self.edges[f, e_e, i_b].d2) * 0.5
             ])
 
             gradient_dtheta_i = (
@@ -780,6 +781,29 @@ class RodSolver(Solver):
         if self.is_active():
             pass
 
+    def reset_grad(self):
+        pass
+
+    # ------------------------------------------------------------------------------------
+    # ------------------------------------ gradient --------------------------------------
+    # ------------------------------------------------------------------------------------
+
+    # TODO: implement gradient functions
+    def collect_output_grads(self):
+        """
+        Collect gradients from downstream queried states.
+        """
+        pass
+
+    def add_grad_from_state(self, state):
+        pass
+
+    def save_ckpt(self, ckpt_name):
+        pass
+
+    def load_ckpt(self, ckpt_name):
+        pass
+
     # ------------------------------------------------------------------------------------
     # --------------------------------------- io -----------------------------------------
     # ------------------------------------------------------------------------------------
@@ -818,18 +842,18 @@ class RodSolver(Solver):
     @ti.kernel
     def _kernel_add_rods(
         self,
-        rod_idx: gs.ti_int,
-        is_loop: gs.ti_bool,
-        use_inextensible: gs.ti_bool,
-        stretching_stiffness: gs.ti_float,
-        bending_stiffness: gs.ti_float,
-        twisting_stiffness: gs.ti_float,
-        plastic_yield: gs.ti_float,
-        plastic_creep: gs.ti_float,
-        v_start: gs.ti_int,
-        e_start: gs.ti_int,
-        iv_start: gs.ti_int,
-        n_verts: gs.ti_int,
+        rod_idx: ti.i32,
+        is_loop: ti.u1,
+        use_inextensible: ti.u1,
+        stretching_stiffness: ti.f64,
+        bending_stiffness: ti.f64,
+        twisting_stiffness: ti.f64,
+        plastic_yield: ti.f64,
+        plastic_creep: ti.f64,
+        v_start: ti.i32,
+        e_start: ti.i32,
+        iv_start: ti.i32,
+        n_verts: ti.i32,
     ):
         self.rods_info[rod_idx].use_inextensible = use_inextensible
         self.rods_info[rod_idx].stretching_stiffness = stretching_stiffness
@@ -854,14 +878,15 @@ class RodSolver(Solver):
 
         # rod id of verts
         for i_v in range(n_verts):
-            i_global = i_v + v_start
-            self.vertices_info[i_global].rod_idx = rod_idx
+            vert_idx = i_v + v_start
+            self.vertices_info[vert_idx].rod_idx = rod_idx
 
         # vert id of edges
         n_edges = n_verts if is_loop else n_verts - 1
         for i_e in range(n_edges):
             vert_idx = i_e + v_start
-            self.edges_info[i_global].vert_idx = vert_idx
+            edge_idx = i_e + e_start
+            self.edges_info[edge_idx].vert_idx = vert_idx
 
         # edge id of internal verts
         n_internal_verts = n_verts - (0 if is_loop else 2)
@@ -871,18 +896,19 @@ class RodSolver(Solver):
                 edge_idx = tm.mod(i_iv - 1, n_internal_verts) + e_start
             else:
                 edge_idx = i_iv + e_start
-
-            self.internal_vertices_info[i_global].edge_idx = edge_idx
+            iv_idx = i_iv + iv_start
+            self.internal_vertices_info[iv_idx].edge_idx = edge_idx
 
     @ti.kernel
     def _kernel_finalize_rest_states(
         self,
-        rod_idx: gs.ti_int,
-        v_start: gs.ti_int,
-        e_start: gs.ti_int,
-        iv_start: gs.ti_int,
-        verts_rest: ti.types.ndarray(dtype=gs.ti_vec3, ndim=1),
-        edges_rest: ti.types.ndarray(dtype=gs.ti_vec3, ndim=1),
+        f: ti.i32,
+        rod_idx: ti.i32,
+        v_start: ti.i32,
+        e_start: ti.i32,
+        iv_start: ti.i32,
+        verts_rest: ti.types.ndarray(dtype=tm.vec3, ndim=1),
+        edges_rest: ti.types.ndarray(dtype=tm.vec3, ndim=1),
     ):
         n_verts_local = verts_rest.shape[0]
         for i_v in range(n_verts_local):
@@ -894,7 +920,7 @@ class RodSolver(Solver):
 
         is_loop = self.rods_info[rod_idx].is_loop
         n_edges_local = n_verts_local if is_loop else n_verts_local - 1
-        for i_e in n_edges_local:
+        for i_e in range(n_edges_local):
             i_global = i_e + e_start
             # v_s, v_e = self.get_edge_vertices(i_global)
 
@@ -945,14 +971,14 @@ class RodSolver(Solver):
                 self.edges_info[i_global].d2_rest = -s * d1_uncorrected + c * d2_uncorrected
 
         n_internal_verts_local = n_verts_local - (0 if is_loop else 2)
-        for i_iv in range(n_internal_verts_local):
+        for i_iv, i_b in ti.ndrange(n_internal_verts_local, self._B):
             i_global = i_iv + iv_start
             e_s, e_e = self.get_hinge_edges(i_global)
 
             # finalize rest curvature binormal
 
             rest_kbs = curvature_binormal(self.edges_info[e_s].d3_rest, self.edges_info[e_e].d3_rest)
-            self.internal_vertices_info[i_global].kappa_rest = ti.Vector([
+            self.internal_vertices_ng[f, i_iv, i_b].kappa_rest = ti.Vector([
                   0.5 * tm.dot(rest_kbs, self.edges_info[e_s].d2_rest + self.edges_info[e_e].d2_rest),
                 - 0.5 * tm.dot(rest_kbs, self.edges_info[e_s].d1_rest + self.edges_info[e_e].d1_rest),
             ])
@@ -961,17 +987,17 @@ class RodSolver(Solver):
     @ti.kernel
     def _kernel_finalize_states(
         self,
-        f: gs.ti_int,
-        rod_idx: gs.ti_int,
-        v_start: gs.ti_int,
-        e_start: gs.ti_int,
-        iv_start: gs.ti_int,
-        segment_mass: gs.ti_float,        # NOTE: we can use array
-        segment_radius: gs.ti_float,      # NOTE: we can use array
-        static_friction: gs.ti_float,     # NOTE: we can use array
-        kinetic_friction: gs.ti_float,    # NOTE: we can use array
-        verts: ti.types.ndarray(dtype=gs.ti_vec3, ndim=1),
-        edges: ti.types.ndarray(dtype=gs.ti_vec3, ndim=1),
+        f: ti.i32,
+        rod_idx: ti.i32,
+        v_start: ti.i32,
+        e_start: ti.i32,
+        iv_start: ti.i32,
+        segment_mass: ti.f64,        # NOTE: we can use array
+        segment_radius: ti.f64,      # NOTE: we can use array
+        static_friction: ti.f64,     # NOTE: we can use array
+        kinetic_friction: ti.f64,    # NOTE: we can use array
+        verts: ti.types.ndarray(dtype=tm.vec3, ndim=1),
+        edges: ti.types.ndarray(dtype=tm.vec3, ndim=1),
     ):
         n_verts_local = verts.shape[0]
         for i_v, i_b in ti.ndrange(n_verts_local, self._B):
@@ -985,9 +1011,8 @@ class RodSolver(Solver):
             self.vertices_info[i_global].rod_idx = rod_idx
 
             # state (dynamic)
-            for j in ti.static(range(3)):
-                self.vertices[f, i_global, i_b].vert[j] = verts[i_v, j]
-                self.vertices[f, i_global, i_b].vert_prev[j] = verts[i_v, j]
+            self.vertices[f, i_global, i_b].vert = verts[i_v]
+            self.vertices[f, i_global, i_b].vert_prev = verts[i_v]
             self.vertices[f, i_global, i_b].vel = ti.Vector.zero(gs.ti_float, 3)
 
             # state (dynamic w/o grad)

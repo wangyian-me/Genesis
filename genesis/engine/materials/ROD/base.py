@@ -33,6 +33,10 @@ class Base(Material):
         Kinetic friction coefficient. Default is 0.25.
     use_inextensible: bool, optional
         If True, use inextensible rods. Default is True.
+    segment_mass: float, optional
+        Mass of each rod segment. Default is 0.02.
+    segment_radius: float, optional
+        Radius of each rod segment. Default is 0.01.
     """
 
     def __init__(
@@ -45,6 +49,8 @@ class Base(Material):
         static_friction=0.3,
         kinetic_friction=0.25,
         use_inextensible=True,
+        segment_mass=0.02,
+        segment_radius=0.01,
     ):
         super().__init__()
 
@@ -56,6 +62,8 @@ class Base(Material):
         self._static_friction = static_friction
         self._kinetic_friction = kinetic_friction
         self._use_inextensible = use_inextensible
+        self._segment_mass = segment_mass
+        self._segment_radius = segment_radius
 
         # will be set when added to solver
         self._idx = None
@@ -98,3 +106,11 @@ class Base(Material):
     @property
     def use_inextensible(self):
         return self._use_inextensible
+
+    @property
+    def segment_mass(self):
+        return self._segment_mass
+    
+    @property
+    def segment_radius(self):
+        return self._segment_radius

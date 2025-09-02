@@ -160,6 +160,7 @@ class Scene(RBC):
         self.fem_options = fem_options
         self.sf_options = sf_options
         self.pbd_options = pbd_options
+        self.rod_options = rod_options
         self.profiling_options = profiling_options
 
         self.vis_options = vis_options
