@@ -446,6 +446,18 @@ class RodSolver(Solver):
         return self._n_vertices > 0
 
     # ------------------------------------------------------------------------------------
+    # ------------------------------------ logging --------------------------------------
+    # ------------------------------------------------------------------------------------
+
+    @ti.kernel
+    def get_rod_length(self, f: ti.i32, i_r: ti.i32, length: ti.types.ndarray()):
+        n_verts = self.rods_info[i_r].n_verts
+        first_edge_idx = self.rods_info[i_r].first_edge_idx
+        for i_e, i_b in ti.ndrange(n_verts - 1, self._B):
+            edge_idx = first_edge_idx + i_e
+            length[i_b] += self.edges[f, edge_idx, i_b].length
+
+    # ------------------------------------------------------------------------------------
     # ----------------------------------- simulation -------------------------------------
     # ------------------------------------------------------------------------------------
 

@@ -16,8 +16,8 @@ def main():
 
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(
-            dt=1e-3,
-            substeps=10,
+            dt=1e-2,
+            substeps=20,
         ),
         rod_options=gs.options.RodOptions(
             damping=0.001,
