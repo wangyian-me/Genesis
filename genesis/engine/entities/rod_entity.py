@@ -33,6 +33,8 @@ class RodEntity(Entity):
         The surface mesh associated with the entity (for rendering or collision).
     idx : int
         Unique identifier of the entity within the scene.
+    rod_idx : int, optional
+        Index of this rod in the solver (default is 0).
     v_start : int, optional
         Starting index of this entity's vertices in the global vertex array (default is 0).
     e_start : int, optional
@@ -43,10 +45,11 @@ class RodEntity(Entity):
 
     def __init__(
         self, scene, solver, material, morph, surface, idx, 
-        v_start=0, e_start=0, iv_start=0
+        rod_idx=0, v_start=0, e_start=0, iv_start=0
     ):
         super().__init__(idx, scene, morph, solver, material, surface)
 
+        self._rod_idx = rod_idx     # index of this rod in the solver
         self._v_start = v_start     # offset for vertex index
         self._e_start = e_start     # offset for edge index
         self._iv_start = iv_start   # offset for internal vertex index
@@ -234,7 +237,7 @@ class RodEntity(Entity):
         if not in_backward:
             self._step_global_added = self._sim.cur_step_global
             gs.logger.info(
-                f"Entity {self.uid}({self.idx}) added. class: {self.__class__.__name__}, morph: {self.morph.__class__.__name__}, #verts: {self.n_vertices}, loop: {self.morph.is_loop}, material: {self.material}."
+                f"Entity {self.uid}({self._rod_idx}) added. class: {self.__class__.__name__}, morph: {self.morph.__class__.__name__}, #verts: {self.n_vertices}, loop: {self.morph.is_loop}, material: {self.material}."
             )
 
         # Convert to appropriate numpy array types
@@ -243,7 +246,7 @@ class RodEntity(Entity):
 
         # TODO: @junyi, maybe want to add more material parameters or others
         self._solver._kernel_add_rods(
-            rod_idx=self.idx,
+            rod_idx=self._rod_idx,
             is_loop=self.morph.is_loop,
             use_inextensible=self.material.use_inextensible,
             stretching_stiffness=self.material.K,
@@ -259,7 +262,7 @@ class RodEntity(Entity):
 
         self._solver._kernel_finalize_rest_states(
             f=self._sim.cur_substep_local,
-            rod_idx=self.idx,
+            rod_idx=self._rod_idx,
             v_start=self._v_start,
             e_start=self._e_start,
             iv_start=self._iv_start,
@@ -269,7 +272,7 @@ class RodEntity(Entity):
 
         self._solver._kernel_finalize_states(
             f=self._sim.cur_substep_local,
-            rod_idx=self.idx,
+            rod_idx=self._rod_idx,
             v_start=self._v_start,
             e_start=self._e_start,
             iv_start=self._iv_start,
@@ -411,7 +414,7 @@ class RodEntity(Entity):
         )
 
     @gs.assert_built
-    def set_fixed_states(self, f, fixed_states):
+    def set_fixed_states(self, fixed_states=None, fixed_ids=None):
         """
         Set the fixed status of each vertex.
 
@@ -424,11 +427,22 @@ class RodEntity(Entity):
             Tensor of shape (n_envs, n_vertices).
         """
 
+        if fixed_ids is None and fixed_states is None:
+            is_fixed = np.zeros(self.n_vertices, dtype=gs.np_bool)
+        elif fixed_ids is None and fixed_states is not None:
+            is_fixed = np.asarray(fixed_states).copy().reshape(-1).astype(gs.np_bool)
+            assert is_fixed.shape[0] == self.n_vertices, \
+                f"Fixed states has {is_fixed.shape[0]} vertices, but rod {self._rod_idx} has {self.n_vertices}."
+        elif fixed_ids is not None:
+            is_fixed = [1 if i in fixed_ids else 0 for i in range(self.n_vertices)]
+            is_fixed = np.array(is_fixed, dtype=gs.np_bool)
+        else:
+            raise ValueError("`fixed_ids` and `fixed_states` cannot be provided at the same time.")
+
         self._solver._kernel_set_fixed_states(
-            f=f,
             v_start=self._v_start,
             n_vertices=self.n_vertices,
-            fixed=fixed_states,
+            fixed=is_fixed,
         )
 
     @ti.kernel

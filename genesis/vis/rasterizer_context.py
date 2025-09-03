@@ -691,13 +691,18 @@ class RasterizerContext:
     def update_rod(self, buffer_updates):
         if self.sim.rod_solver.is_active():
             idx = self.rendered_envs_idx[0]
-            # TODO: is this correct?
             verts_all = self.sim.rod_solver.vertices.vert.to_numpy()[0, :, idx]
-            
+            radii_all = self.sim.rod_solver.vertices_info.radius.to_numpy()
+
             for rod_entity in self.sim.rod_solver.entities:
+                rod_idx = rod_entity._rod_idx
                 if rod_entity.surface.vis_mode == "recon":
+                    first_vert_idx = self.sim.rod_solver.rods_info[rod_idx].first_vert_idx
+                    n_verts = self.sim.rod_solver.rods_info[rod_idx].n_verts
                     mesh = ru.mesh_from_centerline(
-                        verts = verts_all
+                        verts = verts_all[first_vert_idx : first_vert_idx + n_verts],
+                        radii = radii_all[first_vert_idx : first_vert_idx + n_verts],
+                        endcaps=True
                     )
                     mesh.visual = mu.surface_uvs_to_trimesh_visual(rod_entity.surface, n_verts=len(mesh.vertices))
                     self.add_dynamic_node(rod_entity, pyrender.Mesh.from_trimesh(mesh, smooth=False))

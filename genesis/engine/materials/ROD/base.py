@@ -24,7 +24,7 @@ class Base(Material):
     G: float, optional
         Twisting stiffness. Default is 1e6. Non-positive values indicate disable twisting.
     plastic_yield: float, optional
-        Plastic yield threshold. Default is inf (no plasticity).
+        Plastic yield threshold. Default is 10.0 (should be no plasticity).
     plastic_creep: float, optional
         Plastic creep rate. Default is 1.0.
     static_friction: float, optional
@@ -44,7 +44,7 @@ class Base(Material):
         K=0.0,
         E=1.0e6,
         G=1.0e6,
-        plastic_yield=np.inf,
+        plastic_yield=10.0,
         plastic_creep=1.0,
         static_friction=0.3,
         kinetic_friction=0.25,
