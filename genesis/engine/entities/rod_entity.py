@@ -216,6 +216,38 @@ class RodEntity(Entity):
 
         self.edges = edges
 
+    def _sample_rod(self, n_vertices: int, interval: float, axis: int):
+        verts = list()
+        for i in range(n_vertices):
+            vert = np.zeros(3, dtype=np.float64)
+            vert[axis] = i * interval
+            verts.append(vert.reshape(3))
+        verts = np.stack(verts, axis=0)
+        return verts
+
+    def _sample_circle(self, n_vertices: int, radius: float, axis: int, gap: int):
+        verts = list()
+        for i in range(n_vertices):
+            theta = 2 * np.pi * i / (n_vertices + gap)     # +1 to avoid overlap at the end
+            vert = np.zeros(3, dtype=np.float64)
+            vert[axis] = radius * np.cos(theta)
+            vert[(axis + 1) % 3] = radius * np.sin(theta)
+            verts.append(vert.reshape(3))
+        verts = np.stack(verts, axis=0)
+        return verts
+
+    def _sample_half_circle(self, n_vertices: int, radius: float, axis: int, gap: int):
+        verts = list()
+        for i in range(n_vertices + 2 * gap):
+            theta = np.pi * i / (n_vertices + 2 * gap - 1)  # Adjusted to cover half circle
+            vert = np.zeros(3, dtype=np.float64)
+            vert[axis] = radius * np.cos(theta)
+            vert[(axis + 1) % 3] = radius * np.sin(theta)
+            if gap <= i < n_vertices + gap:
+                verts.append(vert.reshape(3))
+        verts = np.stack(verts, axis=0)
+        return verts
+
     def sample(self):
         """
         Sample mesh and elements based on the entity's morph type.
@@ -226,10 +258,32 @@ class RodEntity(Entity):
             If the morph type is unsupported.
         """
 
-        vertices = np.load(self.morph.file)
-        assert vertices.ndim == 2, f"Loaded vertices should be of shape (n_vertices, 3), got {vertices.shape}."
-        assert vertices.shape[1] == 3, f"Loaded vertices should be of shape (n_vertices, 3), got {vertices.shape}."
-        vertices = vertices + self.morph.pos
+        file_path = getattr(self.morph, 'file', None)
+        if file_path is None:
+            # Parametric morph
+            if self.morph.axis == "x":
+                axis = 0
+            elif self.morph.axis == "y":
+                axis = 1
+            elif self.morph.axis == "z":
+                axis = 2
+            else:
+                gs.raise_exception(f"Unsupported axis {self.morph.axis}.")
+
+            if self.morph.type == "rod":
+                vertices = self._sample_rod(self.morph.n_vertices, self.morph.interval, axis)
+            elif self.morph.type == "circle":
+                vertices = self._sample_circle(self.morph.n_vertices, self.morph.radius, axis, self.morph.gap)
+            elif self.morph.type == "half_circle":
+                vertices = self._sample_half_circle(self.morph.n_vertices, self.morph.radius, axis, self.morph.gap)
+            else:
+                gs.raise_exception(f"Unsupported morph type {self.morph.type}.")
+            vertices = vertices + self.morph.pos
+        else:
+            vertices = np.load(self.morph.file)
+            assert vertices.ndim == 2, f"Loaded vertices should be of shape (n_vertices, 3), got {vertices.shape}."
+            assert vertices.shape[1] == 3, f"Loaded vertices should be of shape (n_vertices, 3), got {vertices.shape}."
+            vertices = vertices + self.morph.pos
 
         self.instantiate(vertices)
 
@@ -244,7 +298,6 @@ class RodEntity(Entity):
         verts_np = tensor_to_array(self.init_positions, dtype=gs.np_float)
         edges_np = tensor_to_array(self.edges, dtype=gs.np_float)
 
-        # TODO: @junyi, maybe want to add more material parameters or others
         self._solver._kernel_add_rods(
             rod_idx=self._rod_idx,
             is_loop=self.morph.is_loop,
@@ -266,6 +319,10 @@ class RodEntity(Entity):
             v_start=self._v_start,
             e_start=self._e_start,
             iv_start=self._iv_start,
+            segment_mass=self.material.segment_mass,
+            segment_radius=self.material.segment_radius,
+            static_friction=self.material.static_friction,
+            kinetic_friction=self.material.kinetic_friction,
             verts_rest=verts_np,
             edges_rest=edges_np,
         )
@@ -276,10 +333,6 @@ class RodEntity(Entity):
             v_start=self._v_start,
             e_start=self._e_start,
             iv_start=self._iv_start,
-            segment_mass=self.material.segment_mass,
-            segment_radius=self.material.segment_radius,
-            static_friction=self.material.static_friction,
-            kinetic_friction=self.material.kinetic_friction,
             verts=verts_np,
             edges=edges_np,
         )
@@ -411,6 +464,18 @@ class RodEntity(Entity):
             v_start=self._v_start,
             n_vertices=self.n_vertices,
             vel_grad=vel_grad,
+        )
+
+    @gs.assert_built
+    def set_init_vertices(self, verts_np, edges_np):
+        self._solver._kernel_finalize_states(
+            f=self._sim.cur_substep_local,
+            rod_idx=self._rod_idx,
+            v_start=self._v_start,
+            e_start=self._e_start,
+            iv_start=self._iv_start,
+            verts=verts_np,
+            edges=edges_np,
         )
 
     @gs.assert_built

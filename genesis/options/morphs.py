@@ -7,6 +7,7 @@ rigid object / MPM object / FEM object.
 
 import os
 from typing import Any, List, Optional, Sequence, Tuple, Union
+from typing_extensions import Literal
 
 import numpy as np
 
@@ -1268,3 +1269,51 @@ class Rod(Morph):
 
     def is_format(self, format):
         return self.file.lower().endswith(format)
+
+
+class ParameterizedRod(Morph):
+    """
+    Morph of a Rod specified by a set of parameters.
+
+    Parameters
+    ----------
+    type : str, optional
+        The type of the rod. Can be "rod", "circle", or "half_circle". Defaults to "rod".
+    n_vertices : int, optional
+        The number of vertices along the rod. Defaults to 10.
+    interval : float, optional
+        The distance between each vertex in meters. Defaults to 0.1.
+    radius : float, optional
+        The radius of the circle/half_circle in meters. Defaults to 1.0.
+    axis : str, optional
+        The axis of the circle/half_circle. Can be "x", "y", or "z". Defaults to "x".
+    gap : int, optional
+        The number of vertices to skip at the two ends of the circle/half_circle. This is useful for creating a gap.
+    scale : float or tuple, optional
+        The scaling factor for the size of the entity. If a float, it scales uniformly.
+        If a 3-tuple, it scales along each axis. Defaults to 1.0.
+        Note that 3-tuple scaling is only supported for `gs.morphs.Mesh`.
+    pos : tuple, shape (3,), optional
+        The position of the entity in meters. Defaults to (0.0, 0.0, 0.0).
+    euler : tuple, shape (3,), optional
+        The euler angle of the entity in degrees. This follows scipy's extrinsic x-y-z rotation convention.
+        Defaults to (0.0, 0.0, 0.0).
+    quat : tuple, shape (4,), optional
+        The quaternion (w-x-y-z convention) of the entity. If specified, `euler` will be ignored. Defaults to None.
+    """
+
+    type: Literal["rod", "circle", "half_circle"] = "rod"
+    n_vertices: int = 10
+    interval: float = 0.1
+    radius: float = 1.0
+    axis: Literal["x", "y", "z"] = "x"
+    gap: int = 0
+    is_loop: bool = False
+
+    def __init__(self, **data):
+        super().__init__(**data)
+
+        if self.type == "circle" and self.gap == 0:
+            self.is_loop = True
+        else:
+            self.is_loop = False

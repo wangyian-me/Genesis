@@ -778,6 +778,8 @@ class RodSolver(Solver):
                 self._kernel_apply_inextensibility_constraints(f)
                 self._kernel_apply_plane_collision_constraints(f, i)
                 self._kernel_apply_rod_collision_constraints(f, i)
+            self.update_centerline_edges(f)
+            self.update_material_states(f)
 
     def substep_pre_coupling_grad(self, f):
         if self.is_active():
@@ -785,9 +787,6 @@ class RodSolver(Solver):
 
     def substep_post_coupling(self, f):
         if self.is_active():
-            self.update_centerline_edges(f)
-            self.update_material_states(f)
-
             self.update_velocities_after_projection(f)
             self._kernel_apply_plane_friction(f)
             self._kernel_apply_rod_friction(f)
@@ -931,6 +930,10 @@ class RodSolver(Solver):
         v_start: ti.i32,
         e_start: ti.i32,
         iv_start: ti.i32,
+        segment_mass: ti.f64,        # NOTE: we can use array
+        segment_radius: ti.f64,      # NOTE: we can use array
+        static_friction: ti.f64,     # NOTE: we can use array
+        kinetic_friction: ti.f64,    # NOTE: we can use array
         verts_rest: ti.types.ndarray(dtype=tm.vec3, ndim=1),
         edges_rest: ti.types.ndarray(dtype=tm.vec3, ndim=1),
     ):
@@ -938,8 +941,13 @@ class RodSolver(Solver):
         for i_v in range(n_verts_local):
             i_global = i_v + v_start
 
+            # info (static)
+            self.vertices_info[i_global].mass = segment_mass
+            self.vertices_info[i_global].radius = segment_radius
+            self.vertices_info[i_global].mu_s = static_friction
+            self.vertices_info[i_global].mu_k = kinetic_friction
+            self.vertices_info[i_global].rod_idx = rod_idx
             # finalize rest vertices
-
             self.vertices_info[i_global].vert_rest[i_v] = verts_rest[i_v]
 
         is_loop = self.rods_info[rod_idx].is_loop
@@ -1016,23 +1024,12 @@ class RodSolver(Solver):
         v_start: ti.i32,
         e_start: ti.i32,
         iv_start: ti.i32,
-        segment_mass: ti.f64,        # NOTE: we can use array
-        segment_radius: ti.f64,      # NOTE: we can use array
-        static_friction: ti.f64,     # NOTE: we can use array
-        kinetic_friction: ti.f64,    # NOTE: we can use array
         verts: ti.types.ndarray(dtype=tm.vec3, ndim=1),
         edges: ti.types.ndarray(dtype=tm.vec3, ndim=1),
     ):
         n_verts_local = verts.shape[0]
         for i_v, i_b in ti.ndrange(n_verts_local, self._B):
             i_global = i_v + v_start
-
-            # info (static)
-            self.vertices_info[i_global].mass = segment_mass
-            self.vertices_info[i_global].radius = segment_radius
-            self.vertices_info[i_global].mu_s = static_friction
-            self.vertices_info[i_global].mu_k = kinetic_friction
-            self.vertices_info[i_global].rod_idx = rod_idx
 
             # state (dynamic)
             self.vertices[f, i_global, i_b].vert = verts[i_v]
