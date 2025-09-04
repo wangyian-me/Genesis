@@ -90,6 +90,8 @@ class LegacyCouplerOptions(BaseCouplerOptions):
         Whether to enable coupling between rigid and PBD solvers. Defaults to True.
     rigid_fem : bool, optional
         Whether to enable coupling between rigid and FEM solvers. Defaults to True.
+    rigid_rod : bool, optional
+        Whether to enable coupling between rigid and Rod solvers. Defaults to True.
     mpm_sph : bool, optional
         Whether to enable coupling between MPM and SPH solvers. Defaults to True.
     mpm_pbd : bool, optional
@@ -104,6 +106,7 @@ class LegacyCouplerOptions(BaseCouplerOptions):
     rigid_sph: bool = True
     rigid_pbd: bool = True
     rigid_fem: bool = True
+    rigid_rod: bool = True
     mpm_sph: bool = True
     mpm_pbd: bool = True
     fem_mpm: bool = True
