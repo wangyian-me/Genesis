@@ -553,17 +553,14 @@ class LegacyCoupler(RBC):
 
         # collision detection
         self.fem_solver.floor_hydroelastic_detection(f)
-    
+
     @ti.kernel
     def rod_rigid(self, f: ti.i32):
         for i_v, i_b in ti.ndrange(self.rod_solver._n_vertices, self.rod_solver._B):
             if not self.rod_solver.vertices_info[i_v].fixed:
                 for i_g in range(self.rigid_solver.n_geoms):
                     if self.rigid_solver.geoms_info.needs_coup[i_g]:
-                        (
-                            self.rod_solver.vertices[f, i_v, i_b].vert,
-                            self.rod_solver.vertices[f, i_v, i_b].vel,
-                        ) = self._func_rod_collide_with_rigid_geom(
+                        new_vel = self._func_rod_collide_with_rigid_geom(
                             i_v,
                             self.rod_solver.vertices[f, i_v, i_b].vert,
                             self.rod_solver.vertices[f, i_v, i_b].vel,
@@ -571,6 +568,7 @@ class LegacyCoupler(RBC):
                             i_g,
                             i_b,
                         )
+                        self.rod_solver.vertices[f, i_v, i_b].vel = new_vel
 
     @ti.kernel
     def rod_vertex_force(self, f: ti.i32):
@@ -638,7 +636,6 @@ class LegacyCoupler(RBC):
             geom_idx=geom_idx,
             batch_idx=batch_idx,
         )
-        new_pos = pos_world
         new_vel = vel
 
         radius = self.rod_solver.vertices_info[i].radius
@@ -687,7 +684,7 @@ class LegacyCoupler(RBC):
                 new_vel = vel_rigid + v_rel_new
 
                 J_total = mass * (new_vel - vel)
- 
+
                 force = -J_total / self.rigid_solver._substep_dt
 
                 self.rigid_solver._func_apply_external_force(
@@ -698,11 +695,7 @@ class LegacyCoupler(RBC):
                     self.rigid_solver.links_state,
                 )
 
-            # positional correction
-            penetration_depth = radius - signed_dist
-            new_pos = pos_world + normal_rigid * penetration_depth
-
-        return new_pos, new_vel
+        return new_vel
 
     @ti.func
     def _func_pbd_collide_with_rigid_geom(self, i, pos_world, vel, mass, normal_prev, geom_idx, batch_idx):
