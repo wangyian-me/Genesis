@@ -568,7 +568,6 @@ class LegacyCoupler(RBC):
                             i_g,
                             i_b,
                         )
-                        # self.rod_solver.vertices[f, i_v, i_b].vert = new_pos
                         self.rod_solver.vertices[f, i_v, i_b].vel = new_vel
 
     @ti.kernel

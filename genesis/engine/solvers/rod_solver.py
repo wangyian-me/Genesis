@@ -1288,8 +1288,8 @@ class RodSolver(Solver):
             if not self.rods_info[rod_id].use_inextensible:
                 continue
 
-            inv_mass_s = self._func_get_inverse_mass(f, v_s, i_b)
-            inv_mass_e = self._func_get_inverse_mass(f, v_e, i_b)
+            inv_mass_s = self._func_get_inverse_mass(v_s)
+            inv_mass_e = self._func_get_inverse_mass(v_e)
             inv_mass_sum = inv_mass_s + inv_mass_e
 
             if inv_mass_sum > EPS:
@@ -1360,10 +1360,10 @@ class RodSolver(Solver):
 
                 w = ti.Vector([1.0 - t, t, 1.0 - u, u])
                 im = ti.Vector([
-                    self._func_get_inverse_mass(f, idx_a1, i_b),
-                    self._func_get_inverse_mass(f, idx_a2, i_b),
-                    self._func_get_inverse_mass(f, idx_b1, i_b),
-                    self._func_get_inverse_mass(f, idx_b2, i_b),
+                    self._func_get_inverse_mass(idx_a1),
+                    self._func_get_inverse_mass(idx_a2),
+                    self._func_get_inverse_mass(idx_b1),
+                    self._func_get_inverse_mass(idx_b2),
                 ])
 
                 w_sum_sq_inv_mass = tm.dot(w * w, im)
@@ -1430,10 +1430,10 @@ class RodSolver(Solver):
 
                 w = ti.Vector([1.0 - t, t, 1.0 - u, u])
                 im = ti.Vector([
-                    self._func_get_inverse_mass(f, idx_a1, i_b),
-                    self._func_get_inverse_mass(f, idx_a2, i_b),
-                    self._func_get_inverse_mass(f, idx_b1, i_b),
-                    self._func_get_inverse_mass(f, idx_b2, i_b),
+                    self._func_get_inverse_mass(idx_a1),
+                    self._func_get_inverse_mass(idx_a2),
+                    self._func_get_inverse_mass(idx_b1),
+                    self._func_get_inverse_mass(idx_b2),
                 ])
 
                 w_sum_sq_inv_mass = tm.dot(w * w, im)
