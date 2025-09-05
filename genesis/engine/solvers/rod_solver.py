@@ -601,7 +601,7 @@ class RodSolver(Solver):
             E = self.rods_info[rod_id].bending_stiffness
             if E <= 0.:
                 continue
-            
+
             r = self.vertices_info[v_m].radius
             a, b = r, r
             A = pi * a * b  # cross-sectional area
@@ -780,6 +780,9 @@ class RodSolver(Solver):
                 self._kernel_apply_rod_collision_constraints(f, i)
             self.update_centerline_edges(f)
             self.update_material_states(f)
+            self.update_velocities_after_projection(f)
+            self._kernel_apply_plane_friction(f)
+            self._kernel_apply_rod_friction(f)
 
     def substep_pre_coupling_grad(self, f):
         if self.is_active():
@@ -787,10 +790,6 @@ class RodSolver(Solver):
 
     def substep_post_coupling(self, f):
         if self.is_active():
-            self.update_velocities_after_projection(f)
-            self._kernel_apply_plane_friction(f)
-            self._kernel_apply_rod_friction(f)
-
             if f % 20 == 0:
                 vert = self.vertices.vert.to_numpy()[f, :, 0]
                 nan_mask = np.isnan(vert)
