@@ -682,8 +682,6 @@ class RodOptions(Options):
         Damping factor. Defaults to 0.0.
     floor_height : float, optional
         Height of the floor in meters. If none, it will inherit from `SimOptions`. Defaults to None.
-    floor_normal : tuple, optional
-        Normal vector of the floor. Defaults to (0.0, 0.0, 1.0).
     adjacent_gap : int, optional
         Gap between adjacent segments to disable collision. Defaults to 2.
     n_pbd_iters : int, optional
@@ -694,6 +692,5 @@ class RodOptions(Options):
     gravity: Optional[tuple] = None
     damping: Optional[float] = 0.0
     floor_height: float = None
-    floor_normal: tuple = (0.0, 0.0, 1.0)
     adjacent_gap: int = 2
     n_pbd_iters: int = 10

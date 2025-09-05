@@ -564,10 +564,11 @@ class LegacyCoupler(RBC):
                             i_v,
                             self.rod_solver.vertices[f, i_v, i_b].vert,
                             self.rod_solver.vertices[f, i_v, i_b].vel,
-                            self.rod_solver.vertices_info[i_v].mass,
+                            self.rod_solver._func_get_inverse_mass(i_v),
                             i_g,
                             i_b,
                         )
+                        # self.rod_solver.vertices[f, i_v, i_b].vert = new_pos
                         self.rod_solver.vertices[f, i_v, i_b].vel = new_vel
 
     @ti.kernel
@@ -623,7 +624,7 @@ class LegacyCoupler(RBC):
                         )
 
     @ti.func
-    def _func_rod_collide_with_rigid_geom(self, i, pos_world, vel, mass, geom_idx, batch_idx):
+    def _func_rod_collide_with_rigid_geom(self, i, pos_world, vel, inv_mass, geom_idx, batch_idx):
         """
         Resolves collision when a particle is already in collision with a rigid object.
         This function assumes known normal_rigid and influence.
@@ -658,42 +659,58 @@ class LegacyCoupler(RBC):
 
             v_rel = vel - vel_rigid
             v_normal_mag = v_rel.dot(normal_rigid)  # negative if inward
-            v_tangent = v_rel - v_normal_mag * normal_rigid
-            v_tangent_norm = v_tangent.norm(gs.EPS)
 
-            # only apply collision impulse if objects are moving towards each other
-            if v_normal_mag < 0:
+            # only resolve if penetrating and moving towards each other or already resting
+            if v_normal_mag < 0.01: # use a small tolerance
                 geom_info = self.rigid_solver.geoms_info
 
-                # TODO: Check this
-                friction_coeff = (geom_info.coup_friction[geom_idx] + self.rod_solver.vertices_info[i].mu_k) * 0.5
-                restitution = geom_info.coup_restitution[geom_idx]
-
-                v_tangent = v_rel - v_normal_mag * normal_rigid
-                v_tangent_norm = v_tangent.norm(gs.EPS)
-
-                new_tan_norm = ti.max(0, v_tangent_norm + v_normal_mag * friction_coeff)
-                v_tan_new = ti.Vector([0.0, 0.0, 0.0])
-                if v_tangent_norm > gs.EPS:
-                    v_tan_new = v_tangent * (new_tan_norm / v_tangent_norm)
-
-                v_norm_new_mag = -v_normal_mag * restitution
-                v_norm_new = v_norm_new_mag * normal_rigid
-
-                v_rel_new = v_tan_new + v_norm_new
-                new_vel = vel_rigid + v_rel_new
-
-                J_total = mass * (new_vel - vel)
-
-                force = -J_total / self.rigid_solver._substep_dt
-
-                self.rigid_solver._func_apply_external_force(
-                    pos_world,
-                    force,
-                    geom_info.link_idx[geom_idx],
-                    batch_idx,
-                    self.rigid_solver.links_state,
+                inv_mass_rod = inv_mass
+                inv_mass_rigid = self.rigid_solver._func_get_effective_inverse_mass(
+                    pos_world=pos_world,
+                    normal=normal_rigid,
+                    link_idx=geom_info.link_idx[geom_idx],
+                    batch_idx=batch_idx,
+                    links_info=self.rigid_solver.links_info,
+                    links_state=self.rigid_solver.links_state,
                 )
+
+                total_inv_mass = inv_mass_rod + inv_mass_rigid
+                if total_inv_mass > gs.EPS:
+                    penetration_depth = radius - signed_dist
+                    beta = 0.2 # stabilization parameter
+                    restitution = geom_info.coup_restitution[geom_idx]
+
+                    # Baumgarte stabilization to prevent penetration
+                    delta_v_normal = -v_normal_mag * restitution + (beta / self.rigid_solver._substep_dt) * penetration_depth
+                    jn = delta_v_normal / total_inv_mass
+                    # prevent "pulling" due to stabilization, only push
+                    jn = ti.max(jn, 0.0)
+                    J_collision = jn * normal_rigid
+
+                    v_tangent = v_rel - v_normal_mag * normal_rigid
+                    v_tangent_norm = v_tangent.norm(gs.EPS)
+                    J_friction = ti.Vector([0.0, 0.0, 0.0])
+
+                    if v_tangent_norm > gs.EPS:
+                        friction_coeff = (geom_info.coup_friction[geom_idx] + self.rod_solver.vertices_info[i].mu_k) * 0.5
+                        # calculate impulse required to stop tangential motion
+                        jt_required = v_tangent_norm / total_inv_mass
+
+                        jt_friction = ti.min(jt_required, friction_coeff * jn)
+                        J_friction = -v_tangent.normalized() * jt_friction
+                    
+                    J_total = J_collision + J_friction
+                    new_vel += J_total * inv_mass_rod
+
+                    force = -J_total / self.rigid_solver._substep_dt
+
+                    self.rigid_solver._func_apply_external_force(
+                        pos_world,
+                        force,
+                        geom_info.link_idx[geom_idx],
+                        batch_idx,
+                        self.rigid_solver.links_state,
+                    )
 
         return new_vel
 

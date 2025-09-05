@@ -7,6 +7,7 @@ import gstaichi.math as tm
 import torch
 
 import genesis as gs
+from genesis.engine.boundaries import FloorBoundary
 from genesis.engine.entities.rod_entity import RodEntity
 from genesis.engine.states.solvers import RODSolverState
 from genesis.utils.misc import ti_field_to_torch
@@ -124,12 +125,12 @@ class RodSolver(Solver):
 
         # options
         self._floor_height = options.floor_height
-        self._floor_normal = options.floor_normal
         self._adjacent_gap = options.adjacent_gap
         self._damping = options.damping
         self._n_pbd_iters = options.n_pbd_iters
 
-        # no boundary
+        # boundary
+        self.setup_boundary()
 
         # lazy initialization
         self._constraints_initialized = False
@@ -144,6 +145,9 @@ class RodSolver(Solver):
             return (B,) + shape if first_dim else shape + (B,)
         else:
             return (B, shape) if first_dim else (shape, B)
+    
+    def setup_boundary(self):
+        self.boundary = FloorBoundary(height=self._floor_height)
 
     def init_rod_fields(self):
         # rod information (static)
@@ -297,7 +301,7 @@ class RodSolver(Solver):
             layout=ti.Layout.SOA
         )
 
-    def init_valid_edge_pairs_for_constraints(self):
+    def init_constraints(self):
         # NOTE: call this after call `_kernel_add_rods`
         valid_edge_pairs = list()
         for i in range(self._n_vertices):
@@ -357,33 +361,6 @@ class RodSolver(Solver):
 
         self.rr_constraint_info.valid_pair.from_numpy(valid_edge_pairs)
 
-    def init_constraints(self):
-        struct_plane_info = ti.types.struct(
-            point=gs.ti_vec3,
-            normal=gs.ti_vec3,
-            mu_s=gs.ti_float,
-            mu_k=gs.ti_float,
-        )
-
-        # constraint for rod-plane collision
-        struct_rp_state = ti.types.struct(
-            normal=gs.ti_vec3,
-            penetration=gs.ti_float,
-            plane_idx=gs.ti_int
-        )
-
-        self.planes_info = struct_plane_info.field(
-            shape=self._n_planes, layout=ti.Layout.SOA
-        )
-
-        self.rp_constraints = struct_rp_state.field(
-            shape=self._batch_shape(self._n_vertices),
-            needs_grad=False,
-            layout=ti.Layout.AOS
-        )
-
-        self.init_valid_edge_pairs_for_constraints()
-
         self._constraints_initialized = True
 
     def init_ckpt(self):
@@ -405,7 +382,6 @@ class RodSolver(Solver):
         self._n_edges = self.n_edges
         self._n_internal_vertices = self.n_internal_vertices
         self._n_dofs = self.n_dofs
-        self._n_planes = 1  # NOTE: only floor for now
 
         if self.is_active():
             self.init_rod_fields()
@@ -417,14 +393,6 @@ class RodSolver(Solver):
                 entity._add_to_solver()
 
             self.init_constraints()
-
-        # default plane collider
-        point = np.asarray(self._floor_normal) * self._floor_height
-        for j in range(3):
-            self.planes_info[0].point[j] = point[j]
-            self.planes_info[0].normal[j] = self._floor_normal[j]    
-        self.planes_info[0].mu_s = 0.3
-        self.planes_info[0].mu_k = 0.25
 
     def add_entity(self, idx, material, morph, surface):
 
@@ -776,12 +744,10 @@ class RodSolver(Solver):
             self.clear_contact_states()
             for i in range(self._n_pbd_iters):
                 self._kernel_apply_inextensibility_constraints(f)
-                self._kernel_apply_plane_collision_constraints(f, i)
                 self._kernel_apply_rod_collision_constraints(f, i)
             self.update_centerline_edges(f)
             self.update_material_states(f)
             self.update_velocities_after_projection(f)
-            self._kernel_apply_plane_friction(f)
             self._kernel_apply_rod_friction(f)
 
     def substep_pre_coupling_grad(self, f):
@@ -1268,10 +1234,6 @@ class RodSolver(Solver):
         return self._floor_height
     
     @property
-    def floor_normal(self):
-        return self._floor_normal
-
-    @property
     def damping(self):
         return self._damping
 
@@ -1300,7 +1262,7 @@ class RodSolver(Solver):
     # ------------------------------------------------------------------------------------
 
     @ti.func
-    def _func_get_inverse_mass(self, f: ti.i32, i_v: ti.i32, i_b: ti.i32):
+    def _func_get_inverse_mass(self, i_v: ti.i32):
         mass = self.vertices_info[i_v].mass
         inv_mass = 0.0
         if self.vertices_info[i_v].fixed or mass <= 0.:
@@ -1311,12 +1273,6 @@ class RodSolver(Solver):
 
     @ti.kernel
     def clear_contact_states(self):
-        for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
-            for j in ti.static(range(3)):
-                self.rp_constraints[i_v, i_b].normal[j] = 0.0
-            self.rp_constraints[i_v, i_b].penetration = 0.0
-            self.rp_constraints[i_v, i_b].plane_idx = -1
-
         for i_p, i_b in ti.ndrange(self._n_valid_edge_pairs, self._B):
             for j in ti.static(range(3)):
                 self.rr_constraints[i_p, i_b].normal[j] = 0.0
@@ -1353,33 +1309,6 @@ class RodSolver(Solver):
                     # apply corrections
                     self.vertices[f, v_s, i_b].vert += delta_p_s
                     self.vertices[f, v_e, i_b].vert += delta_p_e
-
-    @ti.kernel
-    def _kernel_apply_plane_collision_constraints(self, f: ti.i32, iter_idx: ti.i32):
-        if ti.static(self._n_planes == 0):
-            return
-
-        for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
-            inv_mass = self._func_get_inverse_mass(f, i_v, i_b)
-            if inv_mass > EPS:
-                pos = self.vertices[f, i_v, i_b].vert
-                radius = self.vertices_info[i_v].radius
-
-                for j in range(self._n_planes):
-                    pp = self.planes_info[j].point
-                    pn = self.planes_info[j].normal
-
-                    dist = (pos - pp).dot(pn)
-                    penetration = radius - dist
-
-                    if penetration > 0.0:
-                        self.vertices[f, i_v, i_b].vert += penetration * pn 
-
-                        # TODO: currently only store contact data for the DEEPEST penetration for friction
-                        if iter_idx == 0 and penetration > self.rp_constraints[i_v, i_b].penetration:
-                            self.rp_constraints[i_v, i_b].normal = pn
-                            self.rp_constraints[i_v, i_b].penetration = penetration
-                            self.rp_constraints[i_v, i_b].plane_idx = j
 
     @ti.kernel
     def _kernel_apply_rod_collision_constraints(self, f: ti.i32, iter_idx: ti.i32):
@@ -1449,31 +1378,6 @@ class RodSolver(Solver):
                 if iter_idx == 0:
                     self.rr_constraints[i_p, i_b].normal = normal
                     self.rr_constraints[i_p, i_b].penetration = penetration
-
-    @ti.kernel
-    def _kernel_apply_plane_friction(self, f: ti.i32):
-        if ti.static(self._n_planes == 0):
-            return
-
-        for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
-            plane_idx = self.rp_constraints[i_v, i_b].plane_idx
-            if plane_idx != -1:
-                inv_mass = self._func_get_inverse_mass(f, i_v, i_b)
-                if inv_mass > EPS:
-                    pn = self.rp_constraints[i_v, i_b].normal
-                    v_i = self.vertices[f, i_v, i_b].vel
-                    v_tangent = v_i - v_i.dot(pn) * pn
-                    v_tangent_norm = tm.length(v_tangent)
-
-                    normal_vel_mag = self.rp_constraints[i_v, i_b].penetration / self._substep_dt
-                    mu_s = (self.vertices_info[i_v].mu_s + self.planes_info[plane_idx].mu_s) * 0.5
-                    mu_k = (self.vertices_info[i_v].mu_k + self.planes_info[plane_idx].mu_k) * 0.5
-
-                    if v_tangent_norm < mu_s * normal_vel_mag:
-                        # static friction
-                        self.vertices[f, i_v, i_b].vel -= v_tangent
-                    else:
-                        self.vertices[f, i_v, i_b].vel -= v_tangent.normalized() * mu_k * normal_vel_mag
 
     @ti.kernel
     def _kernel_apply_rod_friction(self, f: ti.i32):

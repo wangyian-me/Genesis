@@ -292,6 +292,7 @@ class RigidSolver(Solver):
         # when the migration is finished, we will remove the about two lines
         self._func_vel_at_point = func_vel_at_point
         self._func_apply_external_force = func_apply_external_force
+        self._func_get_effective_inverse_mass = func_get_effective_inverse_mass
 
         if self.is_active():
             self.data_manager = array_class.DataManager(self)
@@ -6873,3 +6874,38 @@ def kernel_set_geoms_friction(
     ti.loop_config(serialize=static_rigid_sim_config.para_level < gs.PARA_LEVEL.PARTIAL)
     for i_g_ in ti.ndrange(geoms_idx.shape[0]):
         geoms_info.friction[geoms_idx[i_g_]] = friction[i_g_]
+
+@ti.func
+def func_get_effective_inverse_mass(
+    pos_world: ti.math.vec3, # The world-space contact point
+    normal: ti.math.vec3,    # The world-space collision normal
+    link_idx: ti.i32,
+    batch_idx: ti.i32,
+    links_info: array_class.LinksInfo,
+    links_state: array_class.LinksState,
+) -> ti.f64:
+    """
+    Calculates the effective inverse mass of a rigid body link at a specific
+    point for an impulse applied along the normal.
+    """
+    # Fetch the mass from the static link information.
+    mass = links_info.inertial_mass[link_idx]
+    inv_mass = 1.0 / mass if mass > 0.0 else 0.0
+
+    # Combine the link's dynamic position with its static center-of-mass offset.
+    link_pos = links_state.pos[link_idx, batch_idx]
+    link_quat = links_state.quat[link_idx, batch_idx]
+    inertial_offset = links_info.inertial_pos[link_idx]
+    center_of_mass = link_pos + gu.ti_transform_by_quat(inertial_offset, link_quat)
+
+    # Fetch the local inertia tensor, invert it, and rotate it into world coordinates.
+    I_local = links_info.inertial_i[link_idx]
+    I_local_inv = ti.math.inverse(I_local)
+    R = gu.ti_quat_to_R(link_quat)
+    inv_inertia_tensor_world = R @ I_local_inv @ R.transpose()
+
+    r = pos_world - center_of_mass
+    r_cross_n = r.cross(normal)
+    rotational_effect = r_cross_n.dot(inv_inertia_tensor_world @ r_cross_n)
+
+    return inv_mass + rotational_effect
