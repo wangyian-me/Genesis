@@ -1,19 +1,23 @@
 import argparse
 import mediapy
 import genesis as gs
+from collections import defaultdict
 
 
 def test_v1(scene):
     v1 = scene.add_entity(
         material=gs.materials.ROD.Base(
             segment_radius=0.005,
+            E=1e5,
+            G=1e5
         ),
-        morph=gs.morphs.Rod(
-            file="test.npy",
-            scale=1.0,
+        morph=gs.morphs.ParameterizedRod(
+            type="rod",
+            n_vertices=100,
+            interval=0.01,
+            axis="x",
             pos=(0.5, 0.5, 0.3),
             euler=(0.0, 0.0, 15.0),
-            is_loop=False 
         ),
         surface=gs.surfaces.Default(
             color=(1.0, 0.4, 0.4),
@@ -24,13 +28,16 @@ def test_v1(scene):
     v2 = scene.add_entity(
         material=gs.materials.ROD.Base(
             segment_radius=0.005,
+            E=1e5,
+            G=1e5
         ),
-        morph=gs.morphs.Rod(
-            file="test.npy",
-            scale=1.0,
+        morph=gs.morphs.ParameterizedRod(
+            type="rod",
+            n_vertices=80,
+            interval=0.01,
+            axis="x",
             pos=(0.55, 0.43, 0.4),
             euler=(0.0, 0.0, 0.0),
-            is_loop=False 
         ),
         surface=gs.surfaces.Default(
             color=(0.4, 1.0, 0.4),
@@ -42,12 +49,13 @@ def test_v1(scene):
         material=gs.materials.ROD.Base(
             segment_radius=0.02,
         ),
-        morph=gs.morphs.Rod(
-            file="fixed.npy",
-            scale=1.0,
-            pos=(0.75, 0.435, 0.2),
+        morph=gs.morphs.ParameterizedRod(
+            type="rod",
+            n_vertices=3,
+            interval=0.1,
+            axis="x",
+            pos=(0.75, 0.435, 0.25),
             euler=(0.0, 0.0, -75.0),
-            is_loop=False 
         ),
         surface=gs.surfaces.Default(
             color=(0.4, 0.4, 0.4),
@@ -59,12 +67,13 @@ def test_v1(scene):
         material=gs.materials.ROD.Base(
             segment_radius=0.02,
         ),
-        morph=gs.morphs.Rod(
-            file="fixed.npy",
-            scale=1.0,
+        morph=gs.morphs.ParameterizedRod(
+            type="rod",
+            n_vertices=3,
+            interval=0.1,
+            axis="x",
             pos=(1.05, 0.435, 0.25),
             euler=(0.0, 0.0, -75.0),
-            is_loop=False 
         ),
         surface=gs.surfaces.Default(
             color=(0.4, 0.4, 0.4),
@@ -79,7 +88,7 @@ def test_v1(scene):
         fixed_ids = [0, 1]
     )
     v2.set_fixed_states(
-        fixed_ids = [98, 99]
+        fixed_ids = [78, 79]
     )
     b1.set_fixed_states(
         fixed_ids = [0, 1, 2]
@@ -92,14 +101,17 @@ def test_v1(scene):
 def test_v2(scene):
     v1 = scene.add_entity(
         material=gs.materials.ROD.Base(
-            segment_radius=0.005,
+            segment_mass=0.1,
+            segment_radius=0.0075,
+            E=1e7,
         ),
-        morph=gs.morphs.Rod(
-            file="test.npy",
-            scale=1.0,
-            pos=(0.7, 0.05, 0.5),
+        morph=gs.morphs.ParameterizedRod(
+            type="rod",
+            n_vertices=80,
+            interval=0.01,
+            axis="x",
+            pos=(0.75, 0.05, 0.35),
             euler=(0.0, 0.0, 15.0),
-            is_loop=False 
         ),
         surface=gs.surfaces.Default(
             color=(1.0, 0.4, 0.4),
@@ -109,16 +121,19 @@ def test_v2(scene):
 
     v2 = scene.add_entity(
         material=gs.materials.ROD.Base(
-            segment_radius=0.005,
+            segment_mass=0.1,
+            segment_radius=0.0075,
+            E=1e7,
             static_friction=1.5,
             kinetic_friction=1.25
         ),
-        morph=gs.morphs.Rod(
-            file="test.npy",
-            scale=1.0,
-            pos=(0.7, 0.15, 0.5),
+        morph=gs.morphs.ParameterizedRod(
+            type="rod",
+            n_vertices=80,
+            interval=0.01,
+            axis="x",
+            pos=(0.75, 0.15, 0.35),
             euler=(0.0, 0.0, 15.0),
-            is_loop=False 
         ),
         surface=gs.surfaces.Default(
             color=(0.4, 1.0, 0.4),
@@ -128,14 +143,15 @@ def test_v2(scene):
 
     b1 = scene.add_entity(
         material=gs.materials.ROD.Base(
-            segment_radius=0.02,
+            segment_radius=0.025,
         ),
-        morph=gs.morphs.Rod(
-            file="fixed.npy",
-            scale=1.0,
-            pos=(0.85, 0.05, 0.3),
+        morph=gs.morphs.ParameterizedRod(
+            type="rod",
+            n_vertices=3,
+            interval=0.1,
+            axis="x",
+            pos=(1.0, 0.05, 0.3),
             euler=(0.0, 0.0, 105.0),
-            is_loop=False 
         ),
         surface=gs.surfaces.Default(
             color=(0.4, 0.4, 0.4),
@@ -145,14 +161,33 @@ def test_v2(scene):
 
     b2 = scene.add_entity(
         material=gs.materials.ROD.Base(
-            segment_radius=0.02,
+            segment_radius=0.025,
         ),
-        morph=gs.morphs.Rod(
-            file="fixed.npy",
-            scale=1.0,
+        morph=gs.morphs.ParameterizedRod(
+            type="rod",
+            n_vertices=3,
+            interval=0.1,
+            axis="x",
             pos=(1.25, 0.15, 0.3),
             euler=(0.0, 0.0, 105.0),
-            is_loop=False 
+        ),
+        surface=gs.surfaces.Default(
+            color=(0.4, 0.4, 0.4),
+            vis_mode='recon',
+        ),
+    )
+
+    b3 = scene.add_entity(
+        material=gs.materials.ROD.Base(
+            segment_radius=0.025,
+        ),
+        morph=gs.morphs.ParameterizedRod(
+            type="rod",
+            n_vertices=3,
+            interval=0.1,
+            axis="x",
+            pos=(0.85, 0.15, 0.3),
+            euler=(0.0, 0.0, 105.0),
         ),
         surface=gs.surfaces.Default(
             color=(0.4, 0.4, 0.4),
@@ -169,21 +204,25 @@ def test_v2(scene):
     b2.set_fixed_states(
         fixed_ids = [0, 1, 2]
     )
+    b3.set_fixed_states(
+        fixed_ids = [0, 1, 2]
+    )
 
 
 def test_v3(scene):
     v1 = scene.add_entity(
         material=gs.materials.ROD.Base(
-            segment_radius=0.001,
+            segment_radius=0.005,
             E=1e7,
-            G=1e7
+            G=1e7,
         ),
-        morph=gs.morphs.Rod(
-            file="circle.npy",
-            scale=1.0,
-            pos=(1.02, -0.03, 0.15),
+        morph=gs.morphs.ParameterizedRod(
+            type="circle",
+            n_vertices=120,
+            radius=0.1,
+            axis="x",
+            pos=(1.02, -0.03, 0.22),
             euler=(0.0, 90.0, 105.0),
-            is_loop=True
         ),
         surface=gs.surfaces.Default(
             color=(1.0, 0.4, 0.4),
@@ -193,16 +232,17 @@ def test_v3(scene):
 
     v2 = scene.add_entity(
         material=gs.materials.ROD.Base(
-            segment_radius=0.001,
-            E=1e7,
-            G=1e7
+            segment_radius=0.005,
+            E=5e5,
+            G=5e5,
         ),
-        morph=gs.morphs.Rod(
-            file="testshort.npy",
-            scale=1.0,
-            pos=(0.95, 0.0, 0.1),
+        morph=gs.morphs.ParameterizedRod(
+            type="rod",
+            n_vertices=20,
+            interval=0.01,
+            axis="x",
+            pos=(0.92, 0.05, 0.12),
             euler=(0.0, 0.0, 15.0),
-            is_loop=False 
         ),
         surface=gs.surfaces.Default(
             color=(0.4, 1.0, 0.4),
@@ -212,14 +252,15 @@ def test_v3(scene):
 
     b1 = scene.add_entity(
         material=gs.materials.ROD.Base(
-            segment_radius=0.01,
+            segment_radius=0.015,
         ),
-        morph=gs.morphs.Rod(
-            file="fixed.npy",
-            scale=1.0,
-            pos=(0.9, 0.0, 0.05),
+        morph=gs.morphs.ParameterizedRod(
+            type="rod",
+            n_vertices=3,
+            interval=0.1,
+            axis="x",
+            pos=(0.9, 0.0, 0.07),
             euler=(0.0, 0.0, 105.0),
-            is_loop=False 
         ),
         surface=gs.surfaces.Default(
             color=(0.4, 0.4, 0.4),
@@ -233,6 +274,144 @@ def test_v3(scene):
     b1.set_fixed_states(
         fixed_ids = [0, 1, 2]
     )
+
+
+def test_v4(scene):
+    E = 1e5
+    G = 1e5
+    v1 = scene.add_entity(
+        material=gs.materials.ROD.Base(
+            segment_radius=0.0075,
+            E=E,
+            G=G,
+            static_friction=0.9,
+            kinetic_friction=0.75
+        ),
+        morph=gs.morphs.ParameterizedRod(
+            type="rod",
+            n_vertices=40,
+            interval=0.01,
+            axis="x",
+            pos=(0.42, 0.42, 0.5),
+            euler=(0.0, 0.0, 0.0),
+        ),
+        surface=gs.surfaces.Default(
+            color=(0.4, 1.0, 0.4),
+            vis_mode='recon',
+        ),
+    )
+
+    v2 = scene.add_entity(
+        material=gs.materials.ROD.Base(
+            segment_radius=0.0075,
+            E=E,
+            G=G
+        ),
+        morph=gs.morphs.ParameterizedRod(
+            type="rod",
+            n_vertices=20,
+            interval=0.01,
+            axis="x",
+            pos=(0.42, 0.34, 0.54),
+            euler=(0.0, 0.0, 0.0),
+        ),
+        surface=gs.surfaces.Default(
+            color=(1.0, 0.4, 0.4),
+            vis_mode='recon',
+        ),
+    )
+
+    v3 = scene.add_entity(
+        material=gs.materials.ROD.Base(
+            segment_radius=0.0075,
+            E=E,
+            G=G,
+            static_friction=1.5,
+            kinetic_friction=1.25
+        ),
+        morph=gs.morphs.ParameterizedRod(
+            type="rod",
+            n_vertices=60,
+            interval=0.01,
+            axis="x",
+            pos=(0.42, 0.5, 0.46),
+            euler=(0.0, 0.0, 0.0),
+        ),
+        surface=gs.surfaces.Default(
+            color=(0.4, 0.4, 1.0),
+            vis_mode='recon',
+        ),
+    )
+
+    ########################## build ##########################
+    scene.build(n_envs=2)
+
+
+def test_v5(scene):
+    E = 1e5
+    G = 1e5
+    v1 = scene.add_entity(
+        material=gs.materials.ROD.Base(
+            segment_radius=0.0075,
+            E=E,
+            G=G,
+        ),
+        morph=gs.morphs.ParameterizedRod(
+            type="rod",
+            n_vertices=40,
+            interval=0.01,
+            axis="x",
+            pos=(0.3, 0.5, 0.5),
+            euler=(0.0, 0.0, 0.0),
+        ),
+        surface=gs.surfaces.Default(
+            color=(0.4, 1.0, 0.4),
+            vis_mode='recon',
+        ),
+    )
+
+    v2 = scene.add_entity(
+        material=gs.materials.ROD.Base(
+            segment_radius=0.0075,
+            E=E,
+            G=G
+        ),
+        morph=gs.morphs.ParameterizedRod(
+            type="rod",
+            n_vertices=20,
+            interval=0.01,
+            axis="x",
+            pos=(0.3, 0.44, 0.5),
+            euler=(0.0, 0.0, 0.0),
+        ),
+        surface=gs.surfaces.Default(
+            color=(1.0, 0.4, 0.4),
+            vis_mode='recon',
+        ),
+    )
+
+    v3 = scene.add_entity(
+        material=gs.materials.ROD.Base(
+            segment_radius=0.0075,
+            E=E,
+            G=G,
+        ),
+        morph=gs.morphs.ParameterizedRod(
+            type="rod",
+            n_vertices=60,
+            interval=0.01,
+            axis="x",
+            pos=(0.3, 0.56, 0.5),
+            euler=(0.0, 0.0, 0.0),
+        ),
+        surface=gs.surfaces.Default(
+            color=(0.4, 0.4, 1.0),
+            vis_mode='recon',
+        ),
+    )
+
+    ########################## build ##########################
+    scene.build(n_envs=2)
 
 
 def main():
@@ -255,7 +434,6 @@ def main():
             substeps=20,
         ),
         rod_options=gs.options.RodOptions(
-            damping=10,
             floor_height=0.0,
             floor_normal=(0., 0., 1.),
             adjacent_gap=2,
@@ -265,10 +443,15 @@ def main():
     )
 
     if args.save_path is not None:
-        cam = scene.add_camera(
+        cams = list()
+        cams.append(scene.add_camera(
             res=(600, 450), pos=(2.6, 1.8, 1.6), up=(0, 0, 1),
             lookat=(0.9, 0.1, 0), fov=args.fov, GUI = False
-        )
+        ))
+        cams.append(scene.add_camera(
+            res=(600, 450), pos=(1.2, 2.4, 1.6), up=(0, 0, 1),
+            lookat=(0.5, 0.5, 0), fov=args.fov, GUI = False
+        ))
     else:
         cam = None
 
@@ -290,19 +473,39 @@ def main():
     #     ),
     # )
 
+    # cube = scene.add_entity(
+    #     material=frictionless_rigid,
+    #     morph=gs.morphs.Box(
+    #         pos=(0.5, 0.5, 0.2),
+    #         size=(0.2, 0.2, 0.2),
+    #         euler=(0, 45, 0),
+    #         fixed=True,
+    #     ),
+    # )
+
+    # sphere = scene.add_entity(
+    #     material=frictionless_rigid,
+    #     morph=gs.morphs.Sphere(
+    #         radius=0.15,
+    #         pos=(0.5, 0.5, 0.25),
+    #     )
+    # )
+
     # test_v1(scene)
     # test_v2(scene)
     # test_v3(scene)
+    # test_v4(scene)
+    # test_v5(scene)
 
-    frames = list()
+    frames = defaultdict(list)
     for i in range(args.steps):
         scene.step()
-        if cam is not None:
+        for cid, cam in enumerate(cams):
             img = cam.render()[0]
-            frames.append(img)
+            frames[cid].append(img)
 
-    if cam is not None:
-        mediapy.write_video(args.save_path, frames, fps=18, qp=18)
+    for cid in frames:
+        mediapy.write_video(args.save_path.replace(".mp4", f"_c{cid}.mp4"), frames[cid], fps=10, qp=18)
 
 
 if __name__ == "__main__":
