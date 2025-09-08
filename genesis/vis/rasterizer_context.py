@@ -699,10 +699,12 @@ class RasterizerContext:
                 if rod_entity.surface.vis_mode == "recon":
                     first_vert_idx = self.sim.rod_solver.rods_info[rod_idx].first_vert_idx
                     n_verts = self.sim.rod_solver.rods_info[rod_idx].n_verts
+                    is_loop = self.sim.rod_solver.rods_info[rod_idx].is_loop
                     mesh = ru.mesh_from_centerline(
                         verts = verts_all[first_vert_idx : first_vert_idx + n_verts],
                         radii = radii_all[first_vert_idx : first_vert_idx + n_verts],
-                        endcaps=True
+                        endcaps=True,
+                        is_loop=is_loop,
                     )
                     mesh.visual = mu.surface_uvs_to_trimesh_visual(rod_entity.surface, n_verts=len(mesh.vertices))
                     self.add_dynamic_node(rod_entity, pyrender.Mesh.from_trimesh(mesh, smooth=False))

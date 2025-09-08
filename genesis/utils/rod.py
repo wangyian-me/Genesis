@@ -7,10 +7,13 @@ def mesh_from_centerline(
     radii: np.ndarray,
     radial_segs=16,
     cap_segs=8,
-    endcaps=True
+    endcaps=True,
+    is_loop=False
 ) -> trimesh.Trimesh:
     """
     Build a tube mesh with rounded ends around a polyline (rod centerline).
+    This implementation uses Parallel Transport Frames to create a smooth,
+    twist-free mesh.
 
     Parameters
     ----------
@@ -23,7 +26,9 @@ def mesh_from_centerline(
     cap_segs : int
         Number of segments for the hemispherical end caps (from base to pole).
     endcaps : bool
-        If True, close the ends with hemispherical caps.
+        If True, close the ends with hemispherical caps. Ignored if is_loop is True.
+    is_loop : bool
+        If True, connect the ends to form a closed loop (toroid-like).
 
     Returns
     -------
@@ -34,45 +39,66 @@ def mesh_from_centerline(
     N = len(verts)
     if N < 2:
         raise ValueError("Need at least 2 vertices for a rod")
+    if is_loop and N < 3:
+        raise ValueError("Need at least 3 vertices for a loop")
     if verts.shape[0] != radii.shape[0]:
         raise ValueError("verts and radii must have the same length")
 
-    # Helper to create a stable orthonormal basis from a tangent vector
-    def orthonormal_basis(tangent):
-        tangent = tangent / np.linalg.norm(tangent)
-        # Pick a helper vector not parallel to tangent
-        helper = np.array([0, 0, 1]) if abs(tangent[2]) < 0.9 else np.array([0, 1, 0])
-        normal = np.cross(tangent, helper)
-        normal /= np.linalg.norm(normal)
-        binormal = np.cross(tangent, normal)
-        return tangent, normal, binormal
-
     V_list = []
     F_list = []
-    
-    # Store the indices of vertices for each ring along the tube
     ring_indices_list = []
-    first_ring_basis = None
-    last_ring_basis = None
+    basis_list = [] # Store the (normal, binormal) basis for each ring
+
+    # --- Frame Propagation using Double Reflection ---
+    # This method creates a smooth, continuous orientation along the tube.
+    prev_tangent = None
+    prev_normal = None
 
     for i in range(N):
-        # Calculate tangent to determine the orientation of the ring
-        if i == 0:
-            tangent = verts[1] - verts[0]
-        elif i == N - 1:
-            tangent = verts[-1] - verts[-2]
+        # Calculate tangent for the current vertex
+        if is_loop:
+            # For loops, use wrapped indexing for a smooth tangent at the seam
+            prev_idx = (i - 1 + N) % N
+            next_idx = (i + 1) % N
+            tangent = verts[next_idx] - verts[prev_idx]
         else:
-            # Use the average of adjacent segments for a smoother transition at joints
-            tangent = (verts[i+1] - verts[i-1])
+            # Existing logic for open rods
+            if i == 0:
+                tangent = verts[1] - verts[0]
+            elif i == N - 1:
+                tangent = verts[-1] - verts[-2]
+            else:
+                tangent = verts[i + 1] - verts[i - 1]
         
-        _, normal, binormal = orthonormal_basis(tangent)
-        
-        if i == 0:
-            first_ring_basis = (normal, binormal)
-        if i == N - 1:
-            last_ring_basis = (normal, binormal)
+        tangent_norm = tangent / np.linalg.norm(tangent)
 
-        # Generate the ring of vertices
+        # Calculate the local coordinate system (basis) for the ring
+        if i == 0:
+            # For the first vertex, create an arbitrary initial basis
+            # Pick a helper vector not parallel to tangent
+            helper = np.array([0, 0, 1]) if abs(tangent_norm[2]) < 0.9 else np.array([0, 1, 0])
+            normal = np.cross(tangent_norm, helper)
+            normal /= np.linalg.norm(normal)
+        else:
+            # For subsequent vertices, transport the previous frame to the current one
+            # This minimizes twisting artifacts.
+            v = prev_tangent + tangent_norm
+            v_dot_v = np.dot(v, v)
+            if v_dot_v > 1e-8: # Avoid division by zero if tangents are opposite
+                reflection_vec = 2 * np.dot(prev_normal, v) / v_dot_v
+                normal = prev_normal - v * reflection_vec
+            else:
+                # Tangents are nearly opposite (a 180-degree bend)
+                # Rotate the previous normal by 180 degrees around the previous tangent
+                normal = -prev_normal
+            
+        binormal = np.cross(tangent_norm, normal)
+        basis_list.append((normal, binormal))
+        
+        prev_tangent = tangent_norm
+        prev_normal = normal
+
+        # Generate the ring of vertices using the calculated basis
         current_ring_indices = []
         for j in range(radial_segs):
             theta = 2 * np.pi * j / radial_segs
@@ -84,7 +110,7 @@ def mesh_from_centerline(
     # Connect the rings to form the tube walls
     for i in range(N - 1):
         ring0 = ring_indices_list[i]
-        ring1 = ring_indices_list[i+1]
+        ring1 = ring_indices_list[i + 1]
         for j in range(radial_segs):
             a = ring0[j]
             b = ring0[(j + 1) % radial_segs]
@@ -93,91 +119,87 @@ def mesh_from_centerline(
             F_list.append([a, b, c])
             F_list.append([d, c, b])
 
-    if endcaps and cap_segs > 0:
+    # If it's a loop, connect the last ring back to the first
+    if is_loop:
+        ring0 = ring_indices_list[N - 1]
+        ring1 = ring_indices_list[0]
+        for j in range(radial_segs):
+            a = ring0[j]
+            b = ring0[(j + 1) % radial_segs]
+            c = ring1[j]
+            d = ring1[(j + 1) % radial_segs]
+            F_list.append([a, b, c])
+            F_list.append([d, c, b])
+
+    if not is_loop and endcaps and cap_segs > 0:
         # START CAP
         start_center = verts[0]
         start_radius = radii[0]
-        tangent_start = (verts[0] - verts[1]) # Outward-pointing tangent
-        tangent_start_norm, _, _ = orthonormal_basis(tangent_start)
-        normal_start, binormal_start = first_ring_basis # Use stored basis
+        tangent_start_norm = (verts[0] - verts[1]) / np.linalg.norm(verts[0] - verts[1])
+        normal_start, binormal_start = basis_list[0]
         
         prev_ring_indices = ring_indices_list[0]
-        
-        # Add latitude rings for the cap, moving towards the pole
         for k in range(1, cap_segs + 1):
             alpha = k * (np.pi / 2) / cap_segs
             ring_radius = start_radius * np.cos(alpha)
             displacement = start_radius * np.sin(alpha)
             ring_center = start_center + displacement * tangent_start_norm
             
+            is_pole = k == cap_segs
             current_ring_indices = []
-            if k < cap_segs: # Not the pole yet
+            if not is_pole:
                 for j in range(radial_segs):
                     theta = 2 * np.pi * j / radial_segs
                     offset = np.cos(theta) * normal_start + np.sin(theta) * binormal_start
                     V_list.append(ring_center + ring_radius * offset)
                     current_ring_indices.append(len(V_list) - 1)
-            else: # Add the pole vertex
+            else:
                 V_list.append(ring_center)
                 pole_index = len(V_list) - 1
                 current_ring_indices = [pole_index] * radial_segs
 
-
-            # Connect new ring to previous one (note reversed winding for start cap)
             for j in range(radial_segs):
                 a = prev_ring_indices[j]
                 b = prev_ring_indices[(j + 1) % radial_segs]
                 c = current_ring_indices[j]
                 d = current_ring_indices[(j + 1) % radial_segs]
-                if k < cap_segs:
-                    F_list.append([a, c, b])
-                    F_list.append([d, b, c])
-                else: # Connect to pole
-                    F_list.append([b, c, a])
-            
+                if not is_pole: F_list.append([a, c, b]); F_list.append([d, b, c])
+                else: F_list.append([b, c, a]) # Reversed winding for start cap pole
             prev_ring_indices = current_ring_indices
 
         # END CAP
         end_center = verts[-1]
         end_radius = radii[-1]
-        tangent_end = (verts[-1] - verts[-2]) # Outward-pointing tangent
-        tangent_end_norm, _, _ = orthonormal_basis(tangent_end)
-        normal_end, binormal_end = last_ring_basis # Use stored basis
+        tangent_end_norm = (verts[-1] - verts[-2]) / np.linalg.norm(verts[-1] - verts[-2])
+        normal_end, binormal_end = basis_list[-1]
 
         prev_ring_indices = ring_indices_list[-1]
-        
-        # Add latitude rings
         for k in range(1, cap_segs + 1):
             alpha = k * (np.pi / 2) / cap_segs
             ring_radius = end_radius * np.cos(alpha)
             displacement = end_radius * np.sin(alpha)
             ring_center = end_center + displacement * tangent_end_norm
             
+            is_pole = k == cap_segs
             current_ring_indices = []
-            if k < cap_segs: # Not the pole yet
+            if not is_pole:
                 for j in range(radial_segs):
                     theta = 2 * np.pi * j / radial_segs
                     offset = np.cos(theta) * normal_end + np.sin(theta) * binormal_end
                     V_list.append(ring_center + ring_radius * offset)
                     current_ring_indices.append(len(V_list) - 1)
-            else: # Add the pole vertex
+            else:
                 V_list.append(ring_center)
                 pole_index = len(V_list) - 1
                 current_ring_indices = [pole_index] * radial_segs
 
-            # Connect new ring to previous one (standard winding order)
             for j in range(radial_segs):
                 a = prev_ring_indices[j]
                 b = prev_ring_indices[(j + 1) % radial_segs]
                 c = current_ring_indices[j]
                 d = current_ring_indices[(j + 1) % radial_segs]
-
-                if k < cap_segs:
-                    F_list.append([a, b, c])
-                    F_list.append([d, c, b])
-                else: # Connect to pole
-                    F_list.append([a, b, c])
-
+                if not is_pole: F_list.append([a, b, c]); F_list.append([d, c, b])
+                else: F_list.append([a, b, c])
             prev_ring_indices = current_ring_indices
 
     V = np.array(V_list)
