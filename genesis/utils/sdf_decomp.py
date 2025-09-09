@@ -127,7 +127,7 @@ def sdf_func_proxy_sdf(sdf_info: array_class.SDFInfo, pos_sdf, geom_idx):
     Use distance to center as a proxy sdf, strictly greater than any point inside the cube to ensure value comparison is valid. Only considers region outside of cube.
     """
     center = (sdf_info.geoms_info.sdf_res[geom_idx] - 1) / 2.0
-    sd = (pos_sdf - center).norm() / sdf_info.geoms_info.sdf_cell_size[geom_idx]
+    sd = (pos_sdf - center).norm() * sdf_info.geoms_info.sdf_cell_size[geom_idx]
     return sd + sdf_info.geoms_info.sdf_max[geom_idx]
 
 
@@ -187,8 +187,8 @@ def sdf_func_grad_world(
         pos_mesh = gu.ti_inv_transform_by_trans_quat(pos_world, g_pos, g_quat)
         pos_sdf = gu.ti_transform_by_T(pos_mesh, sdf_info.geoms_info.T_mesh_to_sdf[geom_idx])
         grad_sdf = sdf_func_grad(geoms_info, collider_static_config, sdf_info, pos_sdf, geom_idx)
-
-        grad_mesh = grad_sdf  # no rotation between mesh and sdf frame
+        
+        grad_mesh = grad_sdf / sdf_info.geoms_info.sdf_cell_size[geom_idx]
         grad_world = gu.ti_transform_by_quat(grad_mesh, g_quat)
     return grad_world
 
@@ -220,7 +220,9 @@ def sdf_func_proxy_grad(sdf_info: array_class.SDFInfo, pos_sdf, geom_idx):
     Only considers region outside of cube.
     """
     center = (sdf_info.geoms_info.sdf_res[geom_idx] - 1) / 2.0
-    proxy_sdf_grad = gu.ti_normalize(pos_sdf - center)
+    proxy_sdf_grad = (
+        gu.ti_normalize(pos_sdf - center) * sdf_info.geoms_info.sdf_cell_size[geom_idx]
+    )
     return proxy_sdf_grad
 
 

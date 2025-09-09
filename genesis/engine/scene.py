@@ -1398,5 +1398,5 @@ class Scene(RBC):
 
     @property
     def rod_solver(self):
-        """The scene's `pbd_solver`, managing all the `PBDEntity` in the scene."""
+        """The scene's `rod_solver`, managing all the `RodEntity` in the scene."""
         return self._sim.rod_solver
