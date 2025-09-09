@@ -148,6 +148,35 @@ class LegacyCoupler(RBC):
         return vel
 
     @ti.func
+    def _func_collide_with_rigid_geom_rod(self, f, i, pos_world, vel, mass, radius, geom_idx, batch_idx):
+        signed_dist = sdf_decomp.sdf_func_world(
+            geoms_state=self.rigid_solver.geoms_state,
+            geoms_info=self.rigid_solver.geoms_info,
+            sdf_info=self.rigid_solver.sdf._sdf_info,
+            pos_world=pos_world,
+            geom_idx=geom_idx,
+            batch_idx=batch_idx,
+        )
+        signed_dist -= radius
+
+        # bigger coup_softness implies that the coupling influence extends further away from the object.
+        influence = ti.min(ti.exp(-signed_dist / max(1e-10, self.rigid_solver.geoms_info.coup_softness[geom_idx])), 1)
+
+        if influence > 0.1:
+            normal_rigid = sdf_decomp.sdf_func_normal_world(
+                geoms_state=self.rigid_solver.geoms_state,
+                geoms_info=self.rigid_solver.geoms_info,
+                collider_static_config=self.rigid_solver.collider._collider_static_config,
+                sdf_info=self.rigid_solver.sdf._sdf_info,
+                pos_world=pos_world,
+                geom_idx=geom_idx,
+                batch_idx=batch_idx,
+            )
+            vel = self._func_collide_in_rigid_geom_rod(f, i, pos_world, vel, mass, normal_rigid, influence, geom_idx, batch_idx)
+
+        return vel
+
+    @ti.func
     def _func_collide_with_rigid_geom_robust(self, pos_world, vel, mass, normal_prev, geom_idx, batch_idx):
         """
         Similar to _func_collide_with_rigid_geom, but additionally handles potential side flip due to penetration.
@@ -233,6 +262,72 @@ class LegacyCoupler(RBC):
             # Compute delta momentum and apply to rigid body.
             delta_mv = mass * (vel - vel_old)
             force = -delta_mv / self.rigid_solver.substep_dt
+            self.rigid_solver._func_apply_external_force(
+                pos_world,
+                force,
+                self.rigid_solver.geoms_info.link_idx[geom_idx],
+                batch_idx,
+                self.rigid_solver.links_state,
+            )
+
+        return vel
+
+    @ti.func
+    def _func_collide_in_rigid_geom_rod(self, f, i, pos_world, vel, mass, normal_rigid, influence, geom_idx, batch_idx):
+        """
+        Resolves collision when a particle is already in collision with a rigid object.
+        This function assumes known normal_rigid and influence.
+        """
+        vel_rigid = self.rigid_solver._func_vel_at_point(
+            pos_world=pos_world,
+            link_idx=self.rigid_solver.geoms_info.link_idx[geom_idx],
+            i_b=batch_idx,
+            links_state=self.rigid_solver.links_state,
+        )
+
+        # v w.r.t rigid
+        rvel = vel - vel_rigid
+        rvel_normal_magnitude = rvel.dot(normal_rigid)  # negative if inward
+
+        if rvel_normal_magnitude < 0:  # colliding
+            #################### rigid -> particle ####################
+            # tangential component
+            rvel_tan = rvel - rvel_normal_magnitude * normal_rigid
+            # make the vertex kinematic during rod-rigid contact
+            if self.rod_solver._func_is_geom_idx_registered(geom_idx):
+                self.rod_solver.vertices_ng[f, i, batch_idx].is_kinematic = True
+
+            rvel_tan = rvel_tan * (1 - influence * self.rigid_solver.geoms_info.coup_friction[geom_idx])
+            # rvel_tan_norm = rvel_tan.norm(gs.EPS)
+            # rvel_tan = (
+            #     rvel_tan
+            #     / rvel_tan_norm
+            #     * ti.max(
+            #         0, rvel_tan_norm + rvel_normal_magnitude * self.rigid_solver.geoms_info.coup_friction[geom_idx]
+            #     )
+            # )
+
+            # normal component after collision
+            rvel_normal = (
+                -normal_rigid * rvel_normal_magnitude * self.rigid_solver.geoms_info.coup_restitution[geom_idx]
+            )
+
+            # normal + tangential component
+            rvel_new = rvel_tan + rvel_normal
+
+            # apply influence
+            vel_old = vel
+            vel = vel_rigid + rvel_new * influence + rvel * (1 - influence)
+
+            #################### particle -> rigid ####################
+            # Compute delta momentum and apply to rigid body.
+            delta_mv = mass * (vel - vel_old)
+            force = -delta_mv / self.rigid_solver.substep_dt
+
+            # if self.rod_solver._func_is_geom_idx_registered(geom_idx):
+            #     print(
+            #         f"bi: {geom_idx} | f: {force}, rvel: {rvel}, norm mag: {rvel_normal_magnitude}, rigid_normal: {normal_rigid}, in: {influence}"
+            #     )
             self.rigid_solver._func_apply_external_force(
                 pos_world,
                 force,
@@ -564,7 +659,8 @@ class LegacyCoupler(RBC):
                             i_v,
                             self.rod_solver.vertices[f, i_v, i_b].vert,
                             self.rod_solver.vertices[f, i_v, i_b].vel,
-                            self.rod_solver._func_get_inverse_mass(i_v),
+                            self.rod_solver._func_get_inverse_mass(f, i_v, i_b),
+                            # self.rod_solver.vertices_info[i_v].mass,
                             i_g,
                             i_b,
                         )
@@ -574,14 +670,26 @@ class LegacyCoupler(RBC):
     def rod_vertex_force(self, f: ti.i32):
         for i_v, i_b in ti.ndrange(self.rod_solver._n_vertices, self.rod_solver._B):
             if not self.rod_solver.vertices_info[i_v].fixed:
-                vel_rod = self._func_collide_with_rigid(
-                    f,
-                    self.rod_solver.vertices[f, i_v, i_b].vert,
-                    self.rod_solver.vertices[f, i_v, i_b].vel,
-                    self.rod_solver.vertices_info[i_v].mass,
-                    i_b,
-                )
-                self.rod_solver.vertices[f, i_v, i_b].vel = vel_rod
+                for i_g in range(self.rigid_solver.n_geoms):
+                    if self.rigid_solver.geoms_info.needs_coup[i_g]:
+                        vel_rod = self._func_collide_with_rigid_geom_rod(
+                            f,
+                            i_v,
+                            self.rod_solver.vertices[f, i_v, i_b].vert,
+                            self.rod_solver.vertices[f, i_v, i_b].vel,
+                            self.rod_solver.vertices_info[i_v].mass,
+                            self.rod_solver.vertices_info[i_v].radius,
+                            i_g,
+                            i_b,
+                        )
+                        self.rod_solver.vertices[f, i_v, i_b].vel = vel_rod
+
+                # vel_rod_prime = self.rod_solver.boundary.impose_vel(
+                #     self.rod_solver.vertices[f, i_v, i_b].vert,
+                #     self.rod_solver.vertices[f, i_v, i_b].vel,
+                #     self.rod_solver.vertices_info[i_v].radius,
+                # )
+                # self.rod_solver.vertices[f, i_v, i_b].vel = vel_rod_prime
 
     @ti.kernel
     def sph_rigid(self, f: ti.i32):
@@ -664,23 +772,33 @@ class LegacyCoupler(RBC):
                 geom_info = self.rigid_solver.geoms_info
 
                 inv_mass_rod = inv_mass
-                inv_mass_rigid = self.rigid_solver._func_get_effective_inverse_mass(
-                    pos_world=pos_world,
-                    normal=normal_rigid,
-                    link_idx=geom_info.link_idx[geom_idx],
-                    batch_idx=batch_idx,
-                    links_info=self.rigid_solver.links_info,
-                    links_state=self.rigid_solver.links_state,
-                )
+                # inv_mass_rigid = self.rigid_solver._func_get_effective_inverse_mass(
+                #     pos_world=pos_world,
+                #     normal=normal_rigid,
+                #     link_idx=geom_info.link_idx[geom_idx],
+                #     batch_idx=batch_idx,
+                #     links_info=self.rigid_solver.links_info,
+                #     links_state=self.rigid_solver.links_state,
+                # )
+                inv_mass_rigid = 1.0 / self.rigid_solver.links_info.inertial_mass[geom_info.link_idx[geom_idx]]
 
                 total_inv_mass = inv_mass_rod + inv_mass_rigid
                 if total_inv_mass > gs.EPS:
+                    resting_vel_threshold = 0.1
+                    restitution_coeff = geom_info.coup_restitution[geom_idx]
+                    friction_coeff = geom_info.coup_friction[geom_idx]
+                    substep_dt = self.rigid_solver.substep_dt
                     penetration_depth = radius - signed_dist
-                    beta = 0.2 # stabilization parameter
-                    restitution = geom_info.coup_restitution[geom_idx]
 
+                    delta_v_normal = 0.0
                     # Baumgarte stabilization to prevent penetration
-                    delta_v_normal = -v_normal_mag * restitution + (beta / self.rigid_solver._substep_dt) * penetration_depth
+                    if -v_normal_mag > resting_vel_threshold:
+                        beta = 0.
+                        delta_v_normal = -v_normal_mag * (1.0 + restitution_coeff) + (beta / substep_dt) * penetration_depth
+                    else:
+                        beta = 0.
+                        delta_v_normal = -v_normal_mag + (beta / substep_dt) * penetration_depth
+
                     jn = delta_v_normal / total_inv_mass
                     # prevent "pulling" due to stabilization, only push
                     jn = ti.max(jn, 0.0)
@@ -691,7 +809,6 @@ class LegacyCoupler(RBC):
                     J_friction = ti.Vector([0.0, 0.0, 0.0])
 
                     if v_tangent_norm > gs.EPS:
-                        friction_coeff = (geom_info.coup_friction[geom_idx] + self.rod_solver.vertices_info[i].mu_k) * 0.5
                         # calculate impulse required to stop tangential motion
                         jt_required = v_tangent_norm / total_inv_mass
 
@@ -701,7 +818,7 @@ class LegacyCoupler(RBC):
                     J_total = J_collision + J_friction
                     new_vel += J_total * inv_mass_rod
 
-                    force = -J_total / self.rigid_solver._substep_dt
+                    force = -J_total / substep_dt
 
                     self.rigid_solver._func_apply_external_force(
                         pos_world,
@@ -800,8 +917,8 @@ class LegacyCoupler(RBC):
 
         # Rod <-> Rigid
         if self._rigid_rod and self.rigid_solver.is_active():
-            self.rod_rigid(f)
-            # self.rod_vertex_force(f)      # not used
+            # self.rod_rigid(f)             # not used
+            self.rod_vertex_force(f)
 
     def couple_grad(self, f):
         if self.mpm_solver.is_active():
