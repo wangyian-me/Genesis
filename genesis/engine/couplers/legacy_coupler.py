@@ -652,7 +652,7 @@ class LegacyCoupler(RBC):
     @ti.kernel
     def rod_rigid(self, f: ti.i32):
         for i_v, i_b in ti.ndrange(self.rod_solver._n_vertices, self.rod_solver._B):
-            if not self.rod_solver.vertices_info[i_v].fixed:
+            if not self.rod_solver.vertices_ng[f, i_v, i_b].fixed:
                 for i_g in range(self.rigid_solver.n_geoms):
                     if self.rigid_solver.geoms_info.needs_coup[i_g]:
                         new_vel = self._func_rod_collide_with_rigid_geom(
@@ -669,7 +669,7 @@ class LegacyCoupler(RBC):
     @ti.kernel
     def rod_vertex_force(self, f: ti.i32):
         for i_v, i_b in ti.ndrange(self.rod_solver._n_vertices, self.rod_solver._B):
-            if not self.rod_solver.vertices_info[i_v].fixed:
+            if not self.rod_solver.vertices_ng[f, i_v, i_b].fixed:
                 for i_g in range(self.rigid_solver.n_geoms):
                     if self.rigid_solver.geoms_info.needs_coup[i_g]:
                         vel_rod = self._func_collide_with_rigid_geom_rod(

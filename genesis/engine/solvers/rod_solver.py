@@ -204,7 +204,6 @@ class RodSolver(Solver):
             mu_k=gs.ti_float,
             restitution=gs.ti_float,  # coefficient of restitution for self-collision
             rod_idx=gs.ti_int,        # index of the rod this vertex belongs to
-            fixed=gs.ti_bool,         # is the vertex fixed
         )
 
         # vertex state (dynamic)
@@ -218,6 +217,7 @@ class RodSolver(Solver):
             f_s=gs.ti_vec3,             # stretching force
             f_b=gs.ti_vec3,             # bending force
             f_t=gs.ti_vec3,             # twisting force
+            fixed=gs.ti_bool,           # is the vertex fixed
             is_kinematic=gs.ti_bool,    # is the vertex kinematic
         )
 
@@ -475,14 +475,14 @@ class RodSolver(Solver):
     @ti.kernel
     def update_centerline_positions(self, f: ti.i32):
         for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
-            if not self.vertices_info[i_v].fixed:
+            if not self.vertices_ng[f, i_v, i_b].fixed:
                 self.vertices[f, i_v, i_b].vert += self.vertices[f, i_v, i_b].vel * self.substep_dt
 
     @ti.kernel
     def update_centerline_velocities(self, f: ti.i32):
         for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
             mass = self.vertices_info[i_v].mass
-            if not self.vertices_info[i_v].fixed:
+            if not self.vertices_ng[f, i_v, i_b].fixed:
                 gradient = ti.Vector([
                     self.gradients[3 * i_v + 0, i_b],
                     self.gradients[3 * i_v + 1, i_b],
@@ -516,7 +516,7 @@ class RodSolver(Solver):
     def update_frame_thetas(self, f: ti.i32):
         for i_e, i_b in ti.ndrange(self._n_edges, self._B):
             v_s, v_e = self.get_edge_vertices(i_e)
-            if not self.vertices_info[v_s].fixed or not self.vertices_info[v_e].fixed:
+            if not self.vertices_ng[f, v_s, i_b].fixed or not self.vertices_ng[f, v_e, i_b].fixed:
                 # self.edges[f, i_e, i_b].theta -= self.gradients[3 * self._n_vertices + i_e, i_b] * self.substep_dt
                 self.edges[f, i_e, i_b].theta += self.edges[f, i_e, i_b].omega * self.substep_dt
 
@@ -552,7 +552,7 @@ class RodSolver(Solver):
     @ti.kernel
     def update_velocities_after_projection(self, f: ti.i32):
         for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
-            if not self.vertices_info[i_v].fixed:
+            if not self.vertices_ng[f, i_v, i_b].fixed:
                 self.vertices[f, i_v, i_b].vel = (self.vertices[f, i_v, i_b].vert - self.vertices[f, i_v, i_b].vert_prev) / self.substep_dt
 
     @ti.kernel
@@ -1047,10 +1047,10 @@ class RodSolver(Solver):
             self.vertices[f, i_global, i_b].vel = ti.Vector.zero(gs.ti_float, 3)
 
             # state (dynamic w/o grad)
-            self.vertices_info[i_global].fixed = False
             self.vertices_ng[f, i_global, i_b].f_s = ti.Vector.zero(gs.ti_float, 3)
             self.vertices_ng[f, i_global, i_b].f_b = ti.Vector.zero(gs.ti_float, 3)
             self.vertices_ng[f, i_global, i_b].f_t = ti.Vector.zero(gs.ti_float, 3)
+            self.vertices_ng[f, i_global, i_b].fixed = False
             self.vertices_ng[f, i_global, i_b].is_kinematic = False
 
         is_loop = self.rods_info[rod_idx].is_loop
@@ -1149,13 +1149,14 @@ class RodSolver(Solver):
     @ti.kernel
     def _kernel_set_fixed_states(
         self,
+        f: ti.i32,
         v_start: ti.i32,
         n_vertices: ti.i32,
         fixed: ti.types.ndarray(),  # shape [n_vertices]
     ):
-        for i_v in range(n_vertices):
+        for i_v, i_b in ti.ndrange(n_vertices, self._B):
             i_global = i_v + v_start
-            self.vertices_info[i_global].fixed = fixed[i_v]
+            self.vertices_ng[f, i_global, i_b].fixed = fixed[i_v]
 
     @ti.kernel
     def _kernel_get_state(
@@ -1169,7 +1170,7 @@ class RodSolver(Solver):
             for j in ti.static(range(3)):
                 pos[i_b, i_v, j] = self.vertices[f, i_v, i_b].vert[j]
                 vel[i_b, i_v, j] = self.vertices[f, i_v, i_b].vel[j]
-            fixed[i_b, i_v] = self.vertices_info[i_v].fixed
+            fixed[i_b, i_v] = self.vertices_ng[f, i_v, i_b].fixed
 
     @ti.kernel
     def get_state_render_kernel(self, f: ti.i32):
@@ -1187,7 +1188,7 @@ class RodSolver(Solver):
             for j in ti.static(range(3)):
                 self.vertices[f, i_v, i_b].vert[j] = pos[i_b, i_v, j]
                 self.vertices[f, i_v, i_b].vel[j] = vel[i_b, i_v, j]
-            self.vertices_info[i_v].fixed = fixed[i_b, i_v]
+            self.vertices_ng[f, i_v, i_b].fixed = fixed[i_b, i_v]
 
     # ------------------------------------------------------------------------------------
     # --------------------------------- index utilities -----------------------------------
@@ -1317,7 +1318,7 @@ class RodSolver(Solver):
         mass = self.vertices_info[i_v].mass
         inv_mass = 0.0
         if (
-            self.vertices_info[i_v].fixed or 
+            self.vertices_ng[f, i_v, i_b].fixed or 
             self.vertices_ng[f, i_v, i_b].is_kinematic or 
             mass <= 0.
         ):

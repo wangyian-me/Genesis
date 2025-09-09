@@ -465,6 +465,26 @@ class RodEntity(Entity):
             n_vertices=self.n_vertices,
             vel_grad=vel_grad,
         )
+    
+    def set_fixed(self, f, fixed):
+        """
+        Set the fixed status of each vertex in the solver.
+
+        Parameters
+        ----------
+        f : int
+            Current substep/frame index.
+
+        fixed : gs.Tensor
+            Tensor of shape (n_vertices,) containing boolean fixed status for each vertex.
+        """
+
+        self._solver._kernel_set_fixed_states(
+            f=f,
+            v_start=self._v_start,
+            n_vertices=self.n_vertices,
+            fixed=fixed,
+        )
 
     @gs.assert_built
     def set_init_vertices(self, verts_np, edges_np):
@@ -481,15 +501,15 @@ class RodEntity(Entity):
     @gs.assert_built
     def set_fixed_states(self, fixed_states=None, fixed_ids=None):
         """
-        Set the fixed status of each vertex.
+        Set the fixed status of each vertex. This method is used to fixed vertices along the whole simulation
+        before it starts.
 
         Parameters
         ----------
-        f : int
-            Current substep/frame index.
-
-        fixed_states : gs.Tensor
-            Tensor of shape (n_envs, n_vertices).
+        fixed_states: list or np.ndarray
+            List or array of booleans indicating fixed status for each vertex. Shape should be (n_vertices,).
+        fixed_ids: list
+            List of vertex indices to be fixed.
         """
 
         if fixed_ids is None and fixed_states is None:
@@ -504,11 +524,14 @@ class RodEntity(Entity):
         else:
             raise ValueError("`fixed_ids` and `fixed_states` cannot be provided at the same time.")
 
-        self._solver._kernel_set_fixed_states(
-            v_start=self._v_start,
-            n_vertices=self.n_vertices,
-            fixed=is_fixed,
-        )
+        for f in range(self.sim.substeps_local + 1):
+            # set fixed states for all substeps
+            self._solver._kernel_set_fixed_states(
+                f=f,
+                v_start=self._v_start,
+                n_vertices=self.n_vertices,
+                fixed=is_fixed,
+            )
 
     @ti.kernel
     def _kernel_get_verts_pos(self, f: ti.i32, pos: ti.types.ndarray(), verts_idx: ti.types.ndarray()):
