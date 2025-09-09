@@ -27,6 +27,8 @@ class Base(Material):
         Plastic yield threshold. Default is 10.0 (should be no plasticity).
     plastic_creep: float, optional
         Plastic creep rate. Default is 1.0.
+    restitution: float, optional
+        Coefficient of restitution for self-collision. Default is 0.0 (perfectly inelastic).
     static_friction: float, optional
         Static friction coefficient. Default is 0.3.
     kinetic_friction: float, optional
@@ -48,6 +50,7 @@ class Base(Material):
         plastic_creep=1.0,
         static_friction=0.3,
         kinetic_friction=0.25,
+        restitution=0.0,
         use_inextensible=True,
         segment_mass=0.02,
         segment_radius=0.01,
@@ -61,6 +64,7 @@ class Base(Material):
         self._plastic_creep = plastic_creep
         self._static_friction = static_friction
         self._kinetic_friction = kinetic_friction
+        self._restitution = restitution
         self._use_inextensible = use_inextensible
         self._segment_mass = segment_mass
         self._segment_radius = segment_radius
@@ -102,6 +106,10 @@ class Base(Material):
     @property
     def kinetic_friction(self):
         return self._kinetic_friction
+
+    @property
+    def restitution(self):
+        return self._restitution
 
     @property
     def use_inextensible(self):

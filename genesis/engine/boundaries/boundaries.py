@@ -71,3 +71,25 @@ class FloorBoundary:
 
     def __repr__(self):
         return f"{brief(self)}\n" f"height      : {brief(self.height)}\n" f"restitution : {brief(self.restitution)}"
+
+
+@ti.data_oriented
+class FloorBoundaryForRods:
+    def __init__(self, height, normal_axis=2, restitution=0.0):
+        self.height = height
+        self.axis = normal_axis
+        self.restitution = restitution
+
+    @ti.func
+    def impose_vel(self, pos, vel, radius):
+        if pos[self.axis] <= self.height + radius and vel[self.axis] <= 0:
+            vel[self.axis] *= -self.restitution
+        return vel
+
+    @ti.func
+    def impose_pos(self, pos, radius):
+        pos[self.axis] = ti.max(pos[self.axis], self.height + radius)
+        return pos
+
+    def __repr__(self):
+        return f"{brief(self)}\n" f"height      : {brief(self.height)}\n" f"axis        : {brief(self.axis)}\n" f"restitution : {brief(self.restitution)}"

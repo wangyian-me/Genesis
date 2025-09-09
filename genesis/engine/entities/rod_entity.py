@@ -1,6 +1,5 @@
 import numpy as np
 import gstaichi as ti
-import torch
 
 import genesis as gs
 import genesis.utils.geom as gu
@@ -323,6 +322,7 @@ class RodEntity(Entity):
             segment_radius=self.material.segment_radius,
             static_friction=self.material.static_friction,
             kinetic_friction=self.material.kinetic_friction,
+            restitution=self.material.restitution,
             verts_rest=verts_np,
             edges_rest=edges_np,
         )

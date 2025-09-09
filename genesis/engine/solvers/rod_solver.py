@@ -4,10 +4,10 @@ import numpy as np
 from math import pi
 import gstaichi as ti
 import gstaichi.math as tm
-import torch
+from typing import Iterable
 
 import genesis as gs
-from genesis.engine.boundaries import FloorBoundary
+from genesis.engine.boundaries import FloorBoundaryForRods as FloorBoundary
 from genesis.engine.entities.rod_entity import RodEntity
 from genesis.engine.states.solvers import RODSolverState
 from genesis.utils.misc import ti_field_to_torch
@@ -127,6 +127,7 @@ class RodSolver(Solver):
         self._floor_height = options.floor_height
         self._adjacent_gap = options.adjacent_gap
         self._damping = options.damping
+        self._angular_damping = options.angular_damping
         self._n_pbd_iters = options.n_pbd_iters
 
         # boundary
@@ -145,7 +146,7 @@ class RodSolver(Solver):
             return (B,) + shape if first_dim else shape + (B,)
         else:
             return (B, shape) if first_dim else (shape, B)
-    
+
     def setup_boundary(self):
         self.boundary = FloorBoundary(height=self._floor_height)
 
@@ -198,11 +199,12 @@ class RodSolver(Solver):
         struct_vertex_info = ti.types.struct(
             mass=gs.ti_float,
             radius=gs.ti_float,
-            vert_rest=gs.ti_vec3,
+            # vert_rest=gs.ti_vec3,
             mu_s=gs.ti_float,
             mu_k=gs.ti_float,
-            rod_idx=gs.ti_int,      # index of the rod this vertex belongs to
-            fixed=gs.ti_bool,       # is the vertex fixed
+            restitution=gs.ti_float,  # coefficient of restitution for self-collision
+            rod_idx=gs.ti_int,        # index of the rod this vertex belongs to
+            fixed=gs.ti_bool,         # is the vertex fixed
         )
 
         # vertex state (dynamic)
@@ -213,9 +215,10 @@ class RodSolver(Solver):
         )
 
         struct_vertex_state_ng = ti.types.struct(
-            f_s=gs.ti_vec3,         # stretching force
-            f_b=gs.ti_vec3,         # bending force
-            f_t=gs.ti_vec3,         # twisting force
+            f_s=gs.ti_vec3,             # stretching force
+            f_b=gs.ti_vec3,             # bending force
+            f_t=gs.ti_vec3,             # twisting force
+            is_kinematic=gs.ti_bool,    # is the vertex kinematic
         )
 
         self.vertices_info = struct_vertex_info.field(
@@ -250,6 +253,7 @@ class RodSolver(Solver):
             edge=gs.ti_vec3,        # current edge vector
             length=gs.ti_float,     # current edge length
             theta=gs.ti_float,      # twist angle
+            omega=gs.ti_float,      # twist rate (angular velocity)
             d1=gs.ti_vec3,          # material frame direction 1
             d2=gs.ti_vec3,          # material frame direction 2
             d3=gs.ti_vec3,          # material frame direction 3 (tangent)
@@ -335,7 +339,7 @@ class RodSolver(Solver):
                             continue # Skip if adjacent on the chain.
 
                 valid_edge_pairs.append((i, j))
-        
+
         valid_edge_pairs = np.array(valid_edge_pairs, dtype=gs.np_int)
         self._n_valid_edge_pairs = valid_edge_pairs.shape[0]
 
@@ -363,13 +367,38 @@ class RodSolver(Solver):
 
         self._constraints_initialized = True
 
+    def register_gripper_geom_indices(self, geom_indices: Iterable[int]=()):
+        """
+        Register the geometry indices of the gripper for collision handling.
+        Needs to be called before building the scene.
+        """
+        geom_indices = np.asarray(geom_indices, dtype=gs.np_int)
+        field_shape = max(geom_indices.shape[0], 1)
+        self.geom_indices = ti.field(
+            dtype=gs.ti_int, needs_grad=False, shape=field_shape
+        )
+        if geom_indices.shape[0] > 0:
+            self.geom_indices.from_numpy(geom_indices)
+        else:
+            self.geom_indices[0] = -1
+        self._n_geom_indices = geom_indices.shape[0]
+        gs.logger.info(f"Registered {geom_indices.shape[0]} gripper geometries for rod collision handling.")
+        gs.logger.info(f"Geom indices: {geom_indices}")
+
+    @ti.func
+    def _func_is_geom_idx_registered(self, i_g: ti.i32):
+        registered = False
+        ti.loop_config(serialize=True)
+        for i in range(self._n_geom_indices):
+            if self.geom_indices[i] == i_g:
+                registered = True
+                break
+        return registered
+
     def init_ckpt(self):
         self._ckpt = dict()
 
     def reset_grad(self):
-        self.elements_v.grad.fill(0)
-        self.elements_el.grad.fill(0)
-
         for entity in self._entities:
             entity.reset_grad()
 
@@ -463,8 +492,18 @@ class RodSolver(Solver):
 
                 # apply damping if enabled
                 self.vertices[f, i_v, i_b].vel *= ti.exp(-self.substep_dt * self.damping)
+                # self.vertices[f, i_v, i_b].vel *= (1.0 - self.damping)
                 # add gravity (avoiding damping on gravity)
                 self.vertices[f, i_v, i_b].vel += self.substep_dt * self._gravity[i_b]
+
+    @ti.kernel
+    def update_angular_velocities(self, f: ti.i32):
+        for i_e, i_b in ti.ndrange(self._n_edges, self._B):
+            theta_dof_idx = 3 * self._n_vertices + i_e
+            gradient = self.gradients[theta_dof_idx, i_b]
+            inertia = 1.0  # assume rotational inertia is 1 for simplicity
+            self.edges[f, i_e, i_b].omega -= gradient / inertia * self.substep_dt
+            self.edges[f, i_e, i_b].omega *= ti.exp(-self.substep_dt * self.angular_damping)
 
     @ti.kernel
     def update_centerline_edges(self, f: ti.i32):
@@ -478,7 +517,8 @@ class RodSolver(Solver):
         for i_e, i_b in ti.ndrange(self._n_edges, self._B):
             v_s, v_e = self.get_edge_vertices(i_e)
             if not self.vertices_info[v_s].fixed or not self.vertices_info[v_e].fixed:
-                self.edges[f, i_e, i_b].theta -= self.gradients[3 * self._n_vertices + i_e, i_b] * self.substep_dt
+                # self.edges[f, i_e, i_b].theta -= self.gradients[3 * self._n_vertices + i_e, i_b] * self.substep_dt
+                self.edges[f, i_e, i_b].theta += self.edges[f, i_e, i_b].omega * self.substep_dt
 
     @ti.kernel
     def update_material_states(self, f: ti.i32):
@@ -596,7 +636,7 @@ class RodSolver(Solver):
 
             yield_amount = elastic_kappa_norm - yield_thres
             if yield_amount > 0.:
-                delta_rest_kappa = creep_rate * (yield_amount / elastic_kappa_norm) * elastic_kappa
+                delta_rest_kappa = self.substep_dt * creep_rate * (yield_amount / elastic_kappa_norm) * elastic_kappa
                 self.internal_vertices_ng[f, i_iv, i_b].kappa_rest += delta_rest_kappa
 
             kappa1_rest_i = self.internal_vertices_ng[f, i_iv, i_b].kappa_rest[0]
@@ -738,10 +778,19 @@ class RodSolver(Solver):
             self.record_previous_tangents(f)
             self.compute_energy_and_gradients(f)
             self.update_centerline_velocities(f)
-            self.update_frame_thetas(f)
-            self.update_centerline_positions(f)
+            self.update_angular_velocities(f)
+            self._kernel_clear_kinematic_states(f)
 
-            self.clear_contact_states()
+    def substep_pre_coupling_grad(self, f):
+        if self.is_active():
+            pass
+
+    def substep_post_coupling(self, f):
+        if self.is_active():
+            self.update_centerline_positions(f)
+            self.update_frame_thetas(f)
+
+            self._kernel_clear_contact_states()
             for i in range(self._n_pbd_iters):
                 self._kernel_apply_inextensibility_constraints(f)
                 self._kernel_apply_rod_collision_constraints(f, i)
@@ -750,12 +799,6 @@ class RodSolver(Solver):
             self.update_velocities_after_projection(f)
             self._kernel_apply_rod_friction(f)
 
-    def substep_pre_coupling_grad(self, f):
-        if self.is_active():
-            pass
-
-    def substep_post_coupling(self, f):
-        if self.is_active():
             if f % 20 == 0:
                 vert = self.vertices.vert.to_numpy()[f, :, 0]
                 nan_mask = np.isnan(vert)
@@ -899,6 +942,7 @@ class RodSolver(Solver):
         segment_radius: ti.f64,      # NOTE: we can use array
         static_friction: ti.f64,     # NOTE: we can use array
         kinetic_friction: ti.f64,    # NOTE: we can use array
+        restitution: ti.f64,         # NOTE: we can use array
         verts_rest: ti.types.ndarray(dtype=tm.vec3, ndim=1),
         edges_rest: ti.types.ndarray(dtype=tm.vec3, ndim=1),
     ):
@@ -911,9 +955,10 @@ class RodSolver(Solver):
             self.vertices_info[i_global].radius = segment_radius
             self.vertices_info[i_global].mu_s = static_friction
             self.vertices_info[i_global].mu_k = kinetic_friction
+            self.vertices_info[i_global].restitution = restitution
             self.vertices_info[i_global].rod_idx = rod_idx
-            # finalize rest vertices
-            self.vertices_info[i_global].vert_rest[i_v] = verts_rest[i_v]
+            # finalize rest vertices    # not used
+            # self.vertices_info[i_global].vert_rest = verts_rest[i_v]
 
         is_loop = self.rods_info[rod_idx].is_loop
         n_edges_local = n_verts_local if is_loop else n_verts_local - 1
@@ -1006,6 +1051,7 @@ class RodSolver(Solver):
             self.vertices_ng[f, i_global, i_b].f_s = ti.Vector.zero(gs.ti_float, 3)
             self.vertices_ng[f, i_global, i_b].f_b = ti.Vector.zero(gs.ti_float, 3)
             self.vertices_ng[f, i_global, i_b].f_t = ti.Vector.zero(gs.ti_float, 3)
+            self.vertices_ng[f, i_global, i_b].is_kinematic = False
 
         is_loop = self.rods_info[rod_idx].is_loop
         n_edges_local = n_verts_local if is_loop else n_verts_local - 1
@@ -1034,6 +1080,7 @@ class RodSolver(Solver):
             self.edges[f, i_global, i_b].d2_ref = self.edges[f, i_global, i_b].d2
 
             self.edges[f, i_global, i_b].theta = 0.0  # assume no initial twist
+            self.edges[f, i_global, i_b].omega = 0.0  # assume no initial twist rate
 
         n_internal_verts_local = n_verts_local - (0 if is_loop else 2)
         for i_iv, i_b in ti.ndrange(n_internal_verts_local, self._B):
@@ -1211,7 +1258,7 @@ class RodSolver(Solver):
     @ti.func
     def get_next_vertex_of_edge(self, i_v: ti.i32):
         rod_id = self.vertices_info[i_v].rod_idx
-        
+
         ip1_v = -1
         if self.rods_info[rod_id].is_loop:
             first_vert_idx = self.rods_info[rod_id].first_vert_idx
@@ -1238,6 +1285,10 @@ class RodSolver(Solver):
         return self._damping
 
     @property
+    def angular_damping(self):
+        return self._angular_damping
+
+    @property
     def n_dofs(self):
         return sum([entity.n_dofs for entity in self._entities])
     
@@ -1262,21 +1313,31 @@ class RodSolver(Solver):
     # ------------------------------------------------------------------------------------
 
     @ti.func
-    def _func_get_inverse_mass(self, i_v: ti.i32):
+    def _func_get_inverse_mass(self, f: ti.i32, i_v: ti.i32, i_b: ti.i32):
         mass = self.vertices_info[i_v].mass
         inv_mass = 0.0
-        if self.vertices_info[i_v].fixed or mass <= 0.:
+        if (
+            self.vertices_info[i_v].fixed or 
+            self.vertices_ng[f, i_v, i_b].is_kinematic or 
+            mass <= 0.
+        ):
             inv_mass = 0.0
         else:
             inv_mass = 1.0 / mass
         return inv_mass
 
     @ti.kernel
-    def clear_contact_states(self):
+    def _kernel_clear_contact_states(self):
         for i_p, i_b in ti.ndrange(self._n_valid_edge_pairs, self._B):
             for j in ti.static(range(3)):
                 self.rr_constraints[i_p, i_b].normal[j] = 0.0
             self.rr_constraints[i_p, i_b].penetration = 0.0
+
+    @ti.kernel
+    def _kernel_clear_kinematic_states(self, f: ti.i32):
+        # TODO: do we need to clear kinematic states?
+        for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
+            self.vertices_ng[f, i_v, i_b].is_kinematic = False
 
     @ti.kernel
     def _kernel_apply_inextensibility_constraints(self, f: ti.i32):
@@ -1288,8 +1349,8 @@ class RodSolver(Solver):
             if not self.rods_info[rod_id].use_inextensible:
                 continue
 
-            inv_mass_s = self._func_get_inverse_mass(v_s)
-            inv_mass_e = self._func_get_inverse_mass(v_e)
+            inv_mass_s = self._func_get_inverse_mass(f, v_s, i_b)
+            inv_mass_e = self._func_get_inverse_mass(f, v_e, i_b)
             inv_mass_sum = inv_mass_s + inv_mass_e
 
             if inv_mass_sum > EPS:
@@ -1360,10 +1421,10 @@ class RodSolver(Solver):
 
                 w = ti.Vector([1.0 - t, t, 1.0 - u, u])
                 im = ti.Vector([
-                    self._func_get_inverse_mass(idx_a1),
-                    self._func_get_inverse_mass(idx_a2),
-                    self._func_get_inverse_mass(idx_b1),
-                    self._func_get_inverse_mass(idx_b2),
+                    self._func_get_inverse_mass(f, idx_a1, i_b),
+                    self._func_get_inverse_mass(f, idx_a2, i_b),
+                    self._func_get_inverse_mass(f, idx_b1, i_b),
+                    self._func_get_inverse_mass(f, idx_b2, i_b),
                 ])
 
                 w_sum_sq_inv_mass = tm.dot(w * w, im)
@@ -1374,7 +1435,7 @@ class RodSolver(Solver):
                     self.vertices[f, idx_a2, i_b].vert += lambda_ * im[1] * w[1] * normal
                     self.vertices[f, idx_b1, i_b].vert -= lambda_ * im[2] * w[2] * normal
                     self.vertices[f, idx_b2, i_b].vert -= lambda_ * im[3] * w[3] * normal
-                
+
                 if iter_idx == 0:
                     self.rr_constraints[i_p, i_b].normal = normal
                     self.rr_constraints[i_p, i_b].penetration = penetration
@@ -1430,10 +1491,10 @@ class RodSolver(Solver):
 
                 w = ti.Vector([1.0 - t, t, 1.0 - u, u])
                 im = ti.Vector([
-                    self._func_get_inverse_mass(idx_a1),
-                    self._func_get_inverse_mass(idx_a2),
-                    self._func_get_inverse_mass(idx_b1),
-                    self._func_get_inverse_mass(idx_b2),
+                    self._func_get_inverse_mass(f, idx_a1, i_b),
+                    self._func_get_inverse_mass(f, idx_a2, i_b),
+                    self._func_get_inverse_mass(f, idx_b1, i_b),
+                    self._func_get_inverse_mass(f, idx_b2, i_b),
                 ])
 
                 w_sum_sq_inv_mass = tm.dot(w * w, im)
@@ -1454,3 +1515,104 @@ class RodSolver(Solver):
                     self.vertices[f, idx_a2, i_b].vel += lambda_ * im[1] * w[1]
                     self.vertices[f, idx_b1, i_b].vel -= lambda_ * im[2] * w[2]
                     self.vertices[f, idx_b2, i_b].vel -= lambda_ * im[3] * w[3]
+
+    @ti.kernel
+    def _kernel_self_collision(self, f: ti.i32):    # not used
+        """
+        Use impulse based method to resolve self-collision.
+        """
+
+        for i_p, i_b in ti.ndrange(self._n_valid_edge_pairs, self._B):
+            idx_a1 = self.rr_constraint_info[i_p].valid_pair[0]
+            idx_a2 = self.get_next_vertex_of_edge(idx_a1)
+            idx_b1 = self.rr_constraint_info[i_p].valid_pair[1]
+            idx_b2 = self.get_next_vertex_of_edge(idx_b1)
+
+            p_a1, p_a2 = self.vertices[f, idx_a1, i_b].vert, self.vertices[f, idx_a2, i_b].vert
+            p_b1, p_b2 = self.vertices[f, idx_b1, i_b].vert, self.vertices[f, idx_b2, i_b].vert
+
+            radius_a = (self.vertices_info[idx_a1].radius + self.vertices_info[idx_a2].radius) * 0.5
+            radius_b = (self.vertices_info[idx_b1].radius + self.vertices_info[idx_b2].radius) * 0.5
+
+            # compute closest points (t, u) and distance
+            e1, e2 = p_a2 - p_a1, p_b2 - p_b1
+            e12 = p_b1 - p_a1
+            d1, d2 = e1.dot(e1), e2.dot(e2)
+            r = e1.dot(e2)
+            s1, s2 = e1.dot(e12), e2.dot(e12)
+            den = d1 * d2 - r * r
+
+            t = 0.0
+            if den > EPS:
+                t = (s1 * d2 - s2 * r) / den
+            t = tm.clamp(t, 0.0, 1.0)
+
+            u_unclamped = 0.0
+            if d2 > EPS:
+                u_unclamped = (t * r - s2) / d2
+            u = tm.clamp(u_unclamped, 0.0, 1.0)
+
+            # re-compute t if u was clamped
+            if ti.abs(u - u_unclamped) > EPS:
+                if d1 > EPS:
+                    t = (u * r + s1) / d1
+                t = tm.clamp(t, 0.0, 1.0)
+
+            # check for penetration
+            closest_p_a = p_a1 + t * e1
+            closest_p_b = p_b1 + u * e2
+            dist_vec = closest_p_a - closest_p_b
+            dist = dist_vec.norm(gs.EPS)
+            penetration = radius_a + radius_b - dist
+
+            if penetration > 0.:
+                normal = dist_vec.normalized() if dist > EPS else ti.Vector([0.0, 0.0, 1.0])
+
+                v_a1 = self.vertices[f, idx_a1, i_b].vel
+                v_a2 = self.vertices[f, idx_a2, i_b].vel
+                v_b1 = self.vertices[f, idx_b1, i_b].vel
+                v_b2 = self.vertices[f, idx_b2, i_b].vel
+
+                inv_mass_a1 = self._func_get_inverse_mass(f, idx_a1, i_b)
+                inv_mass_a2 = self._func_get_inverse_mass(f, idx_a2, i_b)
+                inv_mass_b1 = self._func_get_inverse_mass(f, idx_b1, i_b)
+                inv_mass_b2 = self._func_get_inverse_mass(f, idx_b2, i_b)
+
+                v_a = (1 - t) * v_a1 + t * v_a2
+                v_b = (1 - u) * v_b1 + u * v_b2
+
+                v_rel = v_a - v_b
+                v_normal_mag = v_rel.dot(normal)
+
+                # only resolve if objects are moving towards each other
+                if v_normal_mag < 0.01:
+                    w_a = (1 - t)**2 * inv_mass_a1 + t**2 * inv_mass_a2
+                    w_b = (1 - u)**2 * inv_mass_b1 + u**2 * inv_mass_b2
+                    total_inv_mass = w_a + w_b
+
+                    if total_inv_mass > gs.EPS:
+                        restitution = (self.vertices_info[idx_a1].restitution + self.vertices_info[idx_b1].restitution) * 0.5
+                        friction_coeff = (self.vertices_info[idx_a1].mu_k + self.vertices_info[idx_b1].mu_k) * 0.5
+
+                        # calculate collision impulse (normal component) ---
+                        delta_v_normal = -v_normal_mag * (1.0 + restitution)
+                        jn = delta_v_normal / total_inv_mass
+                        J_collision = jn * normal
+
+                        # calculate friction impulse (tangential component)
+                        v_tangent = v_rel - v_normal_mag * normal
+                        v_tangent_norm = v_tangent.norm(gs.EPS)
+                        J_friction = ti.Vector([0.0, 0.0, 0.0])
+
+                        if v_tangent_norm > gs.EPS:
+                            jt_required = v_tangent_norm / total_inv_mass
+                            jt_friction = ti.min(jt_required, friction_coeff * jn)
+                            J_friction = -v_tangent.normalized() * jt_friction
+
+                        # combine impulses and distribute to the 4 vertices ---
+                        J_total = J_collision + J_friction
+
+                        ti.atomic_add(self.vertices[f, idx_a1, i_b].vel, J_total * inv_mass_a1 * (1 - t))
+                        ti.atomic_add(self.vertices[f, idx_a2, i_b].vel, J_total * inv_mass_a2 * t)
+                        ti.atomic_add(self.vertices[f, idx_b1, i_b].vel, -J_total * inv_mass_b1 * (1 - u))
+                        ti.atomic_add(self.vertices[f, idx_b2, i_b].vel, -J_total * inv_mass_b2 * u)
