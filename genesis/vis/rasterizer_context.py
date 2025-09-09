@@ -705,6 +705,7 @@ class RasterizerContext:
                         radii = radii_all[first_vert_idx : first_vert_idx + n_verts],
                         endcaps=True,
                         is_loop=is_loop,
+                        smooth_joints=True,
                     )
                     mesh.visual = mu.surface_uvs_to_trimesh_visual(rod_entity.surface, n_verts=len(mesh.vertices))
                     self.add_dynamic_node(rod_entity, pyrender.Mesh.from_trimesh(mesh, smooth=False))
