@@ -34,6 +34,7 @@ def control_robot(
 
 def control_robot_abs(
     args, robot, ef, g_dof1, g_dof2,
+    g_dof_use_force=False,
     motors_dof=np.arange(7), fingers_dof=np.arange(7, 9),
     x=0, y=0, z=0, quat=np.array([0, 1, 0, 0])
 ):
@@ -45,9 +46,14 @@ def control_robot_abs(
         quat=target_quat if args.n_envs == 0 else np.array([target_quat] * args.n_envs),
     )
     robot.control_dofs_position(qpos[..., :-2], motors_dof)
-    robot.control_dofs_position(
-        np.array([g_dof1, g_dof2]) if args.n_envs == 0 else np.array([g_dof1, g_dof2] * args.n_envs), fingers_dof
-    )  # you can use position control
+    if g_dof_use_force:
+        robot.control_dofs_force(
+            np.array([g_dof1, g_dof2]) if args.n_envs == 0 else np.array([g_dof1, g_dof2] * args.n_envs), fingers_dof
+        )  # you can use force control
+    else:
+        robot.control_dofs_position(
+            np.array([g_dof1, g_dof2]) if args.n_envs == 0 else np.array([g_dof1, g_dof2] * args.n_envs), fingers_dof
+        )  # you can use position control
 
 def main():
     parser = argparse.ArgumentParser()
@@ -105,18 +111,18 @@ def main():
         material=gs.materials.ROD.Base(
             segment_radius=segment_radius,
             segment_mass=0.001,
-            # K=1e6,
+            K=1e6,
             E=1e4,
             G=0,
             plastic_yield=np.inf,
-            # use_inextensible=False,
+            use_inextensible=False,
         ),
         morph=gs.morphs.ParameterizedRod(
             type="rod",
-            n_vertices=60,
-            interval=0.01,
+            n_vertices=45,
+            interval=0.02,
             axis="x",
-            pos=(0.3, 0.0, 0.02),
+            pos=(0.0, 0.0, 0.2),
             euler=(0, 0, 0),
         ),
         surface=gs.surfaces.Default(
@@ -125,15 +131,62 @@ def main():
         )
     )
 
-    friction_rigid = gs.materials.Rigid(
-        needs_coup=True, coup_friction=0.7
+    b1 = scene.add_entity(
+        material=gs.materials.Rigid(
+            needs_coup=False
+        ),
+        morph=gs.morphs.Cylinder(
+            radius=0.01,
+            height=0.3,
+            pos=(0, 0, 0.15),
+            euler=(0, 0, 0),
+            fixed=True,
+        ),
+        surface=gs.surfaces.Default(
+            color=(0.4, 0.4, 0.4)
+        )
     )
+
+    b2 = scene.add_entity(
+        material=gs.materials.Rigid(
+            needs_coup=False
+        ),
+        morph=gs.morphs.Cylinder(
+            radius=0.01,
+            height=0.3,
+            pos=(0.9, 0, 0.15),
+            euler=(0, 0, 0),
+            fixed=True,
+        ),
+        surface=gs.surfaces.Default(
+            color=(0.4, 0.4, 0.4)
+        )
+    )
+
+
+    friction_rigid = gs.materials.Rigid(
+        needs_coup=True, coup_friction=1.0
+    )
+
+    table = scene.add_entity(
+        material=gs.materials.Rigid(
+            needs_coup=True, coup_friction=0.01,
+        ),
+        morph=gs.morphs.Box(
+            pos=(0.45, 0.4, 0.09),
+            size=(0.8, 0.75, 0.18),
+            euler=(0, 0, 0),
+            fixed=True,
+        ),
+    )
+
+    fks = list()
 
     franka1 = scene.add_entity(
         material=friction_rigid,
         morph=gs.morphs.URDF(
             file='urdf/panda_bullet/panda.urdf',
-            pos=(0.45, -0.6, 0),
+            pos=(0.2, -0.6, 0),
             # euler=(0., 0., -90.),
             fixed=True,
             collision=True,
@@ -142,51 +195,58 @@ def main():
         surface=gs.surfaces.Smooth(),
         # vis_mode='collision',
     )
+    fks.append(franka1)
 
-    franka2 = scene.add_entity(
-        material=friction_rigid,
-        morph=gs.morphs.URDF(
-            file='urdf/panda_bullet/panda.urdf',
-            pos=(0.8, 0.6, 0),
-            # euler=(0., 0., -90.),
-            fixed=True,
-            collision=True,
-            links_to_keep=['panda_grasptarget'],
-        ),
-        surface=gs.surfaces.Smooth(),
-        # vis_mode='collision',
-    )
+    # franka2 = scene.add_entity(
+    #     material=friction_rigid,
+    #     morph=gs.morphs.URDF(
+    #         file='urdf/panda_bullet/panda.urdf',
+    #         pos=(0.8, 0.6, 0),
+    #         # euler=(0., 0., -90.),
+    #         fixed=True,
+    #         collision=True,
+    #         links_to_keep=['panda_grasptarget'],
+    #     ),
+    #     surface=gs.surfaces.Smooth(),
+    #     # vis_mode='collision',
+    # )
+    # fks.append(franka2)
+
 
     gripper_geom_indices = list()
     lf = franka1.get_link("panda_leftfinger")
     for gi in lf._geoms:
         gripper_geom_indices.append(gi.idx)
-    lf = franka2.get_link("panda_leftfinger")
-    for gi in lf._geoms:
-        gripper_geom_indices.append(gi.idx)
+    # lf = franka2.get_link("panda_leftfinger")
+    # for gi in lf._geoms:
+    #     gripper_geom_indices.append(gi.idx)
     rf = franka1.get_link("panda_rightfinger")
     for gi in rf._geoms:
         gripper_geom_indices.append(gi.idx)
-    rf = franka2.get_link("panda_rightfinger")
-    for gi in rf._geoms:
-        gripper_geom_indices.append(gi.idx)
+    # rf = franka2.get_link("panda_rightfinger")
+    # for gi in rf._geoms:
+    #     gripper_geom_indices.append(gi.idx)
 
     scene.rod_solver.register_gripper_geom_indices(gripper_geom_indices)
 
     ########################## build ##########################
     scene.build(n_envs=args.n_envs, env_spacing=(1, 1))
 
+    r1.set_fixed_states(
+        fixed_ids=[0, 1, 43, 44]
+    )
+
     motors_dof = np.arange(7)
     fingers_dof = np.arange(7, 9)
 
     # Optional: set control gains
-    for f in [franka1, franka2]:
+    for f in fks:
         if args.n_envs == 0:
             f.set_qpos(np.array([1.56, -0.72, -0.02, -2.09, 0.04, 1.33, 2.4, 0.01, 0.01]))
         else:
             f.set_qpos(np.array([[1.56, -0.72, -0.02, -2.09, 0.04, 1.33, 2.4, 0.01, 0.01]] * args.n_envs))
         f.set_dofs_kp(
-            np.array([4500, 4500, 3500, 3500, 2000, 2000, 2000, 80, 80]),
+            np.array([4500, 4500, 3500, 3500, 2000, 2000, 2000, 30, 30]),
         )
         f.set_dofs_kv(
             np.array([450, 450, 350, 350, 200, 200, 200, 20, 20]),
@@ -198,4 +258,54 @@ def main():
 
     # end_effector = franka.get_link("hand")
     ef1 = franka1.get_link("panda_grasptarget")
-    ef2 = franka2.get_link("panda_grasptarget")
+    # ef2 = franka2.get_link("panda_grasptarget")
+
+    x1 = 0.45
+    z = 0.2
+    y = -0.1
+    z_delta = 0.3
+    force = -5
+
+    # move to pre-grasp pose
+    qpos1 = franka1.inverse_kinematics(
+        link=ef1,
+        pos=np.array([x1, y, z]) if args.n_envs == 0 else np.array([[x1, y, z]] * args.n_envs),
+        quat=np.array([0, 1, 0, 0]) if args.n_envs == 0 else np.array([[0, 1, 0, 0]] * args.n_envs),
+    )
+    qpos1[..., -2:] = 0.02
+
+    franka1.set_dofs_position(
+        qpos1
+    )
+
+    frames = defaultdict(list)
+
+    do = np.array([90, 0, 0])
+    quat = gu.xyz_to_quat(
+        do, rpy=True, degrees=True
+    )
+    tq = gu.transform_quat_by_quat(
+        quat, ef1.get_quat().cpu().numpy().reshape(-1)
+    )
+    control_robot_abs(args, franka1, ef1, force, force, g_dof_use_force=True, x=x1, y=y, z=z, quat=tq)
+    for i in range(200):
+        scene.step()
+        for cid, cam in enumerate(cameras):
+            img = cam.render()[0]
+            frames[cid].append(img)
+    gs.logger.info("grasped")
+
+    # # lift
+    # control_robot_abs(args, franka1, ef1, force, force, g_dof_use_force=True, x=x1, y=0.0, z=z+z_delta)
+    # for i in range(80):
+    #     scene.step()
+    #     for cid, cam in enumerate(cameras):
+    #         img = cam.render()[0]
+    #         frames[cid].append(img)
+    # gs.logger.info("lifted")
+
+    for cid in frames:
+        mediapy.write_video(args.path.replace(".mp4", f"_c{cid}.mp4"), frames[cid], fps=30, qp=18)
+
+if __name__ == "__main__":
+    main()
