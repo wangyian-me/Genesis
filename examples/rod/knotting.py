@@ -90,12 +90,12 @@ def main():
     cameras = list()
     if args.path is not None:
         cameras.append(scene.add_camera(
-            res=(600, 450), pos=(2, -1, 1.5), up=(0, 0, 1),
-            lookat=(0.45, 0.2, 0.18), fov=24, GUI=False
+            res=(600, 450), pos=(2, -2, 1.5), up=(0, 0, 1),
+            lookat=(0., 0., 0.06), fov=24, GUI=False
         ))
         cameras.append(scene.add_camera(
-            res=(600, 450), pos=(-1.5, -1, 1.4), up=(0, 0, 1),
-            lookat=(0.45, 0.25, 0.18), fov=24, GUI=False
+            res=(600, 450), pos=(-1.5, -2, 1.4), up=(0, 0, 1),
+            lookat=(0., 0., 0.06), fov=24, GUI=False
         ))
 
     ########################## entities ##########################
@@ -118,10 +118,10 @@ def main():
         ),
         morph=gs.morphs.ParameterizedRod(
             type="rod",
-            n_vertices=45,
+            n_vertices=70,
             interval=0.02,
-            axis="y",
-            pos=(0.3, -0.45, 0.02),
+            axis="x",
+            pos=(-0.7, 0.15, 0.02),
             euler=(0, 0, 0),
         ),
         surface=gs.surfaces.Default(
@@ -135,7 +135,7 @@ def main():
             needs_coup=False
         ),
         morph=gs.morphs.Cylinder(
-            radius=0.1,
+            radius=0.06,
             height=0.3,
             pos=(0, 0, 0.15),
             euler=(0, 0, 0),
@@ -156,7 +156,7 @@ def main():
         material=friction_rigid,
         morph=gs.morphs.URDF(
             file='urdf/panda_bullet/panda.urdf',
-            pos=(0.5, -0.65, 0),
+            pos=(-0.75, -0.6, 0),
             # euler=(0., 0., -90.),
             fixed=True,
             collision=True,
@@ -171,7 +171,7 @@ def main():
         material=friction_rigid,
         morph=gs.morphs.URDF(
             file='urdf/panda_bullet/panda.urdf',
-            pos=(0.2, -0.65, 0),
+            pos=(0.75, -0.6, 0),
             # euler=(0., 0., -90.),
             fixed=True,
             collision=True,
@@ -224,9 +224,9 @@ def main():
     ef1 = franka1.get_link("panda_grasptarget")
     ef2 = franka2.get_link("panda_grasptarget")
 
-    x = 0.3
-    y1 = -0.42
-    y2 = 0.42
+    x1 = -0.62
+    x2 = 0.62
+    y = 0.15
     z = 0.013
 
     open_gap = 0.1
@@ -236,7 +236,7 @@ def main():
     # move to pre-grasp pose
     qpos1 = franka1.inverse_kinematics(
         link=ef1,
-        pos=np.array([x, y1, z]) if args.n_envs == 0 else np.array([[x, y1, z]] * args.n_envs),
+        pos=np.array([x1, y, z]) if args.n_envs == 0 else np.array([[x1, y, z]] * args.n_envs),
         quat=np.array([0, 1, 0, 0]) if args.n_envs == 0 else np.array([[0, 1, 0, 0]] * args.n_envs),
     )
     qpos1[..., -2:] = 0.03
@@ -247,7 +247,7 @@ def main():
 
     qpos2 = franka2.inverse_kinematics(
         link=ef2,
-        pos=np.array([x, y2, z]) if args.n_envs == 0 else np.array([[x, y2, z]] * args.n_envs),
+        pos=np.array([x2, y, z]) if args.n_envs == 0 else np.array([[x2, y, z]] * args.n_envs),
         quat=np.array([0, 1, 0, 0]) if args.n_envs == 0 else np.array([[0, 1, 0, 0]] * args.n_envs),
     )
     qpos2[..., -2:] = 0.03
@@ -258,8 +258,8 @@ def main():
 
     frames = defaultdict(list)
 
-    control_robot_abs(args, franka1, ef1, 0, 0, g_dof_use_force=True, x=x, y=y1, z=z)
-    control_robot_abs(args, franka2, ef2, 0, 0, g_dof_use_force=True, x=x, y=y2, z=z)
+    control_robot_abs(args, franka1, ef1, 0, 0, g_dof_use_force=True, x=x1, y=y, z=z)
+    control_robot_abs(args, franka2, ef2, 0, 0, g_dof_use_force=True, x=x2, y=y, z=z)
     for i in range(80):
         scene.step()
         for cid, cam in enumerate(cameras):
