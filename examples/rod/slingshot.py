@@ -90,12 +90,12 @@ def main():
     cameras = list()
     if args.path is not None:
         cameras.append(scene.add_camera(
-            res=(600, 450), pos=(-1.8, 1.2, 1.4), up=(0, 0, 1),
-            lookat=(0.3, 0., 0), fov=24, GUI=False
+            res=(600, 450), pos=(2, -1, 1.5), up=(0, 0, 1),
+            lookat=(0.45, 0.2, 0.18), fov=24, GUI=False
         ))
         cameras.append(scene.add_camera(
-            res=(600, 450), pos=(-1, -0.8, 1.4), up=(0, 0, 1),
-            lookat=(0.2, 0., 0), fov=20, GUI=False
+            res=(600, 450), pos=(-1.5, -1, 1.4), up=(0, 0, 1),
+            lookat=(0.45, 0.25, 0.18), fov=24, GUI=False
         ))
 
     ########################## entities ##########################
@@ -112,7 +112,7 @@ def main():
             segment_radius=segment_radius,
             segment_mass=0.001,
             K=1e6,
-            E=1e4,
+            E=2e4,
             G=0,
             plastic_yield=np.inf,
             use_inextensible=False,
@@ -122,7 +122,7 @@ def main():
             n_vertices=45,
             interval=0.02,
             axis="x",
-            pos=(0.0, 0.0, 0.2),
+            pos=(0.0, 0.0, 0.21),
             euler=(0, 0, 0),
         ),
         surface=gs.surfaces.Default(
@@ -136,7 +136,7 @@ def main():
             needs_coup=False
         ),
         morph=gs.morphs.Cylinder(
-            radius=0.01,
+            radius=0.015,
             height=0.3,
             pos=(0, 0, 0.15),
             euler=(0, 0, 0),
@@ -152,7 +152,7 @@ def main():
             needs_coup=False
         ),
         morph=gs.morphs.Cylinder(
-            radius=0.01,
+            radius=0.015,
             height=0.3,
             pos=(0.9, 0, 0.15),
             euler=(0, 0, 0),
@@ -163,18 +163,41 @@ def main():
         )
     )
 
+    sphere = scene.add_entity(
+        material=gs.materials.Rigid(
+            needs_coup=True, coup_friction=0.02,
+        ),
+        morph=gs.morphs.Sphere(
+            radius=0.04,
+            pos=(0.45, 0.07, 0.2),
+            euler=(0, 0, 0),
+        ),
+        surface=gs.surfaces.Default(
+            color=(0.4, 0.4, 1.0)
+        )
+    )
 
-    friction_rigid = gs.materials.Rigid(
-        needs_coup=True, coup_friction=1.0
+    cube = scene.add_entity(
+        material=gs.materials.Rigid(
+            needs_coup=True, rho=10, coup_friction=0.02,
+        ),
+        morph=gs.morphs.Box(
+            pos=(0.45, 0.23, 0.2),
+            size=(0.08, 0.08, 0.08),
+            euler=(0, 0, 0),
+        ),
+        surface=gs.surfaces.Default(
+            color=(0.7, 0.7, 1.0)
+        )
     )
 
     table = scene.add_entity(
         material=gs.materials.Rigid(
-            needs_coup=True, coup_friction=0.01,
+            needs_coup=True, coup_friction=0.02,
         ),
         morph=gs.morphs.Box(
-            pos=(0.45, 0.4, 0.09),
-            size=(0.8, 0.75, 0.18),
+            pos=(0.45, 1.0, 0.08),
+            size=(0.8, 1.9, 0.16),
             euler=(0, 0, 0),
             fixed=True,
         ),
@@ -182,11 +205,15 @@ def main():
 
     fks = list()
 
+    friction_rigid = gs.materials.Rigid(
+        needs_coup=True, coup_friction=1.0
+    )
+
     franka1 = scene.add_entity(
         material=friction_rigid,
         morph=gs.morphs.URDF(
             file='urdf/panda_bullet/panda.urdf',
-            pos=(0.2, -0.6, 0),
+            pos=(0., -0.65, 0),
             # euler=(0., 0., -90.),
             fixed=True,
             collision=True,
@@ -197,35 +224,13 @@ def main():
     )
     fks.append(franka1)
 
-    # franka2 = scene.add_entity(
-    #     material=friction_rigid,
-    #     morph=gs.morphs.URDF(
-    #         file='urdf/panda_bullet/panda.urdf',
-    #         pos=(0.8, 0.6, 0),
-    #         # euler=(0., 0., -90.),
-    #         fixed=True,
-    #         collision=True,
-    #         links_to_keep=['panda_grasptarget'],
-    #     ),
-    #     surface=gs.surfaces.Smooth(),
-    #     # vis_mode='collision',
-    # )
-    # fks.append(franka2)
-
-
     gripper_geom_indices = list()
     lf = franka1.get_link("panda_leftfinger")
     for gi in lf._geoms:
         gripper_geom_indices.append(gi.idx)
-    # lf = franka2.get_link("panda_leftfinger")
-    # for gi in lf._geoms:
-    #     gripper_geom_indices.append(gi.idx)
     rf = franka1.get_link("panda_rightfinger")
     for gi in rf._geoms:
         gripper_geom_indices.append(gi.idx)
-    # rf = franka2.get_link("panda_rightfinger")
-    # for gi in rf._geoms:
-    #     gripper_geom_indices.append(gi.idx)
 
     scene.rod_solver.register_gripper_geom_indices(gripper_geom_indices)
 
@@ -256,15 +261,16 @@ def main():
             np.array([87, 87, 87, 87, 12, 12, 12, 30, 30]),
         )
 
-    # end_effector = franka.get_link("hand")
     ef1 = franka1.get_link("panda_grasptarget")
-    # ef2 = franka2.get_link("panda_grasptarget")
 
     x1 = 0.45
-    z = 0.2
+    z = 0.21
     y = -0.1
-    z_delta = 0.3
-    force = -5
+    y_delta = 0.105
+
+    open_gap = 0.1
+    force1 = -1
+    force2 = -2
 
     # move to pre-grasp pose
     qpos1 = franka1.inverse_kinematics(
@@ -272,7 +278,7 @@ def main():
         pos=np.array([x1, y, z]) if args.n_envs == 0 else np.array([[x1, y, z]] * args.n_envs),
         quat=np.array([0, 1, 0, 0]) if args.n_envs == 0 else np.array([[0, 1, 0, 0]] * args.n_envs),
     )
-    qpos1[..., -2:] = 0.02
+    qpos1[..., -2:] = 0.03
 
     franka1.set_dofs_position(
         qpos1
@@ -287,7 +293,7 @@ def main():
     tq = gu.transform_quat_by_quat(
         quat, ef1.get_quat().cpu().numpy().reshape(-1)
     )
-    control_robot_abs(args, franka1, ef1, force, force, g_dof_use_force=True, x=x1, y=y, z=z, quat=tq)
+    control_robot_abs(args, franka1, ef1, 0, 0, g_dof_use_force=True, x=x1, y=y, z=z, quat=tq)
     for i in range(200):
         scene.step()
         for cid, cam in enumerate(cameras):
@@ -295,14 +301,48 @@ def main():
             frames[cid].append(img)
     gs.logger.info("grasped")
 
-    # # lift
-    # control_robot_abs(args, franka1, ef1, force, force, g_dof_use_force=True, x=x1, y=0.0, z=z+z_delta)
-    # for i in range(80):
-    #     scene.step()
-    #     for cid, cam in enumerate(cameras):
-    #         img = cam.render()[0]
-    #         frames[cid].append(img)
-    # gs.logger.info("lifted")
+    control_robot_abs(args, franka1, ef1, 0, 0, g_dof_use_force=True, x=x1, y=y+y_delta, z=z, quat=tq)
+    for i in range(80):
+        scene.step()
+        for cid, cam in enumerate(cameras):
+            img = cam.render()[0]
+            frames[cid].append(img)
+    gs.logger.info("fetch")
+
+    control_robot_abs(args, franka1, ef1, force1, force1, g_dof_use_force=True, x=x1, y=y+y_delta, z=z, quat=tq)
+    for i in range(80):
+        scene.step()
+        for cid, cam in enumerate(cameras):
+            img = cam.render()[0]
+            frames[cid].append(img)
+    gs.logger.info("grasped")
+
+    # stretch slingshot
+    control_robot_abs(args, franka1, ef1, force1, force1, g_dof_use_force=True, x=x1, y=y+y_delta/2, z=z, quat=tq)
+    for i in range(80):
+        scene.step()
+        for cid, cam in enumerate(cameras):
+            img = cam.render()[0]
+            frames[cid].append(img)
+    gs.logger.info("stretched")
+
+    # stretch slingshot
+    control_robot_abs(args, franka1, ef1, force2, force2, g_dof_use_force=True, x=x1, y=y, z=z, quat=tq)
+    for i in range(80):
+        scene.step()
+        for cid, cam in enumerate(cameras):
+            img = cam.render()[0]
+            frames[cid].append(img)
+    gs.logger.info("stretched")
+
+    # release slingshot
+    control_robot_abs(args, franka1, ef1, open_gap, open_gap, x=x1, y=y+y/2, z=z, quat=tq)
+    for i in range(160):
+        scene.step()
+        for cid, cam in enumerate(cameras):
+            img = cam.render()[0]
+            frames[cid].append(img)
+    gs.logger.info("grasped")
 
     for cid in frames:
         mediapy.write_video(args.path.replace(".mp4", f"_c{cid}.mp4"), frames[cid], fps=30, qp=18)
