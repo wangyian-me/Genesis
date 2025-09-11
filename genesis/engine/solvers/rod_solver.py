@@ -556,6 +556,17 @@ class RodSolver(Solver):
                 self.vertices[f, i_v, i_b].vel = (self.vertices[f, i_v, i_b].vert - self.vertices[f, i_v, i_b].vert_prev) / self.substep_dt
 
     @ti.kernel
+    def init_pos_and_vel(self, f: ti.i32):
+        for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
+            self.vertices[f + 1, i_v, i_b].vert = self.vertices[f, i_v, i_b].vert
+            self.vertices[f + 1, i_v, i_b].vel = self.vertices[f, i_v, i_b].vel
+
+    @ti.kernel
+    def init_tangents(self, f: ti.i32):
+        for i_e, i_b in ti.ndrange(self._n_edges, self._B):
+            self.edges[f + 1, i_e, i_b].d3 = self.edges[f, i_e, i_b].d3
+
+    @ti.kernel
     def record_previous_positions(self, f: ti.i32):
         for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
             self.vertices[f, i_v, i_b].vert_prev = self.vertices[f, i_v, i_b].vert
@@ -633,11 +644,14 @@ class RodSolver(Solver):
 
             yield_thres = self.rods_info[rod_id].plastic_yield
             creep_rate = self.rods_info[rod_id].plastic_creep
+            print(f'{i_iv}, y: {yield_thres}, kn: {elastic_kappa_norm}')
 
             yield_amount = elastic_kappa_norm - yield_thres
             if yield_amount > 0.:
-                delta_rest_kappa = self.substep_dt * creep_rate * (yield_amount / elastic_kappa_norm) * elastic_kappa
+                # delta_rest_kappa = self.substep_dt * creep_rate * (yield_amount / elastic_kappa_norm) * elastic_kappa
+                delta_rest_kappa = creep_rate * (yield_amount / elastic_kappa_norm) * elastic_kappa
                 self.internal_vertices_ng[f, i_iv, i_b].kappa_rest += delta_rest_kappa
+                print(f"Rod {rod_id}, internal vertex {i_iv}, yield_amount: {yield_amount}")
 
             kappa1_rest_i = self.internal_vertices_ng[f, i_iv, i_b].kappa_rest[0]
             kappa2_rest_i = self.internal_vertices_ng[f, i_iv, i_b].kappa_rest[1]
@@ -784,6 +798,11 @@ class RodSolver(Solver):
     def substep_pre_coupling_grad(self, f):
         if self.is_active():
             pass
+
+    def substep_pre_coupling_v2(self, f):
+        if self.is_active():
+            self.init_pos_and_vel(f)
+            self.init_tangents(f)
 
     def substep_post_coupling(self, f):
         if self.is_active():
