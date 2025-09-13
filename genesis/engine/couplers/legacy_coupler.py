@@ -296,16 +296,16 @@ class LegacyCoupler(RBC):
             # make the vertex kinematic during rod-rigid contact
             if self.rod_solver._func_is_geom_idx_registered(geom_idx):
                 self.rod_solver.vertices_ng[f, i, batch_idx].is_kinematic = True
-
-            rvel_tan = rvel_tan * (1 - influence * self.rigid_solver.geoms_info.coup_friction[geom_idx])
-            # rvel_tan_norm = rvel_tan.norm(gs.EPS)
-            # rvel_tan = (
-            #     rvel_tan
-            #     / rvel_tan_norm
-            #     * ti.max(
-            #         0, rvel_tan_norm + rvel_normal_magnitude * self.rigid_solver.geoms_info.coup_friction[geom_idx]
-            #     )
-            # )
+                rvel_tan = rvel_tan * (1 - influence * self.rigid_solver.geoms_info.coup_friction[geom_idx])
+            else:
+                rvel_tan_norm = rvel_tan.norm(gs.EPS)
+                rvel_tan = (
+                    rvel_tan
+                    / rvel_tan_norm
+                    * ti.max(
+                        0, rvel_tan_norm + rvel_normal_magnitude * self.rigid_solver.geoms_info.coup_friction[geom_idx]
+                    )
+                )
 
             # normal component after collision
             rvel_normal = (
