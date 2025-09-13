@@ -586,7 +586,7 @@ class RodSolver(Solver):
             K = self.rods_info[rod_id].stretching_stiffness
             if K <= 0.:
                 continue
-            
+
             r = (self.vertices_info[v_s].radius + self.vertices_info[v_e].radius) * 0.5
             a, b = r, r
             A = pi * a * b  # cross-sectional area
@@ -644,14 +644,13 @@ class RodSolver(Solver):
 
             yield_thres = self.rods_info[rod_id].plastic_yield
             creep_rate = self.rods_info[rod_id].plastic_creep
-            print(f'{i_iv}, y: {yield_thres}, kn: {elastic_kappa_norm}')
 
             yield_amount = elastic_kappa_norm - yield_thres
             if yield_amount > 0.:
                 # delta_rest_kappa = self.substep_dt * creep_rate * (yield_amount / elastic_kappa_norm) * elastic_kappa
                 delta_rest_kappa = creep_rate * (yield_amount / elastic_kappa_norm) * elastic_kappa
                 self.internal_vertices_ng[f, i_iv, i_b].kappa_rest += delta_rest_kappa
-                print(f"Rod {rod_id}, internal vertex {i_iv}, yield_amount: {yield_amount}")
+                # print(f"Rod {rod_id}, iv {i_iv}, yield_amount: {yield_amount}")
 
             kappa1_rest_i = self.internal_vertices_ng[f, i_iv, i_b].kappa_rest[0]
             kappa2_rest_i = self.internal_vertices_ng[f, i_iv, i_b].kappa_rest[1]
@@ -981,6 +980,7 @@ class RodSolver(Solver):
 
         is_loop = self.rods_info[rod_idx].is_loop
         n_edges_local = n_verts_local if is_loop else n_verts_local - 1
+        ti.loop_config(serialize=True)
         for i_e in range(n_edges_local):
             i_global = i_e + e_start
             # v_s, v_e = self.get_edge_vertices(i_global)
@@ -1074,32 +1074,33 @@ class RodSolver(Solver):
 
         is_loop = self.rods_info[rod_idx].is_loop
         n_edges_local = n_verts_local if is_loop else n_verts_local - 1
-        for i_e, i_b in ti.ndrange(n_edges_local, self._B):
-            i_global = i_e + e_start
-            # v_s, v_e = self.get_edge_vertices(i_global)
+        for i_b in range(self._B):
+            for i_e in range(n_edges_local):
+                i_global = i_e + e_start
+                # v_s, v_e = self.get_edge_vertices(i_global)
 
-            # state (dynamic)
+                # state (dynamic)
 
-            # self.edges[f, i_global, i_b].edge = self.vertices[f, v_e, i_b].vert - self.vertices[f, v_s, i_b].vert
-            self.edges[f, i_global, i_b].edge = edges[i_e]
-            self.edges[f, i_global, i_b].length = tm.length(self.edges[f, i_global, i_b].edge)
-            self.edges[f, i_global, i_b].d3 = self.edges[f, i_global, i_b].edge.normalized()
+                # self.edges[f, i_global, i_b].edge = self.vertices[f, v_e, i_b].vert - self.vertices[f, v_s, i_b].vert
+                self.edges[f, i_global, i_b].edge = edges[i_e]
+                self.edges[f, i_global, i_b].length = tm.length(self.edges[f, i_global, i_b].edge)
+                self.edges[f, i_global, i_b].d3 = self.edges[f, i_global, i_b].edge.normalized()
 
-            if i_e == 0: # first edge
-                self.edges[f, i_global, i_b].d1 = get_perpendicular_vector(self.edges[f, i_global, i_b].d3)
-            else:
-                self.edges[f, i_global, i_b].d1 = parallel_transport_normalized(
-                    self.edges[f, i_global - 1, i_b].d3,
-                    self.edges[f, i_global, i_b].d3,
-                    self.edges[f, i_global - 1, i_b].d1,
-                )
-            self.edges[f, i_global, i_b].d1_ref = self.edges[f, i_global, i_b].d1
+                if i_e == 0: # first edge
+                    self.edges[f, i_global, i_b].d1 = get_perpendicular_vector(self.edges[f, i_global, i_b].d3)
+                else:
+                    self.edges[f, i_global, i_b].d1 = parallel_transport_normalized(
+                        self.edges[f, i_global - 1, i_b].d3,
+                        self.edges[f, i_global, i_b].d3,
+                        self.edges[f, i_global - 1, i_b].d1,
+                    )
+                self.edges[f, i_global, i_b].d1_ref = self.edges[f, i_global, i_b].d1
 
-            self.edges[f, i_global, i_b].d2 = tm.cross(self.edges[f, i_global, i_b].d3, self.edges[f, i_global, i_b].d1)
-            self.edges[f, i_global, i_b].d2_ref = self.edges[f, i_global, i_b].d2
+                self.edges[f, i_global, i_b].d2 = tm.cross(self.edges[f, i_global, i_b].d3, self.edges[f, i_global, i_b].d1)
+                self.edges[f, i_global, i_b].d2_ref = self.edges[f, i_global, i_b].d2
 
-            self.edges[f, i_global, i_b].theta = 0.0  # assume no initial twist
-            self.edges[f, i_global, i_b].omega = 0.0  # assume no initial twist rate
+                self.edges[f, i_global, i_b].theta = 0.0  # assume no initial twist
+                self.edges[f, i_global, i_b].omega = 0.0  # assume no initial twist rate
 
         n_internal_verts_local = n_verts_local - (0 if is_loop else 2)
         for i_iv, i_b in ti.ndrange(n_internal_verts_local, self._B):
