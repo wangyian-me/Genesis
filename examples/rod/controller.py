@@ -38,7 +38,7 @@ class RobotController:
     def control_robot(
         self, g_dof1, g_dof2,
         dx=0., dy=0., dz=0., di=0., dj=0., dk=0.,
-        g_dof_use_force=False, degrees=True
+        g_dof_use_force=False, degrees=True, **kwargs
     ):
         """
         Controls the robot's end-effector to move by specified deltas in position and orientation.
@@ -48,7 +48,7 @@ class RobotController:
         delta_quat = gu.xyz_to_quat(delta_orient, rpy=True, degrees=degrees)
         target_quat = gu.transform_quat_by_quat(delta_quat, self.quat_abs)
 
-        self._execute_ik_control(target_pos, target_quat, g_dof1, g_dof2, g_dof_use_force)
+        self._execute_ik_control(target_pos, target_quat, g_dof1, g_dof2, g_dof_use_force, **kwargs)
 
     def rotate_around_point(
         self, g_dof1, g_dof2, center, axis, angle, pos_angle=None,
