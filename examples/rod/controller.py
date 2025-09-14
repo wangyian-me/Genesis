@@ -52,7 +52,7 @@ class RobotController:
 
     def rotate_around_point(
         self, g_dof1, g_dof2, center, axis, angle, pos_angle=None,
-        g_dof_use_force=False, degrees=True
+        g_dof_use_force=False, degrees=True, **kwargs
     ):
         """
         Rotates the robot's end-effector around a specified world-space point.
@@ -77,9 +77,9 @@ class RobotController:
 
         target_quat = gu.transform_quat_by_quat(orient_rotation_quat, self.quat_abs)
 
-        self._execute_ik_control(target_pos, target_quat, g_dof1, g_dof2, g_dof_use_force)
+        self._execute_ik_control(target_pos, target_quat, g_dof1, g_dof2, g_dof_use_force, **kwargs)
 
-    def _execute_ik_control(self, target_pos, target_quat, g_dof1, g_dof2, g_dof_use_force):
+    def _execute_ik_control(self, target_pos, target_quat, g_dof1, g_dof2, g_dof_use_force, **kwargs):
         """
         Run inverse kinematics and send control commands.
         """
@@ -92,6 +92,7 @@ class RobotController:
             link=self.ef,
             pos=pos_arg,
             quat=quat_arg,
+            **kwargs
         )
 
         self.robot.control_dofs_position(qpos[..., :-2], self.motors_dof)
