@@ -1,59 +1,13 @@
 import argparse
 import mediapy
+import torch
 import numpy as np
 import genesis as gs
+import sys
+sys.path.append('./examples/rod')
+from controller import RobotController
 import genesis.utils.geom as gu
 from collections import defaultdict
-
-def control_robot(
-    args, robot, ef, g_dof1, g_dof2,
-    motors_dof=np.arange(7), fingers_dof=np.arange(7, 9),
-    dpx=0, dpy=0, dpz=0, dex=0, dey=0, dez=0
-):
-    target_pos = ef.get_pos().cpu().numpy().reshape(-1) + np.array([dpx, dpy, dpz])
-    if dex == 0 and dey == 0 and dez == 0:
-        target_quat = ef.get_quat().cpu().numpy().reshape(-1)
-    else:
-        delta_orientation = np.array([dex, dey, dez])
-        delta_quat = gu.xyz_to_quat(
-            delta_orientation, rpy=True, degrees=True
-        )
-        target_quat = gu.transform_quat_by_quat(
-            delta_quat, ef.get_quat().cpu().numpy().reshape(-1)
-        )
-    print("target pos", target_pos, "target quat", target_quat)
-    qpos = robot.inverse_kinematics(
-        link=ef,
-        pos=target_pos if args.n_envs == 0 else np.array([target_pos] * args.n_envs),
-        quat=target_quat if args.n_envs == 0 else np.array([target_quat] * args.n_envs),
-    )
-    robot.control_dofs_position(qpos[..., :-2], motors_dof)
-    robot.control_dofs_position(
-        np.array([g_dof1, g_dof2]) if args.n_envs == 0 else np.array([g_dof1, g_dof2] * args.n_envs), fingers_dof
-    )  # you can use position control
-
-def control_robot_abs(
-    args, robot, ef, g_dof1, g_dof2,
-    g_dof_use_force=False,
-    motors_dof=np.arange(7), fingers_dof=np.arange(7, 9),
-    x=0, y=0, z=0, quat=np.array([0, 1, 0, 0])
-):
-    target_pos = np.array([x, y, z])
-    target_quat = quat
-    qpos = robot.inverse_kinematics(
-        link=ef,
-        pos=target_pos if args.n_envs == 0 else np.array([target_pos] * args.n_envs),
-        quat=target_quat if args.n_envs == 0 else np.array([target_quat] * args.n_envs),
-    )
-    robot.control_dofs_position(qpos[..., :-2], motors_dof)
-    if g_dof_use_force:
-        robot.control_dofs_force(
-            np.array([g_dof1, g_dof2]) if args.n_envs == 0 else np.array([g_dof1, g_dof2] * args.n_envs), fingers_dof
-        )  # you can use force control
-    else:
-        robot.control_dofs_position(
-            np.array([g_dof1, g_dof2]) if args.n_envs == 0 else np.array([g_dof1, g_dof2] * args.n_envs), fingers_dof
-        )  # you can use position control
 
 def main():
     parser = argparse.ArgumentParser()
@@ -81,8 +35,8 @@ def main():
             # gravity=(0.,0.,-1.0)
         ),
         rod_options=gs.options.RodOptions(
-            damping=15.0,
-            angular_damping=10.0,
+            damping=5.0,
+            angular_damping=5.0,
         ),
         show_viewer=args.vis,
     )
@@ -111,16 +65,16 @@ def main():
         material=gs.materials.ROD.Base(
             segment_radius=segment_radius,
             segment_mass=0.001,
-            K=5e5,
-            E=8e5,
+            K=8e5,  # 5e5
+            E=1e5,
             G=0,
             plastic_yield=np.inf,
             use_inextensible=False,
         ),
         morph=gs.morphs.ParameterizedRod(
             type="rod",
-            n_vertices=9,
-            interval=0.03,
+            n_vertices=12,
+            interval=0.02,
             axis="x",
             pos=(0.0, 0.0, 0.21),
             euler=(0, 0, 0),
@@ -238,11 +192,8 @@ def main():
     scene.build(n_envs=args.n_envs, env_spacing=(1, 1))
 
     r1.set_fixed_states(
-        fixed_ids=[0, 1, 7, 8]
+        fixed_ids=[0, 1, 10, 11]
     )
-
-    motors_dof = np.arange(7)
-    fingers_dof = np.arange(7, 9)
 
     # Optional: set control gains
     for f in fks:
@@ -264,37 +215,22 @@ def main():
     ef1 = franka1.get_link("panda_grasptarget")
 
     x1 = 0.12
-    z = 0.21
+    z = 0.216
     y = -0.1
-    y_delta = 0.102
-    y_back = -0.1
+    y_delta = 0.13
+    y_back = -0.13
 
     open_gap = 0.1
     force1 = -1.0
-    force2 = -3.0
+    force2 = -6.0
+    open_gap = 0.03
 
     # move to pre-grasp pose
-    qpos1 = franka1.inverse_kinematics(
-        link=ef1,
-        pos=np.array([x1, y, z]) if args.n_envs == 0 else np.array([[x1, y, z]] * args.n_envs),
-        quat=np.array([0, 1, 0, 0]) if args.n_envs == 0 else np.array([[0, 1, 0, 0]] * args.n_envs),
-    )
-    qpos1[..., -2:] = 0.03
-
-    franka1.set_dofs_position(
-        qpos1
-    )
+    c1 = RobotController(franka1, ef1, args, (x1, y, z), initial_q_dof=open_gap)
 
     frames = defaultdict(list)
 
-    do = np.array([90, 0, 0])
-    quat = gu.xyz_to_quat(
-        do, rpy=True, degrees=True
-    )
-    tq = gu.transform_quat_by_quat(
-        quat, ef1.get_quat().cpu().numpy().reshape(-1)
-    )
-    control_robot_abs(args, franka1, ef1, 0, 0, g_dof_use_force=True, x=x1, y=y, z=z, quat=tq)
+    c1.control_robot(open_gap, open_gap, di=90)
     for i in range(200):
         scene.step()
         for cid, cam in enumerate(cameras):
@@ -302,7 +238,7 @@ def main():
             frames[cid].append(img)
     gs.logger.info("grasped")
 
-    control_robot_abs(args, franka1, ef1, 0, 0, g_dof_use_force=True, x=x1, y=y+y_delta, z=z, quat=tq)
+    c1.control_robot(open_gap, open_gap, dy=y_delta)
     for i in range(120):
         scene.step()
         for cid, cam in enumerate(cameras):
@@ -310,8 +246,8 @@ def main():
             frames[cid].append(img)
     gs.logger.info("fetch")
 
-    control_robot_abs(args, franka1, ef1, force1, force1, g_dof_use_force=True, x=x1, y=y+y_delta, z=z, quat=tq)
-    for i in range(160):
+    c1.control_robot(force1, force1, g_dof_use_force=True)
+    for i in range(120):
         scene.step()
         for cid, cam in enumerate(cameras):
             img = cam.render()[0]
@@ -319,8 +255,7 @@ def main():
     gs.logger.info("grasped")
 
     # stretch slingshot
-    control_robot_abs(args, franka1, ef1, force2, force2, g_dof_use_force=True, x=x1, y=y+y_delta+y_back, z=z, quat=tq)
-    # control_robot_abs(args, franka1, ef1, 0.003, 0.003, x=x1, y=y+y_delta+y_back, z=z, quat=tq)
+    c1.control_robot(force2, force2, g_dof_use_force=True, dy=y_back)
     for i in range(120):
         scene.step()
         for cid, cam in enumerate(cameras):
@@ -328,24 +263,14 @@ def main():
             frames[cid].append(img)
     gs.logger.info("stretched")
 
-    # # stretch slingshot
-    # control_robot_abs(args, franka1, ef1, force2, force2, g_dof_use_force=True, x=x1, y=y+y_delta+y_back*2, z=z, quat=tq)
-    # # control_robot_abs(args, franka1, ef1, 0.003, 0.003, x=x1, y=y+y_delta+y_back*2, z=z, quat=tq)
-    # for i in range(80):
-    #     scene.step()
-    #     for cid, cam in enumerate(cameras):
-    #         img = cam.render()[0]
-    #         frames[cid].append(img)
-    # gs.logger.info("stretched")
-
     # release slingshot
-    control_robot_abs(args, franka1, ef1, open_gap, open_gap, x=x1, y=y+y_delta+y_back, z=z, quat=tq)
-    for i in range(160):
+    c1.control_robot(open_gap, open_gap)
+    for i in range(80):
         scene.step()
         for cid, cam in enumerate(cameras):
             img = cam.render()[0]
             frames[cid].append(img)
-    gs.logger.info("grasped")
+    gs.logger.info("released")
 
     for cid in frames:
         mediapy.write_video(args.path.replace(".mp4", f"_c{cid}.mp4"), frames[cid], fps=30, qp=18)
