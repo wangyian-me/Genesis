@@ -9,7 +9,7 @@ def test_v1(scene):
         material=gs.materials.ROD.Base(
             segment_radius=0.005,
             E=1e5,
-            G=1e5
+            G=1e4
         ),
         morph=gs.morphs.ParameterizedRod(
             type="rod",
@@ -29,7 +29,7 @@ def test_v1(scene):
         material=gs.materials.ROD.Base(
             segment_radius=0.005,
             E=1e5,
-            G=1e5
+            G=1e4
         ),
         morph=gs.morphs.ParameterizedRod(
             type="rod",
@@ -81,6 +81,8 @@ def test_v1(scene):
         ),
     )
 
+    scene.rod_solver.register_gripper_geom_indices()
+
     ########################## build ##########################
     scene.build(n_envs=2)
 
@@ -102,8 +104,8 @@ def test_v2(scene):
     v1 = scene.add_entity(
         material=gs.materials.ROD.Base(
             segment_mass=0.1,
-            segment_radius=0.0075,
-            E=1e7,
+            segment_radius=0.005,
+            E=1e6,
         ),
         morph=gs.morphs.ParameterizedRod(
             type="rod",
@@ -122,10 +124,10 @@ def test_v2(scene):
     v2 = scene.add_entity(
         material=gs.materials.ROD.Base(
             segment_mass=0.1,
-            segment_radius=0.0075,
-            E=1e7,
+            segment_radius=0.005,
+            E=1e6,
             static_friction=1.5,
-            kinetic_friction=1.25
+            kinetic_friction=1.25,
         ),
         morph=gs.morphs.ParameterizedRod(
             type="rod",
@@ -177,23 +179,25 @@ def test_v2(scene):
         ),
     )
 
-    b3 = scene.add_entity(
-        material=gs.materials.ROD.Base(
-            segment_radius=0.025,
-        ),
-        morph=gs.morphs.ParameterizedRod(
-            type="rod",
-            n_vertices=3,
-            interval=0.1,
-            axis="x",
-            pos=(0.85, 0.15, 0.3),
-            euler=(0.0, 0.0, 105.0),
-        ),
-        surface=gs.surfaces.Default(
-            color=(0.4, 0.4, 0.4),
-            vis_mode='recon',
-        ),
-    )
+    # b3 = scene.add_entity(
+    #     material=gs.materials.ROD.Base(
+    #         segment_radius=0.025,
+    #     ),
+    #     morph=gs.morphs.ParameterizedRod(
+    #         type="rod",
+    #         n_vertices=3,
+    #         interval=0.1,
+    #         axis="x",
+    #         pos=(0.85, 0.15, 0.3),
+    #         euler=(0.0, 0.0, 105.0),
+    #     ),
+    #     surface=gs.surfaces.Default(
+    #         color=(0.4, 0.4, 0.4),
+    #         vis_mode='recon',
+    #     ),
+    # )
+
+    scene.rod_solver.register_gripper_geom_indices()
 
     ########################## build ##########################
     scene.build(n_envs=2)
@@ -204,17 +208,17 @@ def test_v2(scene):
     b2.set_fixed_states(
         fixed_ids = [0, 1, 2]
     )
-    b3.set_fixed_states(
-        fixed_ids = [0, 1, 2]
-    )
+    # b3.set_fixed_states(
+    #     fixed_ids = [0, 1, 2]
+    # )
 
 
 def test_v3(scene):
     v1 = scene.add_entity(
         material=gs.materials.ROD.Base(
             segment_radius=0.005,
-            E=1e7,
-            G=1e7,
+            E=1e6,
+            G=1e4,
         ),
         morph=gs.morphs.ParameterizedRod(
             type="circle",
@@ -267,6 +271,8 @@ def test_v3(scene):
             vis_mode='recon',
         ),
     )
+
+    scene.rod_solver.register_gripper_geom_indices()
 
     ########################## build ##########################
     scene.build(n_envs=2)
@@ -343,12 +349,14 @@ def test_v4(scene):
         ),
     )
 
+    scene.rod_solver.register_gripper_geom_indices()
+
     ########################## build ##########################
     scene.build(n_envs=2)
 
 
 def test_v5(scene):
-    E = 1e5
+    E = 1e7
     G = 1e5
     v1 = scene.add_entity(
         material=gs.materials.ROD.Base(
@@ -370,48 +378,60 @@ def test_v5(scene):
         ),
     )
 
-    v2 = scene.add_entity(
-        material=gs.materials.ROD.Base(
-            segment_radius=0.0075,
-            E=E,
-            G=G
-        ),
-        morph=gs.morphs.ParameterizedRod(
-            type="rod",
-            n_vertices=20,
-            interval=0.01,
-            axis="x",
-            pos=(0.3, 0.44, 0.5),
-            euler=(0.0, 0.0, 0.0),
-        ),
-        surface=gs.surfaces.Default(
-            color=(1.0, 0.4, 0.4),
-            vis_mode='recon',
-        ),
-    )
+    scene.rod_solver.register_gripper_geom_indices()
 
-    v3 = scene.add_entity(
+    ########################## build ##########################
+    scene.build(n_envs=2)
+
+def test_v6(scene):
+    E = 1e5
+    G = 1e4
+    v1 = scene.add_entity(
         material=gs.materials.ROD.Base(
-            segment_radius=0.0075,
+            segment_radius=0.01,
             E=E,
             G=G,
         ),
         morph=gs.morphs.ParameterizedRod(
             type="rod",
-            n_vertices=60,
-            interval=0.01,
+            n_vertices=40,
+            interval=0.02,
             axis="x",
-            pos=(0.3, 0.56, 0.5),
+            pos=(0.3, 0.5, 0.3),
             euler=(0.0, 0.0, 0.0),
         ),
         surface=gs.surfaces.Default(
-            color=(0.4, 0.4, 1.0),
+            color=(0.4, 1.0, 0.4),
             vis_mode='recon',
         ),
     )
 
+    b1 = scene.add_entity(
+        material=gs.materials.ROD.Base(
+            segment_radius=0.02,
+        ),
+        morph=gs.morphs.ParameterizedRod(
+            type="rod",
+            n_vertices=3,
+            interval=0.1,
+            axis="y",
+            pos=(0.7, 0.4, 0.2),
+            euler=(0.0, 0.0, 0.0),
+        ),
+        surface=gs.surfaces.Default(
+            color=(0.4, 0.4, 0.4),
+            vis_mode='recon',
+        ),
+    )
+
+    scene.rod_solver.register_gripper_geom_indices()
+
     ########################## build ##########################
-    scene.build(n_envs=2)
+    scene.build(n_envs=1)
+
+    b1.set_fixed_states(
+        fixed_ids = [0, 1, 2]
+    )
 
 
 def main():
@@ -430,12 +450,13 @@ def main():
 
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(
-            dt=1e-2,
-            substeps=20,
+            dt=args.dt,
+            substeps=args.substeps,
         ),
         rod_options=gs.options.RodOptions(
+            damping=1.0,
+            angular_damping=1.0,
             floor_height=0.0,
-            floor_normal=(0., 0., 1.),
             adjacent_gap=2,
             n_pbd_iters=10
         ),
@@ -456,10 +477,16 @@ def main():
         cam = None
 
     ########################## entities ##########################
-    frictionless_rigid = gs.materials.Rigid(needs_coup=True, coup_friction=0.0)
+    frictionless_rigid = gs.materials.Rigid(
+        needs_coup=True, coup_friction=0.0
+    )
+    friction_rigid = gs.materials.Rigid(
+        needs_coup=True, coup_friction=0.3
+    )
 
     plane = scene.add_entity(
-        material=frictionless_rigid,
+        # material=frictionless_rigid,
+        material=friction_rigid,
         morph=gs.morphs.Plane(),
     )
 
@@ -476,18 +503,20 @@ def main():
     # cube = scene.add_entity(
     #     material=frictionless_rigid,
     #     morph=gs.morphs.Box(
-    #         pos=(0.5, 0.5, 0.2),
+    #         pos=(0.5, 0.5, 0.25),
     #         size=(0.2, 0.2, 0.2),
-    #         euler=(0, 45, 0),
-    #         fixed=True,
+    #         euler=(0, 0, 0),
+    #         # fixed=True,
     #     ),
     # )
 
     # sphere = scene.add_entity(
-    #     material=frictionless_rigid,
+    #     # material=frictionless_rigid,
+    #     material=friction_rigid,
     #     morph=gs.morphs.Sphere(
     #         radius=0.15,
-    #         pos=(0.5, 0.5, 0.25),
+    #         pos=(0.5, 0.48, 0.25),
+    #         # fixed=True,
     #     )
     # )
 
@@ -496,6 +525,7 @@ def main():
     # test_v3(scene)
     # test_v4(scene)
     # test_v5(scene)
+    # test_v6(scene)
 
     frames = defaultdict(list)
     for i in range(args.steps):
