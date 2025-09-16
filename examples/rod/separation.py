@@ -87,7 +87,8 @@ def main():
             G=0,
         ),
         morph=gs.morphs.Rod(
-            file="genesis/assets/meshes/ropeb.npy"
+            file="genesis/assets/meshes/ropeb.npy",
+            rest_state="straight",
         ),
         surface=gs.surfaces.Default(
             color=(0.4, 1.0, 0.4),

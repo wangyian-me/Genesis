@@ -1,5 +1,6 @@
 import argparse
 import mediapy
+import numpy as np
 import genesis as gs
 from collections import defaultdict
 
@@ -383,6 +384,7 @@ def test_v5(scene):
     ########################## build ##########################
     scene.build(n_envs=2)
 
+
 def test_v6(scene):
     E = 1e5
     G = 1e4
@@ -432,6 +434,41 @@ def test_v6(scene):
     b1.set_fixed_states(
         fixed_ids = [0, 1, 2]
     )
+
+
+def test_v7(scene):
+    E = 1e5
+    G = 1e4
+    # Test initializing a half-circle rod with rest state "straight"
+    # Better visualization with a frictionless plane as friction will
+    # prevent the rod from springing back to its rest shape
+    v1 = scene.add_entity(
+        material=gs.materials.ROD.Base(
+            E=E,
+            G=G,
+            segment_radius=0.01,
+            static_friction=0.3,
+            kinetic_friction=0.25,
+        ),
+        morph=gs.morphs.ParameterizedRod(
+            type="half_circle",
+            n_vertices=30,
+            radius=0.16,
+            axis="z",
+            pos=(0.28, 0.0, 0.03),
+            euler=(90, 0, 0),
+            rest_state="straight",
+        ),
+        surface=gs.surfaces.Default(
+            color=(1.0, 0.4, 0.4),
+            vis_mode='recon',
+        )
+    )
+
+    scene.rod_solver.register_gripper_geom_indices()
+
+    ########################## build ##########################
+    scene.build(n_envs=1)
 
 
 def main():
@@ -526,6 +563,7 @@ def main():
     # test_v4(scene)
     # test_v5(scene)
     # test_v6(scene)
+    test_v7(scene)
 
     frames = defaultdict(list)
     for i in range(args.steps):
