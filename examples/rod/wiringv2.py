@@ -45,12 +45,12 @@ def main():
     cameras = list()
     if args.path is not None:
         cameras.append(scene.add_camera(
-            res=(600, 450), pos=(-1.8, 1.2, 1.4), up=(0, 0, 1),
-            lookat=(0.3, 0., 0), fov=24, GUI=False
+            res=(600, 450), pos=(0.2, 1.2, 1.5), up=(0, 0, 1),
+            lookat=(0.3, 0.2, 0), fov=30, GUI=False
         ))
         cameras.append(scene.add_camera(
-            res=(600, 450), pos=(-1, -0.8, 1.4), up=(0, 0, 1),
-            lookat=(0.2, 0., 0), fov=20, GUI=False
+            res=(600, 450), pos=(-1.6, -1.2, 1.5), up=(0, 0, 1),
+            lookat=(0.3, 0.2, 0), fov=30, GUI=False
         ))
 
     ########################## entities ##########################
@@ -66,11 +66,9 @@ def main():
         material=gs.materials.ROD.Base(
             segment_radius=segment_radius,
             segment_mass=0.001,
-            # K=1e6,
             E=1e3,
             G=0,
             plastic_yield=np.inf,
-            # use_inextensible=False,
         ),
         morph=gs.morphs.ParameterizedRod(
             type="rod",
@@ -87,44 +85,34 @@ def main():
     )
 
     b1 = scene.add_entity(
-        material=gs.materials.ROD.Base(
-            segment_radius=0.008,
-            static_friction=0.1,
-            kinetic_friction=0.08,
+        material=gs.materials.Rigid(
+            needs_coup=True, coup_friction=0.3,
         ),
-        morph=gs.morphs.ParameterizedRod(
-            type="circle",
-            n_vertices=24,
-            radius=0.04,
-            axis="y",
-            pos=(0.27, 0.0, 0.008),
-            euler=(-30, 0, 0),
-            gap=1,
+        morph=gs.morphs.Cylinder(
+            radius=0.02,
+            height=0.04,
+            pos=(0.2, 0.1, 0.015),
+            euler=(0, 0, 0),
+            fixed=True,
         ),
         surface=gs.surfaces.Default(
-            color=(0.4, 0.4, 0.4),
-            vis_mode='recon',
+            color=(0.4, 0.4, 0.4)
         )
     )
 
     b2 = scene.add_entity(
-        material=gs.materials.ROD.Base(
-            segment_radius=0.008,
-            static_friction=0.1,
-            kinetic_friction=0.08,
+        material=gs.materials.Rigid(
+            needs_coup=True, coup_friction=0.3,
         ),
-        morph=gs.morphs.ParameterizedRod(
-            type="circle",
-            n_vertices=24,
-            radius=0.04,
-            axis="y",
-            pos=(0.09, -0.27, 0.008),
-            euler=(-30, 0, 90),
-            gap=1,
+        morph=gs.morphs.Cylinder(
+            radius=0.02,
+            height=0.04,
+            pos=(0.1, 0.3, 0.015),
+            euler=(0, 0, 0),
+            fixed=True,
         ),
         surface=gs.surfaces.Default(
-            color=(0.4, 0.4, 0.4),
-            vis_mode='recon',
+            color=(0.4, 0.4, 0.4)
         )
     )
 
@@ -136,7 +124,7 @@ def main():
         material=friction_rigid,
         morph=gs.morphs.URDF(
             file='urdf/panda_bullet/panda.urdf',
-            pos=(0.45, -0.6, 0),
+            pos=(0.25, -0.45, 0),
             # euler=(0., 0., -90.),
             fixed=True,
             collision=True,
@@ -179,14 +167,6 @@ def main():
     ########################## build ##########################
     scene.build(n_envs=args.n_envs, env_spacing=(1, 1))
 
-    b1.set_fixed_states(
-        fixed_ids=np.arange(24),
-    )
-
-    b2.set_fixed_states(
-        fixed_ids=np.arange(24),
-    )
-
     # Optional: set control gains
     for f in [franka1, franka2]:
         if args.n_envs == 0:
@@ -208,18 +188,18 @@ def main():
     ef1 = franka1.get_link("panda_grasptarget")
     ef2 = franka2.get_link("panda_grasptarget")
 
-    x1 = 0.42
+    x1 = 0.35
     x2 = 0.6
     x_delta = -0.1
     x1_move_forward = -0.1
     x2_move_forward = -0.05
     x2_move_forward2 = -0.17
     x2_move_forward3 = -0.03
-    y_delta = -0.1
+    y_delta = 0.08
     y_delta2 = -0.13
     z = 0.013
     z_delta = 0.013
-    force = -3
+    force = -0.02
 
     open_gap = 0.03
 
@@ -259,69 +239,52 @@ def main():
             frames[cid].append(img)
     gs.logger.info("moved")
 
-    # release f1, keep f2 close
-    c1.control_robot(open_gap, open_gap)
+    # move
+    c1.control_robot(0, 0, dx=x_delta)
+    c2.control_robot(0, 0, dx=x_delta)
     for i in range(80):
         scene.step()
         for cid, cam in enumerate(cameras):
             img = cam.render()[0]
             frames[cid].append(img)
+    gs.logger.info("moved")
 
-    # f1 fetch position, keep f2 close
-    c1.control_robot(open_gap, open_gap, dz=0.1)
-    c2.control_robot(0, 0, dx=x2_move_forward)
+    # move
+    c1.control_robot(0, 0, dx=x_delta)
+    c2.control_robot(0, 0, dx=x_delta)
     for i in range(80):
         scene.step()
         for cid, cam in enumerate(cameras):
             img = cam.render()[0]
             frames[cid].append(img)
-    
-    # f1 fetch position, keep f2 close
-    c1.control_robot(open_gap, open_gap, dx=x1_move_forward)
+    gs.logger.info("moved")
+
+    # move
+    c1.control_robot(0, 0, dy=y_delta)
+    c2.control_robot(0, 0, dy=y_delta)
+    for i in range(80):
+        scene.step()
+        for cid, cam in enumerate(cameras):
+            img = cam.render()[0]
+            frames[cid].append(img)
+    gs.logger.info("moved")
+
+    # rotate
+    c1.rotate_around_point(
+        0, 0,
+        center=torch.tensor([0.2, 0.08, z+z_delta], dtype=gs.tc_float),
+        axis=torch.tensor([0, 0, 1], dtype=gs.tc_float),
+        angle=45, pos_angle=-45,
+        rot_mask=[False, False, True]
+    )
     c2.control_robot(0, 0)
     for i in range(80):
         scene.step()
         for cid, cam in enumerate(cameras):
             img = cam.render()[0]
             frames[cid].append(img)
+    gs.logger.info("rotated")
 
-    # f1 move down, keep f2 close
-    c1.control_robot(open_gap, open_gap, dz=-0.1-z_delta)
-    c2.control_robot(0, 0)
-    for i in range(80):
-        scene.step()
-        for cid, cam in enumerate(cameras):
-            img = cam.render()[0]
-            frames[cid].append(img)
-
-    # f1 grasp
-    c1.control_robot(force, force, g_dof_use_force=True)
-    c2.control_robot(0, 0)
-    for i in range(160):
-        scene.step()
-        for cid, cam in enumerate(cameras):
-            img = cam.render()[0]
-            frames[cid].append(img)
-
-    # f1 lift
-    c1.control_robot(force, force, g_dof_use_force=True, dz=z_delta)
-    c2.control_robot(0, 0)
-    for i in range(80):
-        scene.step()
-        for cid, cam in enumerate(cameras):
-            img = cam.render()[0]
-            frames[cid].append(img)
-
-    # move both
-    c1.control_robot(0, 0, dx=0.5*x_delta)
-    c2.control_robot(0, 0, dx=0.5*x_delta)
-    for i in range(80):
-        scene.step()
-        for cid, cam in enumerate(cameras):
-            img = cam.render()[0]
-            frames[cid].append(img)
-
-    # release f2
     c1.control_robot(0, 0)
     c2.control_robot(open_gap, open_gap)
     for i in range(80):
@@ -329,114 +292,33 @@ def main():
         for cid, cam in enumerate(cameras):
             img = cam.render()[0]
             frames[cid].append(img)
+    gs.logger.info("fixed")
 
-    # rotate f1 release and lift f2
-    c1.control_robot(0, 0, dk=-60, degrees=True)
-    c2.control_robot(open_gap*2, open_gap*2, dz=0.1)
-    for i in range(120):
-        scene.step()
-        for cid, cam in enumerate(cameras):
-            img = cam.render()[0]
-            frames[cid].append(img)
-
-    # move f1
-    c1.control_robot(0, 0, dx=y_delta/np.sqrt(3), dy=y_delta)
-    c2.control_robot(open_gap*2, open_gap*2, dx=y_delta/np.sqrt(3), dy=y_delta)
-    for i in range(120):
-        scene.step()
-        for cid, cam in enumerate(cameras):
-            img = cam.render()[0]
-            frames[cid].append(img)
-    
-    # rotate f1 release f2
-    c1.control_robot(0, 0, dk=-30, degrees=True)
-    c2.control_robot(open_gap*2, open_gap*2, dk=-45, degrees=True)
-    for i in range(120):
-        scene.step()
-        for cid, cam in enumerate(cameras):
-            img = cam.render()[0]
-            frames[cid].append(img)
-
-    # move f1
-    c1.control_robot(0, 0, dy=y_delta2)
-    c2.control_robot(open_gap*2, open_gap*2, dx=x2_move_forward2)
-    for i in range(120):
-        scene.step()
-        for cid, cam in enumerate(cameras):
-            img = cam.render()[0]
-            frames[cid].append(img)
-
-    # release f1 and down f2
-    c1.control_robot(open_gap*2, open_gap*2)
-    c2.control_robot(open_gap*2, open_gap*2, dz=-0.1-z_delta)
+    c1.control_robot(0, 0)
+    c2.control_robot(open_gap, open_gap, dz=0.1)
     for i in range(80):
         scene.step()
         for cid, cam in enumerate(cameras):
             img = cam.render()[0]
             frames[cid].append(img)
+    gs.logger.info("fixed")
 
-    # release and lift f1 and grasp f2
-    c1.control_robot(open_gap*2, open_gap*2, dz=0.2)
-    c2.control_robot(0, 0)
-    for i in range(80):
-        scene.step()
-        for cid, cam in enumerate(cameras):
-            img = cam.render()[0]
-            frames[cid].append(img)
+    # # rotate
+    # c1.rotate_around_point(
+    #     0, 0,
+    #     center=torch.tensor([0.2, 0.02, z+z_delta], dtype=gs.tc_float),
+    #     axis=torch.tensor([0, 0, 1], dtype=gs.tc_float),
+    #     angle=-45, pos_angle=-45,
+    #     rot_mask=[False, False, True]
+    # )
+    # c2.control_robot(0, 0)
+    # for i in range(80):
+    #     scene.step()
+    #     for cid, cam in enumerate(cameras):
+    #         img = cam.render()[0]
+    #         frames[cid].append(img)
+    # gs.logger.info("rotated")
 
-    # release and offset f1 and lift f2
-    c1.control_robot(open_gap*2, open_gap*2, dx=-1.5*x_delta-x1_move_forward)
-    c2.control_robot(0, 0, dz=z_delta)
-    for i in range(80):
-        scene.step()
-        for cid, cam in enumerate(cameras):
-            img = cam.render()[0]
-            frames[cid].append(img)
-
-    # release f1 and move f2
-    c1.control_robot(open_gap*2, open_gap*2)
-    c2.control_robot(0, 0, dx=y_delta/2, dy=y_delta/2)
-    for i in range(80):
-        scene.step()
-        for cid, cam in enumerate(cameras):
-            img = cam.render()[0]
-            frames[cid].append(img)
-
-    # release f1 and rotate f2
-    c1.control_robot(open_gap*2, open_gap*2)
-    c2.control_robot(0, 0, dk=-45, degrees=True)
-    for i in range(80):
-        scene.step()
-        for cid, cam in enumerate(cameras):
-            img = cam.render()[0]
-            frames[cid].append(img)
-
-    # release f1 and move f2
-    c1.control_robot(open_gap*2, open_gap*2)
-    c2.control_robot(0, 0, dx=x2_move_forward3, dy=y_delta/2)
-    for i in range(80):
-        scene.step()
-        for cid, cam in enumerate(cameras):
-            img = cam.render()[0]
-            frames[cid].append(img)
-
-    # release f1 and f2
-    c1.control_robot(open_gap*2, open_gap*2)
-    c2.control_robot(open_gap*2, open_gap*2)
-    for i in range(80):
-        scene.step()
-        for cid, cam in enumerate(cameras):
-            img = cam.render()[0]
-            frames[cid].append(img)
-
-    # release f1 and f2
-    c1.control_robot(open_gap*2, open_gap*2)
-    c2.control_robot(open_gap*2, open_gap*2, dz=0.1)
-    for i in range(80):
-        scene.step()
-        for cid, cam in enumerate(cameras):
-            img = cam.render()[0]
-            frames[cid].append(img)
 
     for i in range(60):
         print(i, scene.rod_solver.vertices[0, i, 0].vert)
