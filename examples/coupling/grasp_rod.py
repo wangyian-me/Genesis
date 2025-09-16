@@ -54,11 +54,9 @@ def main():
     #     material=gs.materials.ROD.Base(
     #         segment_radius=0.01,
     #         segment_mass=0.001,
-    #         # K=1e6,
-    #         E=1e7,
-    #         G=1e5,
+    #         E=1e5,
+    #         G=1e4,
     #         plastic_yield=np.inf,
-    #         # use_inextensible=False,
     #     ),
     #     morph=gs.morphs.ParameterizedRod(
     #         type="rod",
@@ -78,9 +76,9 @@ def main():
         material=gs.materials.ROD.Base(
             segment_radius=0.005,
             segment_mass=0.001,
-            K=1e6,
-            E=1e7,
-            G=1e5,
+            K=1e5,
+            E=1e5,
+            G=1e4,
             plastic_yield=np.inf,
             use_inextensible=False,
         ),
@@ -137,7 +135,7 @@ def main():
     else:
         franka.set_qpos(np.array([[1.56, -0.72, -0.02, -2.09, 0.04, 1.33, 2.4, 0.01, 0.01]] * args.n_envs))
     franka.set_dofs_kp(
-        np.array([4500, 4500, 3500, 3500, 2000, 2000, 2000, 80, 80]),
+        np.array([4500, 4500, 3500, 3500, 2000, 2000, 2000, 50, 50]),
     )
     franka.set_dofs_kv(
         np.array([450, 450, 350, 350, 200, 200, 200, 20, 20]),
@@ -153,31 +151,10 @@ def main():
     # move to pre-grasp pose
     qpos = franka.inverse_kinematics(
         link=end_effector,
-        # pos=np.array([0.65, 0.0, 0.25]) if args.n_envs == 0 else np.array([[0.65, 0.0, 0.25]] * args.n_envs),
-        # pos=np.array([0.65, 0.0, 0.12]) if args.n_envs == 0 else np.array([[0.65, 0.0, 0.12]] * args.n_envs),
-        pos=np.array([0.65, 0.0, 0.014]) if args.n_envs == 0 else np.array([[0.65, 0.0, 0.014]] * args.n_envs),
+        pos=np.array([0.65, 0.0, 0.012]) if args.n_envs == 0 else np.array([[0.65, 0.0, 0.012]] * args.n_envs),
         quat=np.array([0, 1, 0, 0]) if args.n_envs == 0 else np.array([[0, 1, 0, 0]] * args.n_envs),
     )
     qpos[..., -2:] = 0.02
-
-    # path = franka.plan_path(qpos)
-    # for waypoint in path:
-    #     franka.control_dofs_position(waypoint)
-    #     scene.step()
-    # for i in range(30):
-    #     scene.step()
-    # gs.logger.info("reached pre-grasp pose")
-
-    # reach
-    # qpos = franka.inverse_kinematics(
-    #     link=end_effector,
-    #     pos=np.array([0.65, 0.0, 0.1]) if args.n_envs == 0 else np.array([[0.65, 0.0, 0.1]] * args.n_envs),
-    #     quat=np.array([0, 1, 0, 0]) if args.n_envs == 0 else np.array([[0, 1, 0, 0]] * args.n_envs),
-    # )
-    # franka.control_dofs_position(qpos[..., :-2], motors_dof)
-    # for i in range(100):
-    #     scene.step()
-    # gs.logger.info("reached grasp pose")
 
     franka.set_dofs_position(
         qpos
@@ -187,12 +164,12 @@ def main():
 
     # grasp
     franka.control_dofs_position(qpos[..., :-2], motors_dof)
-    # franka.control_dofs_force(
-    #     np.array([-5, -5]) if args.n_envs == 0 else np.array([[-5, -5]] * args.n_envs), fingers_dof
-    # )  # can also use force control
-    franka.control_dofs_position(
-        np.array([0, 0]) if args.n_envs == 0 else np.array([[0, 0]] * args.n_envs), fingers_dof
-    )  # you can use position control
+    franka.control_dofs_force(
+        np.array([-1, -1]) if args.n_envs == 0 else np.array([[-1, -1]] * args.n_envs), fingers_dof
+    )  # can also use force control
+    # franka.control_dofs_position(
+    #     np.array([0, 0]) if args.n_envs == 0 else np.array([[0, 0]] * args.n_envs), fingers_dof
+    # )  # you can use position control
     for i in range(100):
         scene.step()
         if args.path is not None:
@@ -204,7 +181,6 @@ def main():
     # lift
     qpos = franka.inverse_kinematics(
         link=end_effector,
-        # pos=np.array([0.65, 0.0, 0.3]) if args.n_envs == 0 else np.array([[0.65, 0.0, 0.3]] * args.n_envs),
         pos=np.array([0.65, 0.0, 0.22]) if args.n_envs == 0 else np.array([[0.65, 0.0, 0.22]] * args.n_envs),
         quat=np.array([0, 1, 0, 0]) if args.n_envs == 0 else np.array([[0, 1, 0, 0]] * args.n_envs),
     )
@@ -213,10 +189,9 @@ def main():
     #     np.array([0, 0]) if args.n_envs == 0 else np.array([[0, 0]] * args.n_envs), fingers_dof
     # )  # you can use position control
     franka.control_dofs_force(
-        np.array([-5, -5]) if args.n_envs == 0 else np.array([[-5, -5]] * args.n_envs), fingers_dof
+        np.array([-2, -2]) if args.n_envs == 0 else np.array([[-2, -2]] * args.n_envs), fingers_dof
     )  # can also use force control
-    for i in range(250):
-    # for i in range(50):
+    for i in range(80):
         scene.step()
         if args.path is not None:
             img = camera.render()[0]
@@ -233,10 +208,9 @@ def main():
     #     np.array([0, 0]) if args.n_envs == 0 else np.array([[0, 0]] * args.n_envs), fingers_dof
     # )  # you can use position control
     franka.control_dofs_force(
-        np.array([-5, -5]) if args.n_envs == 0 else np.array([[-5, -5]] * args.n_envs), fingers_dof
+        np.array([-2, -2]) if args.n_envs == 0 else np.array([[-2, -2]] * args.n_envs), fingers_dof
     )  # can also use force control
-    # for i in range(200):
-    for i in range(250):
+    for i in range(120):
         scene.step()
         if args.path is not None:
             img = camera.render()[0]

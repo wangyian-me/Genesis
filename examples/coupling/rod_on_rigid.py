@@ -563,7 +563,7 @@ def main():
     # test_v4(scene)
     # test_v5(scene)
     # test_v6(scene)
-    test_v7(scene)
+    # test_v7(scene)
 
     frames = defaultdict(list)
     for i in range(args.steps):
