@@ -1231,6 +1231,10 @@ class Rod(Morph):
     ----------
     file : str
         The path to the file.
+    rest_state : str, optional
+        The rest state of the rod. Can be "default" or "straight". Defaults to "default".
+    is_loop : bool, optional
+        Whether the rod is a loop. Defaults to False.
     scale : float or tuple, optional
         The scaling factor for the size of the entity. If a float, it scales uniformly.
         If a 3-tuple, it scales along each axis. Defaults to 1.0.
@@ -1248,6 +1252,7 @@ class Rod(Morph):
 
     file: str = ""
     scale: Union[float, tuple] = 1.0
+    rest_state: Literal["default", "straight"] = "default"
     is_loop: bool = False
 
     def __init__(self, **data):
@@ -1263,6 +1268,9 @@ class Rod(Morph):
                 gs.raise_exception(f"File not found in either current directory or assets directory: '{self.file}'.")
 
             self.file = file
+
+            if self.is_loop and self.rest_state == "straight":
+                gs.raise_exception("A loop rod cannot have a straight rest state.")
 
     def _repr_type(self):
         return f"<gs.morphs.{self.__class__.__name__}(file='{self.file}')>"
@@ -1289,6 +1297,8 @@ class ParameterizedRod(Morph):
         The axis of the circle/half_circle. Can be "x", "y", or "z". Defaults to "x".
     gap : int, optional
         The number of vertices to skip at the two ends of the circle/half_circle. This is useful for creating a gap.
+    rest_state : str, optional
+        The rest state of the rod. Can be "default" or "straight". Defaults to "default".
     scale : float or tuple, optional
         The scaling factor for the size of the entity. If a float, it scales uniformly.
         If a 3-tuple, it scales along each axis. Defaults to 1.0.
@@ -1308,6 +1318,7 @@ class ParameterizedRod(Morph):
     radius: float = 1.0
     axis: Literal["x", "y", "z"] = "x"
     gap: int = 0
+    rest_state: Literal["default", "straight"] = "default"
     is_loop: bool = False
 
     def __init__(self, **data):
@@ -1317,3 +1328,6 @@ class ParameterizedRod(Morph):
             self.is_loop = True
         else:
             self.is_loop = False
+
+        if self.is_loop and self.rest_state == "straight":
+            gs.raise_exception("A loop rod cannot have a straight rest state.")

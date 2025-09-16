@@ -177,7 +177,7 @@ class RodEntity(Entity):
     # ----------------------------------- instantiation ----------------------------------
     # ------------------------------------------------------------------------------------
 
-    def instantiate(self, verts):
+    def instantiate(self, verts, rest_state):
         """
         Initialize Rod entity with given vertices.
 
@@ -213,7 +213,25 @@ class RodEntity(Entity):
             edges.append(verts[(i + 1) % n_verts] - verts[i])
         edges = np.array(edges, dtype=gs.np_float)
 
-        self.edges = edges
+        self.edges = gs.tensor(edges)
+
+        # resolve rest state
+        if rest_state == "default":
+            self.rest_positions = self.init_positions.clone()
+        elif rest_state == "straight":
+            # definitely not loop
+            rest_positions = np.zeros_like(init_positions)
+            lengths = np.linalg.norm(edges, axis=1)
+            # create a straight line along x axis
+            for i in range(n_edges):
+                rest_positions[i + 1][0] = rest_positions[i][0] + lengths[i]
+            self.rest_positions = gs.tensor(rest_positions)
+            gs.logger.info(
+                f"Entity {self.uid}({self._rod_idx}) initialized with rest state 'straight', "
+                f"min_el: {lengths.min():.2e}, max_el: {lengths.max():.2e}, mean_el: {lengths.mean():.2e}."
+            )
+        else:
+            gs.raise_exception(f"Unsupported rest state {rest_state}.")
 
     def _sample_rod(self, n_vertices: int, interval: float, axis: int):
         verts = list()
@@ -284,7 +302,7 @@ class RodEntity(Entity):
             assert vertices.shape[1] == 3, f"Loaded vertices should be of shape (n_vertices, 3), got {vertices.shape}."
             vertices = vertices + self.morph.pos
 
-        self.instantiate(vertices)
+        self.instantiate(vertices, self.morph.rest_state)
 
     def _add_to_solver(self, in_backward=False):
         if not in_backward:
@@ -295,6 +313,7 @@ class RodEntity(Entity):
 
         # Convert to appropriate numpy array types
         verts_np = tensor_to_array(self.init_positions, dtype=gs.np_float)
+        rest_verts_np = tensor_to_array(self.rest_positions, dtype=gs.np_float)
         edges_np = tensor_to_array(self.edges, dtype=gs.np_float)
 
         self._solver._kernel_add_rods(
@@ -323,7 +342,7 @@ class RodEntity(Entity):
             static_friction=self.material.static_friction,
             kinetic_friction=self.material.kinetic_friction,
             restitution=self.material.restitution,
-            verts_rest=verts_np,
+            verts_rest=rest_verts_np,
             edges_rest=edges_np,
         )
 
