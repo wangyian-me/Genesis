@@ -707,7 +707,7 @@ class RasterizerContext:
                         is_loop=is_loop,
                         smooth_joints=True,
                     )
-                    mesh.visual = mu.surface_uvs_to_trimesh_visual(rod_entity.surface, n_verts=len(mesh.vertices))
+                    mesh.visual = mu.surface_uvs_to_trimesh_visual(rod_entity.surface, uvs=mesh.visual.uv, n_verts=len(mesh.vertices))
                     self.add_dynamic_node(rod_entity, pyrender.Mesh.from_trimesh(mesh, smooth=False))
 
     def on_fem(self):

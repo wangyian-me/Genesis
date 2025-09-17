@@ -82,6 +82,7 @@ def mesh_from_centerline(
         prev_normal = normal
 
     V_list, F_list = [], []
+    UV_list = []
     rings_in = []
     rings_out = []
 
@@ -100,6 +101,15 @@ def mesh_from_centerline(
             V_list.append(p_end + r_end * offset)
             ring_start_indices.append(base_idx + 2*j)
             ring_end_indices.append(base_idx + 2*j + 1)
+            
+            u = j / (radial_segs // 2)
+            u = 2 - u if u > 1 else u
+            # v_start = i / max(1, len(tangents) - 1) if not is_loop else i / len(tangents)
+            # v_end = (i + 1) / max(1, len(tangents) - 1) if not is_loop else (i + 1) / len(tangents)
+            v_start = i
+            v_end = i + 1
+            UV_list.append([u, v_start])
+            UV_list.append([u, v_end])
 
         rings_in.append(ring_start_indices)
         rings_out.append(ring_end_indices)
@@ -112,8 +122,10 @@ def mesh_from_centerline(
             F_list.extend([[a, b, c], [d, c, b]])
 
     V_array = np.array(V_list)
+    UV_array = np.array(UV_list)
     new_verts_for_joins = []
     new_faces_for_joins = []
+    new_uvs_for_joins = []
     
     joint_indices = range(N) if is_loop else range(1, N - 1)
     for i in joint_indices:
@@ -154,6 +166,13 @@ def mesh_from_centerline(
                     new_verts_for_joins.append(center + radius * slerp_vec)
                     current_ring_indices.append(base_v_idx)
                     base_v_idx += 1
+                    
+                    u = j / (radial_segs // 2)
+                    u = 2 - u if u > 1 else u
+                    # v = i / max(1, len(tangents) - 1) if not is_loop else i / len(tangents)
+                    v = i
+                    new_uvs_for_joins.append([u, v])
+                    
                 all_rings_indices.append(current_ring_indices)
             all_rings_indices.append(ring_v_indices_out)
 
@@ -173,10 +192,13 @@ def mesh_from_centerline(
                 V_array[v_idx] = p - dist * miter_normal
             for j in range(radial_segs): V_array[ring_v_indices_out[j]] = V_array[ring_v_indices_in[j]]
     
-    if new_verts_for_joins: V_array = np.vstack([V_array, np.array(new_verts_for_joins)])
-    F_list.extend(new_faces_for_joins)
-    
+    if new_verts_for_joins:
+        V_array = np.vstack([V_array, np.array(new_verts_for_joins)])
     V_list = V_array.tolist()
+    F_list.extend(new_faces_for_joins)
+    if new_uvs_for_joins:
+        UV_array = np.vstack([UV_array, np.array(new_uvs_for_joins)])
+    UV_list = UV_array.tolist()
 
     if not is_loop and endcaps and cap_segs > 0:
         for cap_type in ["start", "end"]:
@@ -197,9 +219,14 @@ def mesh_from_centerline(
                         offset = np.cos(theta)*normal + np.sin(theta)*binormal
                         V_list.append(ring_center + ring_radius*offset)
                         current_ring_indices.append(len(V_list)-1)
+                        
+                        u = j / radial_segs
+                        v = ring_radius / radius
+                        UV_list.append([u, v])
                 else:
                     V_list.append(ring_center)
                     current_ring_indices = [len(V_list)-1] * radial_segs
+                    UV_list.append([0.0, 0.0])  # Center of endcap
                 
                 for j in range(radial_segs):
                     a,b = prev_ring_indices[j], prev_ring_indices[(j+1)%radial_segs]
@@ -211,4 +238,10 @@ def mesh_from_centerline(
                         F_list.append([b,c,a] if is_start else [a,b,c])
                 prev_ring_indices = current_ring_indices
 
-    return trimesh.Trimesh(vertices=np.array(V_list), faces=np.array(F_list, dtype=int), process=True)
+    mesh = trimesh.Trimesh(
+        vertices=np.array(V_list),
+        faces=np.array(F_list, dtype=int),
+        visual=trimesh.visual.TextureVisuals(uv=np.array(UV_list)),
+        process=True,
+    )
+    return mesh
