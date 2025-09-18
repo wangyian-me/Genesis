@@ -1,5 +1,6 @@
 # pylint: disable=no-value-for-parameter
 
+import torch
 import numpy as np
 from math import pi
 import gstaichi as ti
@@ -171,7 +172,7 @@ class RodSolver(Solver):
             is_loop=gs.ti_bool,
         )
 
-        # rod energy (dynamic)
+        # rod energy (w/o time dimension)
         struct_rod_energy = ti.types.struct(
             stretching_energy=gs.ti_float,
             bending_energy=gs.ti_float,
@@ -209,14 +210,17 @@ class RodSolver(Solver):
         # vertex state (dynamic)
         struct_vertex_state = ti.types.struct(
             vert=gs.ti_vec3,        # current position
-            vert_prev=gs.ti_vec3,   # previous position # TODO: do we need grad for this?
             vel=gs.ti_vec3,
         )
 
-        struct_vertex_state_ng = ti.types.struct(
+        # vertex force (w/o time dimension)
+        struct_vertex_force = ti.types.struct(
             f_s=gs.ti_vec3,             # stretching force
             f_b=gs.ti_vec3,             # bending force
             f_t=gs.ti_vec3,             # twisting force
+        )
+
+        struct_vertex_state_ng = ti.types.struct(
             fixed=gs.ti_bool,           # is the vertex fixed
             is_kinematic=gs.ti_bool,    # is the vertex kinematic
         )
@@ -228,6 +232,12 @@ class RodSolver(Solver):
         self.vertices = struct_vertex_state.field(
             shape=self._batch_shape((self.sim.substeps_local + 1, self._n_vertices)),
             needs_grad=True,
+            layout=ti.Layout.SOA
+        )
+
+        self.vertices_force = struct_vertex_force.field(
+            shape=self._batch_shape(self._n_vertices),
+            needs_grad=False,
             layout=ti.Layout.SOA
         )
 
@@ -250,16 +260,18 @@ class RodSolver(Solver):
 
         # edge state (dynamic)
         struct_edge_state = ti.types.struct(
-            edge=gs.ti_vec3,        # current edge vector
-            length=gs.ti_float,     # current edge length
             theta=gs.ti_float,      # twist angle
             omega=gs.ti_float,      # twist rate (angular velocity)
+        )
+
+        struct_edge_state_ng = ti.types.struct(
+            edge=gs.ti_vec3,        # current edge vector
+            length=gs.ti_float,     # current edge length
             d1=gs.ti_vec3,          # material frame direction 1
             d2=gs.ti_vec3,          # material frame direction 2
             d3=gs.ti_vec3,          # material frame direction 3 (tangent)
             d1_ref=gs.ti_vec3,      # reference material frame direction 1
             d2_ref=gs.ti_vec3,      # reference material frame direction 2
-            d3_prev=gs.ti_vec3,     # previous tangent
         )
 
         self.edges_info = struct_edge_info.field(
@@ -272,6 +284,12 @@ class RodSolver(Solver):
             layout=ti.Layout.SOA
         )
 
+        self.edges_ng = struct_edge_state_ng.field(
+            shape=self._batch_shape((self.sim.substeps_local + 1, self._n_edges)),
+            needs_grad=False,
+            layout=ti.Layout.SOA
+        )
+
     def init_internal_vertex_fields(self):
         # internal vertex information (static)
         struct_internal_vertex_info = ti.types.struct(
@@ -279,24 +297,14 @@ class RodSolver(Solver):
             edge_idx=gs.ti_int,         # index of the starting edge of this internal vertex
         )
 
-        # internal vertex state (dynamic)
-        struct_internal_vertex_state = ti.types.struct(
+        struct_internal_vertex_state_ng = ti.types.struct(
             kb=gs.ti_vec3,          # current curvature binormal
             twist=gs.ti_float,      # current twist
-        )
-
-        struct_internal_vertex_state_ng = ti.types.struct(
             kappa_rest=gs.ti_vec2,      # rest curvature,
         )
 
         self.internal_vertices_info = struct_internal_vertex_info.field(
             shape=self._n_internal_vertices, layout=ti.Layout.SOA
-        )
-
-        self.internal_vertices = struct_internal_vertex_state.field(
-            shape=self._batch_shape((self.sim.substeps_local + 1, self._n_internal_vertices)),
-            needs_grad=True,
-            layout=ti.Layout.SOA
         )
 
         self.internal_vertices_ng = struct_internal_vertex_state_ng.field(
@@ -358,7 +366,7 @@ class RodSolver(Solver):
         )
 
         self.rr_constraints = struct_rr_state.field(
-            shape=self._batch_shape(self._n_valid_edge_pairs),
+            shape=self._batch_shape((self.sim.substeps_local + 1, self._n_valid_edge_pairs)),
             needs_grad=False,
             layout=ti.Layout.AOS
         )
@@ -399,6 +407,9 @@ class RodSolver(Solver):
         self._ckpt = dict()
 
     def reset_grad(self):
+        self.vertices.grad.fill(0)
+        self.edges.grad.fill(0)
+
         for entity in self._entities:
             entity.reset_grad()
 
@@ -417,6 +428,7 @@ class RodSolver(Solver):
             self.init_vertex_fields()
             self.init_edge_fields()
             self.init_internal_vertex_fields()
+            self.init_ckpt()
 
             for entity in self._entities:
                 entity._add_to_solver()
@@ -455,7 +467,7 @@ class RodSolver(Solver):
         first_edge_idx = self.rods_info[i_r].first_edge_idx
         for i_e, i_b in ti.ndrange(n_verts - 1, self._B):
             edge_idx = first_edge_idx + i_e
-            length[i_b] += self.edges[f, edge_idx, i_b].length
+            length[i_b] += self.edges_ng[f, edge_idx, i_b].length
 
     # ------------------------------------------------------------------------------------
     # ----------------------------------- simulation -------------------------------------
@@ -469,17 +481,27 @@ class RodSolver(Solver):
             self.rods_energy[i_r, i_b].twisting_energy = 0.0
 
     @ti.func
+    def _func_clear_force(self):
+        for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
+            self.vertices_force[i_v, i_b].f_s = ti.Vector.zero(gs.ti_float, 3)
+            self.vertices_force[i_v, i_b].f_b = ti.Vector.zero(gs.ti_float, 3)
+            self.vertices_force[i_v, i_b].f_t = ti.Vector.zero(gs.ti_float, 3)
+
+    @ti.func
     def _func_clear_gradients(self):
         self.gradients.fill(0.0)
 
     @ti.kernel
-    def update_centerline_positions(self, f: ti.i32):
+    def update_centerline_positions(self, f: ti.i32):      # Differential    # FIXME: check if correct
         for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
             if not self.vertices_ng[f, i_v, i_b].fixed:
-                self.vertices[f, i_v, i_b].vert += self.vertices[f, i_v, i_b].vel * self.substep_dt
+                # self.vertices[f + 1, i_v, i_b].vert += self.vertices[f + 1, i_v, i_b].vel * self.substep_dt
+                self.vertices[f + 1, i_v, i_b].vert = (
+                    self.vertices[f + 1, i_v, i_b].vel * self.substep_dt + self.vertices[f, i_v, i_b].vert
+                )
 
     @ti.kernel
-    def update_centerline_velocities(self, f: ti.i32):
+    def update_centerline_velocities(self, f: ti.i32):       # Differential
         for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
             mass = self.vertices_info[i_v].mass
             if not self.vertices_ng[f, i_v, i_b].fixed:
@@ -488,93 +510,91 @@ class RodSolver(Solver):
                     self.gradients[3 * i_v + 1, i_b],
                     self.gradients[3 * i_v + 2, i_b],
                 ])
-                self.vertices[f, i_v, i_b].vel -= gradient / mass * self.substep_dt
+                self.vertices[f + 1, i_v, i_b].vel -= gradient / mass * self.substep_dt
 
                 # apply damping if enabled
-                self.vertices[f, i_v, i_b].vel *= ti.exp(-self.substep_dt * self.damping)
+                self.vertices[f + 1, i_v, i_b].vel *= ti.exp(-self.substep_dt * self.damping)
                 # self.vertices[f, i_v, i_b].vel *= (1.0 - self.damping)
                 # add gravity (avoiding damping on gravity)
-                self.vertices[f, i_v, i_b].vel += self.substep_dt * self._gravity[i_b]
+                self.vertices[f + 1, i_v, i_b].vel += self.substep_dt * self._gravity[i_b]
 
     @ti.kernel
-    def update_angular_velocities(self, f: ti.i32):
+    def update_angular_velocities(self, f: ti.i32):      # Differential
         for i_e, i_b in ti.ndrange(self._n_edges, self._B):
             theta_dof_idx = 3 * self._n_vertices + i_e
             gradient = self.gradients[theta_dof_idx, i_b]
-            inertia = 1.0  # assume rotational inertia is 1 for simplicity
-            self.edges[f, i_e, i_b].omega -= gradient / inertia * self.substep_dt
-            self.edges[f, i_e, i_b].omega *= ti.exp(-self.substep_dt * self.angular_damping)
+            inertia = 1.0
+            self.edges[f + 1, i_e, i_b].omega -= gradient / inertia * self.substep_dt
+            self.edges[f + 1, i_e, i_b].omega *= ti.exp(-self.substep_dt * self.angular_damping)
 
     @ti.kernel
-    def update_centerline_edges(self, f: ti.i32):
+    def update_centerline_edges(self, f: ti.i32):    # Differential
         for i_e, i_b in ti.ndrange(self._n_edges, self._B):
             v_s, v_e = self.get_edge_vertices(i_e)
-            self.edges[f, i_e, i_b].edge = self.vertices[f, v_e, i_b].vert - self.vertices[f, v_s, i_b].vert
-            self.edges[f, i_e, i_b].length = tm.length(self.edges[f, i_e, i_b].edge)
+            self.edges_ng[f + 1, i_e, i_b].edge = self.vertices[f + 1, v_e, i_b].vert - self.vertices[f + 1, v_s, i_b].vert
+            self.edges_ng[f + 1, i_e, i_b].length = tm.length(self.edges_ng[f + 1, i_e, i_b].edge)
 
     @ti.kernel
-    def update_frame_thetas(self, f: ti.i32):
+    def update_frame_thetas(self, f: ti.i32):      # Differential
         for i_e, i_b in ti.ndrange(self._n_edges, self._B):
             v_s, v_e = self.get_edge_vertices(i_e)
             if not self.vertices_ng[f, v_s, i_b].fixed or not self.vertices_ng[f, v_e, i_b].fixed:
-                # self.edges[f, i_e, i_b].theta -= self.gradients[3 * self._n_vertices + i_e, i_b] * self.substep_dt
-                self.edges[f, i_e, i_b].theta += self.edges[f, i_e, i_b].omega * self.substep_dt
+                # self.edges[f + 1, i_e, i_b].theta -= self.gradients[3 * self._n_vertices + i_e, i_b] * self.substep_dt
+                self.edges[f + 1, i_e, i_b].theta = (
+                    self.edges[f + 1, i_e, i_b].omega * self.substep_dt + self.edges[f, i_e, i_b].theta
+                )
 
     @ti.kernel
     def update_material_states(self, f: ti.i32):
         for i_e, i_b in ti.ndrange(self._n_edges, self._B):
-            self.edges[f, i_e, i_b].d3 = self.edges[f, i_e, i_b].edge.normalized()
+            self.edges_ng[f + 1, i_e, i_b].d3 = self.edges_ng[f + 1, i_e, i_b].edge.normalized()
 
             d1, d2, d1_ref, d2_ref = get_updated_material_frame(
-                self.edges[f, i_e, i_b].d3_prev,
-                self.edges[f, i_e, i_b].d3,
-                self.edges[f, i_e, i_b].d1_ref,
-                self.edges[f, i_e, i_b].d2_ref,
-                self.edges[f, i_e, i_b].theta,
+                self.edges_ng[f, i_e, i_b].d3,         # prev d3
+                self.edges_ng[f + 1, i_e, i_b].d3,     # curr d3
+                self.edges_ng[f, i_e, i_b].d1_ref,
+                self.edges_ng[f, i_e, i_b].d2_ref,
+                self.edges[f + 1, i_e, i_b].theta,
             )
-            self.edges[f, i_e, i_b].d1 = d1
-            self.edges[f, i_e, i_b].d2 = d2
-            self.edges[f, i_e, i_b].d1_ref = d1_ref
-            self.edges[f, i_e, i_b].d2_ref = d2_ref
-        
+            self.edges_ng[f + 1, i_e, i_b].d1 = d1
+            self.edges_ng[f + 1, i_e, i_b].d2 = d2
+            self.edges_ng[f + 1, i_e, i_b].d1_ref = d1_ref
+            self.edges_ng[f + 1, i_e, i_b].d2_ref = d2_ref
+
         for i_iv, i_b in ti.ndrange(self.n_internal_vertices, self._B):
             e_s, e_e = self.get_hinge_edges(i_iv)
 
-            self.internal_vertices[f, i_iv, i_b].kb = curvature_binormal(
-                self.edges[f, e_s, i_b].d3, self.edges[f, e_e, i_b].d3
+            self.internal_vertices_ng[f + 1, i_iv, i_b].kb = curvature_binormal(
+                self.edges_ng[f + 1, e_s, i_b].d3, self.edges_ng[f + 1, e_e, i_b].d3
             )
             twist_ref = get_updated_reference_twist(
-                self.edges[f, e_s, i_b].d1_ref, self.edges[f, e_e, i_b].d1_ref,
-                self.edges[f, e_s, i_b].d3, self.edges[f, e_e, i_b].d3
+                self.edges_ng[f + 1, e_s, i_b].d1_ref, self.edges_ng[f + 1, e_e, i_b].d1_ref,
+                self.edges_ng[f + 1, e_s, i_b].d3, self.edges_ng[f + 1, e_e, i_b].d3
             )
-            self.internal_vertices[f, i_iv, i_b].twist = self.edges[f, e_e, i_b].theta - self.edges[f, e_s, i_b].theta + twist_ref
+            self.internal_vertices_ng[f + 1, i_iv, i_b].twist = self.edges[f + 1, e_e, i_b].theta - self.edges[f + 1, e_s, i_b].theta + twist_ref
 
     @ti.kernel
-    def update_velocities_after_projection(self, f: ti.i32):
+    def update_velocities_after_projection(self, f: ti.i32):   # Differential
         for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
             if not self.vertices_ng[f, i_v, i_b].fixed:
-                self.vertices[f, i_v, i_b].vel = (self.vertices[f, i_v, i_b].vert - self.vertices[f, i_v, i_b].vert_prev) / self.substep_dt
+                self.vertices[f + 1, i_v, i_b].vel = (self.vertices[f + 1, i_v, i_b].vert - self.vertices[f, i_v, i_b].vert) / self.substep_dt
 
     @ti.kernel
-    def init_pos_and_vel(self, f: ti.i32):
+    def transfer_fixed_states(self, f: ti.i32):
+        for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
+            self.vertices_ng[f + 1, i_v, i_b].fixed = self.vertices_ng[f, i_v, i_b].fixed
+
+    @ti.kernel
+    def init_pos_and_vel(self, f: ti.i32):  # Differential
         for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
             self.vertices[f + 1, i_v, i_b].vert = self.vertices[f, i_v, i_b].vert
             self.vertices[f + 1, i_v, i_b].vel = self.vertices[f, i_v, i_b].vel
 
     @ti.kernel
-    def init_tangents(self, f: ti.i32):
+    def init_theta_and_omega(self, f: ti.i32):     # Differential
         for i_e, i_b in ti.ndrange(self._n_edges, self._B):
-            self.edges[f + 1, i_e, i_b].d3 = self.edges[f, i_e, i_b].d3
-
-    @ti.kernel
-    def record_previous_positions(self, f: ti.i32):
-        for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
-            self.vertices[f, i_v, i_b].vert_prev = self.vertices[f, i_v, i_b].vert
-
-    @ti.kernel
-    def record_previous_tangents(self, f: ti.i32):
-        for i_e, i_b in ti.ndrange(self._n_edges, self._B):
-            self.edges[f, i_e, i_b].d3_prev = self.edges[f, i_e, i_b].d3
+            self.edges[f + 1, i_e, i_b].theta = self.edges[f, i_e, i_b].theta
+            self.edges[f + 1, i_e, i_b].omega = self.edges[f, i_e, i_b].omega
 
     @ti.func
     def _func_compute_stretching_energy(self, f: ti.i32):
@@ -591,7 +611,7 @@ class RodSolver(Solver):
             a, b = r, r
             A = pi * a * b  # cross-sectional area
 
-            strain_i = (self.edges[f, i_e, i_b].length / self.edges_info[i_e].length_rest) - 1.0
+            strain_i = (self.edges_ng[f, i_e, i_b].length / self.edges_info[i_e].length_rest) - 1.0
 
             self.rods_energy[rod_id, i_b].stretching_energy += 0.5 * K * A * ti.pow(strain_i, 2) * self.edges_info[i_e].length_rest
 
@@ -599,16 +619,16 @@ class RodSolver(Solver):
 
             gradient_magnitude = K * A * strain_i
 
-            gradient_dx_i   = - gradient_magnitude * self.edges[f, i_e, i_b].d3
-            gradient_dx_ip1 =   gradient_magnitude * self.edges[f, i_e, i_b].d3
+            gradient_dx_i   = - gradient_magnitude * self.edges_ng[f, i_e, i_b].d3
+            gradient_dx_ip1 =   gradient_magnitude * self.edges_ng[f, i_e, i_b].d3
 
             for k in range(3):
                 ti.atomic_add(self.gradients[3 * v_s + k, i_b], gradient_dx_i[k])
                 ti.atomic_add(self.gradients[3 * v_e + k, i_b], gradient_dx_ip1[k])
 
-                ti.atomic_add(self.vertices_ng[f, v_s, i_b].f_s[k], -gradient_dx_i[k])
-                ti.atomic_add(self.vertices_ng[f, v_e, i_b].f_s[k], -gradient_dx_ip1[k])
-    
+                ti.atomic_add(self.vertices_force[v_s, i_b].f_s[k], -gradient_dx_i[k])
+                ti.atomic_add(self.vertices_force[v_e, i_b].f_s[k], -gradient_dx_ip1[k])
+
     @ti.func
     def _func_compute_bending_energy(self, f: ti.i32):
         for i_iv, i_b in ti.ndrange(self.n_internal_vertices, self._B):
@@ -627,11 +647,11 @@ class RodSolver(Solver):
             B11 = E * A * ti.pow(a, 2) / 4.0
             B22 = E * A * ti.pow(b, 2) / 4.0
 
-            kb = self.internal_vertices[f, i_iv, i_b].kb
+            kb = self.internal_vertices_ng[f, i_iv, i_b].kb
             l_i = (self.edges_info[e_s].length_rest + self.edges_info[e_e].length_rest) * 0.5
 
-            kappa1_i =   0.5 * tm.dot(kb, self.edges[f, e_s, i_b].d2 + self.edges[f, e_e, i_b].d2)
-            kappa2_i = - 0.5 * tm.dot(kb, self.edges[f, e_s, i_b].d1 + self.edges[f, e_e, i_b].d1)
+            kappa1_i =   0.5 * tm.dot(kb, self.edges_ng[f, e_s, i_b].d2 + self.edges_ng[f, e_e, i_b].d2)
+            kappa2_i = - 0.5 * tm.dot(kb, self.edges_ng[f, e_s, i_b].d1 + self.edges_ng[f, e_e, i_b].d1)
 
             # bending plasticity
             kappa1_rest_i = self.internal_vertices_ng[f, i_iv, i_b].kappa_rest[0]
@@ -649,11 +669,16 @@ class RodSolver(Solver):
             if yield_amount > 0.:
                 # delta_rest_kappa = self.substep_dt * creep_rate * (yield_amount / elastic_kappa_norm) * elastic_kappa
                 delta_rest_kappa = creep_rate * (yield_amount / elastic_kappa_norm) * elastic_kappa
-                self.internal_vertices_ng[f, i_iv, i_b].kappa_rest += delta_rest_kappa
+                self.internal_vertices_ng[f + 1, i_iv, i_b].kappa_rest = (
+                    delta_rest_kappa + self.internal_vertices_ng[f, i_iv, i_b].kappa_rest
+                )
                 # print(f"Rod {rod_id}, iv {i_iv}, yield_amount: {yield_amount}")
+            else:
+                # f -> f+1
+                self.internal_vertices_ng[f + 1, i_iv, i_b].kappa_rest = self.internal_vertices_ng[f, i_iv, i_b].kappa_rest
 
-            kappa1_rest_i = self.internal_vertices_ng[f, i_iv, i_b].kappa_rest[0]
-            kappa2_rest_i = self.internal_vertices_ng[f, i_iv, i_b].kappa_rest[1]
+            kappa1_rest_i = self.internal_vertices_ng[f + 1, i_iv, i_b].kappa_rest[0]
+            kappa2_rest_i = self.internal_vertices_ng[f + 1, i_iv, i_b].kappa_rest[1]
 
             self.rods_energy[rod_id, i_b].bending_energy += 0.5 * (
                 B11 * ti.pow(kappa1_i - kappa1_rest_i, 2) +
@@ -665,20 +690,20 @@ class RodSolver(Solver):
             gradient_kappa1_i_x_i = ti.Vector.zero(dt=gs.ti_float, n=9)
             gradient_kappa2_i_x_i = ti.Vector.zero(dt=gs.ti_float, n=9)
 
-            chi = 1. + tm.dot(self.edges[f, e_s, i_b].d3, self.edges[f, e_e, i_b].d3)
-            d1_tilde = (self.edges[f, e_s, i_b].d1 + self.edges[f, e_e, i_b].d1) / chi
-            d2_tilde = (self.edges[f, e_s, i_b].d2 + self.edges[f, e_e, i_b].d2) / chi
-            d3_tilde = (self.edges[f, e_s, i_b].d3 + self.edges[f, e_e, i_b].d3) / chi
+            chi = 1. + tm.dot(self.edges_ng[f, e_s, i_b].d3, self.edges_ng[f, e_e, i_b].d3)
+            d1_tilde = (self.edges_ng[f, e_s, i_b].d1 + self.edges_ng[f, e_e, i_b].d1) / chi
+            d2_tilde = (self.edges_ng[f, e_s, i_b].d2 + self.edges_ng[f, e_e, i_b].d2) / chi
+            d3_tilde = (self.edges_ng[f, e_s, i_b].d3 + self.edges_ng[f, e_e, i_b].d3) / chi
 
-            dkappa1_i_de_im1 = tm.cross(d2_tilde, -self.edges[f, e_e, i_b].d3 / self.edges_info[e_s].length_rest) - \
+            dkappa1_i_de_im1 = tm.cross(d2_tilde, -self.edges_ng[f, e_e, i_b].d3 / self.edges_info[e_s].length_rest) - \
                 kappa1_i * d3_tilde / self.edges_info[e_s].length_rest
-            dkappa1_i_de_i = tm.cross(d2_tilde, self.edges[f, e_s, i_b].d3 / self.edges_info[e_e].length_rest) - \
+            dkappa1_i_de_i = tm.cross(d2_tilde, self.edges_ng[f, e_s, i_b].d3 / self.edges_info[e_e].length_rest) - \
                 kappa1_i * d3_tilde / self.edges_info[e_e].length_rest
-            dkappa2_i_de_im1 = tm.cross(d1_tilde, self.edges[f, e_e, i_b].d3 / self.edges_info[e_s].length_rest) - \
+            dkappa2_i_de_im1 = tm.cross(d1_tilde, self.edges_ng[f, e_e, i_b].d3 / self.edges_info[e_s].length_rest) - \
                 kappa2_i * d3_tilde / self.edges_info[e_s].length_rest
-            dkappa2_i_de_i = tm.cross(d1_tilde, -self.edges[f, e_s, i_b].d3 / self.edges_info[e_e].length_rest) - \
+            dkappa2_i_de_i = tm.cross(d1_tilde, -self.edges_ng[f, e_s, i_b].d3 / self.edges_info[e_e].length_rest) - \
                 kappa2_i * d3_tilde / self.edges_info[e_e].length_rest
-            
+
             gradient_kappa1_i_x_i[0:3] = dkappa1_i_de_im1 * (- 1.0)
             gradient_kappa1_i_x_i[3:6] = dkappa1_i_de_im1 * (  1.0) + dkappa1_i_de_i * (- 1.0)
             gradient_kappa1_i_x_i[6:9] = dkappa1_i_de_i   * (  1.0)
@@ -695,17 +720,17 @@ class RodSolver(Solver):
                 ti.atomic_add(self.gradients[3 * v_m + k, i_b], gradient_dx_i[k + 3])
                 ti.atomic_add(self.gradients[3 * v_e + k, i_b], gradient_dx_i[k + 6])
 
-                ti.atomic_add(self.vertices_ng[f, v_s, i_b].f_b[k], -gradient_dx_i[k])
-                ti.atomic_add(self.vertices_ng[f, v_m, i_b].f_b[k], -gradient_dx_i[k + 3])
-                ti.atomic_add(self.vertices_ng[f, v_e, i_b].f_b[k], -gradient_dx_i[k + 6])
+                ti.atomic_add(self.vertices_force[v_s, i_b].f_b[k], -gradient_dx_i[k])
+                ti.atomic_add(self.vertices_force[v_m, i_b].f_b[k], -gradient_dx_i[k + 3])
+                ti.atomic_add(self.vertices_force[v_e, i_b].f_b[k], -gradient_dx_i[k + 6])
 
             gradient_kappa1_i_theta_i = - ti.Vector([
-                tm.dot(kb, self.edges[f, e_s, i_b].d1) * 0.5,
-                tm.dot(kb, self.edges[f, e_e, i_b].d1) * 0.5
+                tm.dot(kb, self.edges_ng[f, e_s, i_b].d1) * 0.5,
+                tm.dot(kb, self.edges_ng[f, e_e, i_b].d1) * 0.5
             ])
             gradient_kappa2_i_theta_i = - ti.Vector([
-                tm.dot(kb, self.edges[f, e_s, i_b].d2) * 0.5,
-                tm.dot(kb, self.edges[f, e_e, i_b].d2) * 0.5
+                tm.dot(kb, self.edges_ng[f, e_s, i_b].d2) * 0.5,
+                tm.dot(kb, self.edges_ng[f, e_e, i_b].d2) * 0.5
             ])
 
             gradient_dtheta_i = (
@@ -734,9 +759,9 @@ class RodSolver(Solver):
             A = pi * a * b  # cross-sectional area
             beta = G * A * (ti.pow(a, 2) + ti.pow(b, 2)) / 4.0
 
-            kb = self.internal_vertices[f, i_iv, i_b].kb
+            kb = self.internal_vertices_ng[f, i_iv, i_b].kb
             l_i = (self.edges_info[e_s].length_rest + self.edges_info[e_e].length_rest) * 0.5
-            m_i = self.internal_vertices[f, i_iv, i_b].twist
+            m_i = self.internal_vertices_ng[f, i_iv, i_b].twist
             m_i_rest = self.internal_vertices_info[i_iv].twist_rest
 
             self.rods_energy[rod_id, i_b].twisting_energy += 0.5 * beta * ti.pow(m_i - m_i_rest, 2) / l_i
@@ -744,18 +769,18 @@ class RodSolver(Solver):
             # -------------------------------- gradients --------------------------------
 
             gradient_m_i_dx_i = ti.Vector.zero(dt=gs.ti_float, n=9)
-            gradient_m_i_dx_i[0:3] = - kb / (2.0 * self.edges[f, e_s, i_b].length)
-            gradient_m_i_dx_i[3:6] =   kb / (2.0 * self.edges[f, e_s, i_b].length) - kb / (2.0 * self.edges[f, e_e, i_b].length)
-            gradient_m_i_dx_i[6:9] =   kb / (2.0 * self.edges[f, e_e, i_b].length)
+            gradient_m_i_dx_i[0:3] = - kb / (2.0 * self.edges_ng[f, e_s, i_b].length)
+            gradient_m_i_dx_i[3:6] =   kb / (2.0 * self.edges_ng[f, e_s, i_b].length) - kb / (2.0 * self.edges_ng[f, e_e, i_b].length)
+            gradient_m_i_dx_i[6:9] =   kb / (2.0 * self.edges_ng[f, e_e, i_b].length)
             gradient_dx_i = beta / l_i * (m_i - m_i_rest) * gradient_m_i_dx_i
             for k in range(3):
                 ti.atomic_add(self.gradients[3 * v_s + k, i_b], gradient_dx_i[k])
                 ti.atomic_add(self.gradients[3 * v_m + k, i_b], gradient_dx_i[k + 3])
                 ti.atomic_add(self.gradients[3 * v_e + k, i_b], gradient_dx_i[k + 6])
 
-                ti.atomic_add(self.vertices_ng[f, v_s, i_b].f_t[k], -gradient_dx_i[k])
-                ti.atomic_add(self.vertices_ng[f, v_m, i_b].f_t[k], -gradient_dx_i[k + 3])
-                ti.atomic_add(self.vertices_ng[f, v_e, i_b].f_t[k], -gradient_dx_i[k + 6])
+                ti.atomic_add(self.vertices_force[v_s, i_b].f_t[k], -gradient_dx_i[k])
+                ti.atomic_add(self.vertices_force[v_m, i_b].f_t[k], -gradient_dx_i[k + 3])
+                ti.atomic_add(self.vertices_force[v_e, i_b].f_t[k], -gradient_dx_i[k + 6])
 
             gradient_m_i_dtheta_i = ti.Vector([-1.0, 1.0])
             gradient_dtheta_i = beta / l_i * (m_i - m_i_rest) * gradient_m_i_dtheta_i
@@ -767,6 +792,7 @@ class RodSolver(Solver):
     @ti.kernel
     def compute_energy_and_gradients(self, f: ti.i32):
         # clear energy and gradients
+        self._func_clear_force()
         self._func_clear_energy()
         self._func_clear_gradients()
 
@@ -787,28 +813,21 @@ class RodSolver(Solver):
 
     def substep_pre_coupling(self, f):
         if self.is_active():
-            self.record_previous_positions(f)
-            self.record_previous_tangents(f)
+            self.init_pos_and_vel(f)
+            self.init_theta_and_omega(f)
             self.compute_energy_and_gradients(f)
             self.update_centerline_velocities(f)
             self.update_angular_velocities(f)
-            self._kernel_clear_kinematic_states(f)
 
     def substep_pre_coupling_grad(self, f):
         if self.is_active():
             pass
-
-    def substep_pre_coupling_v2(self, f):
-        if self.is_active():
-            self.init_pos_and_vel(f)
-            self.init_tangents(f)
 
     def substep_post_coupling(self, f):
         if self.is_active():
             self.update_centerline_positions(f)
             self.update_frame_thetas(f)
 
-            self._kernel_clear_contact_states()
             for i in range(self._n_pbd_iters):
                 self._kernel_apply_inextensibility_constraints(f)
                 self._kernel_apply_rod_collision_constraints(f, i)
@@ -816,6 +835,8 @@ class RodSolver(Solver):
             self.update_material_states(f)
             self.update_velocities_after_projection(f)
             self._kernel_apply_rod_friction(f)
+
+            self.transfer_fixed_states(f)   # f -> f+1
 
             if f % 20 == 0:
                 vert = self.vertices.vert.to_numpy()[f, :, 0]
@@ -830,8 +851,53 @@ class RodSolver(Solver):
         if self.is_active():
             pass
 
-    def reset_grad(self):
-        pass
+    @ti.kernel
+    def copy_frame(self, source: ti.i32, target: ti.i32):
+        for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
+            self.vertices[target, i_v, i_b].vert = self.vertices[source, i_v, i_b].vert
+            self.vertices[target, i_v, i_b].vel = self.vertices[source, i_v, i_b].vel
+
+            self.vertices_ng[target, i_v, i_b].fixed = self.vertices_ng[source, i_v, i_b].fixed
+
+        for i_e, i_b in ti.ndrange(self._n_edges, self._B):
+            self.edges[target, i_e, i_b].theta = self.edges[source, i_e, i_b].theta
+            self.edges[target, i_e, i_b].omega = self.edges[source, i_e, i_b].omega
+
+            self.edges_ng[target, i_e, i_b].edge = self.edges_ng[source, i_e, i_b].edge
+            self.edges_ng[target, i_e, i_b].length = self.edges_ng[source, i_e, i_b].length
+            self.edges_ng[target, i_e, i_b].d1 = self.edges_ng[source, i_e, i_b].d1
+            self.edges_ng[target, i_e, i_b].d2 = self.edges_ng[source, i_e, i_b].d2
+            self.edges_ng[target, i_e, i_b].d3 = self.edges_ng[source, i_e, i_b].d3
+            self.edges_ng[target, i_e, i_b].d1_ref = self.edges_ng[source, i_e, i_b].d1_ref
+            self.edges_ng[target, i_e, i_b].d2_ref = self.edges_ng[source, i_e, i_b].d2_ref
+
+        for i_iv, i_b in ti.ndrange(self.n_internal_vertices, self._B):
+            self.internal_vertices_ng[target, i_iv, i_b].kb = self.internal_vertices_ng[source, i_iv, i_b].kb
+            self.internal_vertices_ng[target, i_iv, i_b].twist = self.internal_vertices_ng[source, i_iv, i_b].twist
+            self.internal_vertices_ng[target, i_iv, i_b].kappa_rest = self.internal_vertices_ng[source, i_iv, i_b].kappa_rest
+
+    @ti.kernel
+    def copy_grad(self, source: ti.i32, target: ti.i32):
+        for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
+            self.vertices.grad[target, i_v, i_b].vert = self.vertices.grad[source, i_v, i_b].vert
+            self.vertices.grad[target, i_v, i_b].vel = self.vertices.grad[source, i_v, i_b].vel
+
+            self.vertices_ng[target, i_v, i_b].fixed = self.vertices_ng[source, i_v, i_b].fixed
+
+        for i_e, i_b in ti.ndrange(self._n_edges, self._B):
+            self.edges.grad[target, i_e, i_b].theta = self.edges.grad[source, i_e, i_b].theta
+            self.edges.grad[target, i_e, i_b].omega = self.edges.grad[source, i_e, i_b].omega
+
+    @ti.kernel
+    def reset_grad_till_frame(self, f: ti.i32):
+        # Zero out v.grad in frame 0..(f-1) for all vertices, all batch indices
+        for i_f, i_v, i_b in ti.ndrange(f, self._n_vertices, self._B):
+            self.vertices.grad[i_f, i_v, i_b].vert = ti.Vector.zero(gs.ti_float, 3)
+            self.vertices.grad[i_f, i_v, i_b].vel = ti.Vector.zero(gs.ti_float, 3)
+
+        for i_f, i_e, i_b in ti.ndrange(f, self._n_edges, self._B):
+            self.edges.grad[i_f, i_e, i_b].theta = 0.0
+            self.edges.grad[i_f, i_e, i_b].omega = 0.0
 
     # ------------------------------------------------------------------------------------
     # ------------------------------------ gradient --------------------------------------
@@ -842,16 +908,63 @@ class RodSolver(Solver):
         """
         Collect gradients from downstream queried states.
         """
-        pass
+        for entity in self._entities:
+            entity.collect_output_grads()
 
     def add_grad_from_state(self, state):
         pass
 
     def save_ckpt(self, ckpt_name):
-        pass
+        if self.is_active():
+            if not ckpt_name in self._ckpt:
+                self._ckpt[ckpt_name] = dict()
+                self._ckpt[ckpt_name]["pos"] = torch.zeros(
+                    self._batch_shape((self.n_vertices, 3), first_dim=True), dtype=gs.tc_float
+                )
+                self._ckpt[ckpt_name]["vel"] = torch.zeros(
+                    self._batch_shape((self.n_vertices, 3), first_dim=True), dtype=gs.tc_float
+                )
+                self._ckpt[ckpt_name]["fixed"] = torch.zeros(
+                    self._batch_shape((self.n_vertices,), first_dim=True), dtype=gs.tc_bool
+                )
+                self._ckpt[ckpt_name]["theta"] = torch.zeros(
+                    self._batch_shape((self.n_edges,), first_dim=True), dtype=gs.tc_float
+                )
+                self._ckpt[ckpt_name]["omega"] = torch.zeros(
+                    self._batch_shape((self.n_edges,), first_dim=True), dtype=gs.tc_float
+                )
+                # self._ckpt[ckpt_name]["d1_ref"] = torch.zeros(
+                #     self._batch_shape((self.n_edges, 3), first_dim=True), dtype=gs.tc_float
+                # )
+                # self._ckpt[ckpt_name]["d2_ref"] = torch.zeros(
+                #     self._batch_shape((self.n_edges, 3), first_dim=True), dtype=gs.tc_float
+                # )
+                # self._ckpt[ckpt_name]["d3"] = torch.zeros(
+                #     self._batch_shape((self.n_edges, 3), first_dim=True), dtype=gs.tc_float
+                # )
+
+            self._kernel_get_state(
+                0,
+                self._ckpt[ckpt_name]["pos"],
+                self._ckpt[ckpt_name]["vel"],
+                self._ckpt[ckpt_name]["fixed"],
+                self._ckpt[ckpt_name]["theta"],
+                self._ckpt[ckpt_name]["omega"],
+                # self._ckpt[ckpt_name]["d1_ref"],
+                # self._ckpt[ckpt_name]["d2_ref"],
+                # self._ckpt[ckpt_name]["d3"],
+            )
+
+            for entity in self._entities:
+                entity.save_ckpt(ckpt_name)
+
+            self.copy_frame(self._sim.substeps_local, 0)
 
     def load_ckpt(self, ckpt_name):
-        pass
+        self.copy_frame(0, self._sim.substeps_local)
+        self.copy_grad(0, self._sim.substeps_local)
+
+        # TODO:
 
     # ------------------------------------------------------------------------------------
     # --------------------------------------- io -----------------------------------------
@@ -859,12 +972,18 @@ class RodSolver(Solver):
 
     def set_state(self, f, state, envs_idx=None):
         if self.is_active():
-            self._kernel_set_state(f, state.pos, state.vel, state.fixed)
+            self._kernel_set_state(
+                f, state.pos, state.vel, state.fixed, 
+                state.theta, state.omega, # state.d1_ref, state.d2_ref, state.d3
+            )
 
     def get_state(self, f):
         if self.is_active():
             state = RODSolverState(self._scene)
-            self._kernel_get_state(f, state.pos, state.vel, state.fixed)
+            self._kernel_get_state(
+                f, state.pos, state.vel, state.fixed, 
+                state.theta, state.omega, # state.d1_ref, state.d2_ref, state.d3
+            )
         else:
             state = None
         return state
@@ -963,7 +1082,7 @@ class RodSolver(Solver):
         restitution: ti.f64,         # NOTE: we can use array
         verts_rest: ti.types.ndarray(dtype=tm.vec3, ndim=1),
         edges_rest: ti.types.ndarray(dtype=tm.vec3, ndim=1),
-    ):
+    ):  
         n_verts_local = verts_rest.shape[0]
         for i_v in range(n_verts_local):
             i_global = i_v + v_start
@@ -1053,6 +1172,7 @@ class RodSolver(Solver):
         v_start: ti.i32,
         e_start: ti.i32,
         iv_start: ti.i32,
+        fixed: ti.u1,
         verts: ti.types.ndarray(dtype=tm.vec3, ndim=1),
         edges: ti.types.ndarray(dtype=tm.vec3, ndim=1),
     ):
@@ -1062,14 +1182,10 @@ class RodSolver(Solver):
 
             # state (dynamic)
             self.vertices[f, i_global, i_b].vert = verts[i_v]
-            self.vertices[f, i_global, i_b].vert_prev = verts[i_v]
             self.vertices[f, i_global, i_b].vel = ti.Vector.zero(gs.ti_float, 3)
 
             # state (dynamic w/o grad)
-            self.vertices_ng[f, i_global, i_b].f_s = ti.Vector.zero(gs.ti_float, 3)
-            self.vertices_ng[f, i_global, i_b].f_b = ti.Vector.zero(gs.ti_float, 3)
-            self.vertices_ng[f, i_global, i_b].f_t = ti.Vector.zero(gs.ti_float, 3)
-            self.vertices_ng[f, i_global, i_b].fixed = False
+            self.vertices_ng[f, i_global, i_b].fixed = fixed
             self.vertices_ng[f, i_global, i_b].is_kinematic = False
 
         is_loop = self.rods_info[rod_idx].is_loop
@@ -1082,22 +1198,22 @@ class RodSolver(Solver):
                 # state (dynamic)
 
                 # self.edges[f, i_global, i_b].edge = self.vertices[f, v_e, i_b].vert - self.vertices[f, v_s, i_b].vert
-                self.edges[f, i_global, i_b].edge = edges[i_e]
-                self.edges[f, i_global, i_b].length = tm.length(self.edges[f, i_global, i_b].edge)
-                self.edges[f, i_global, i_b].d3 = self.edges[f, i_global, i_b].edge.normalized()
+                self.edges_ng[f, i_global, i_b].edge = edges[i_e]
+                self.edges_ng[f, i_global, i_b].length = tm.length(self.edges_ng[f, i_global, i_b].edge)
+                self.edges_ng[f, i_global, i_b].d3 = self.edges_ng[f, i_global, i_b].edge.normalized()
 
                 if i_e == 0: # first edge
-                    self.edges[f, i_global, i_b].d1 = get_perpendicular_vector(self.edges[f, i_global, i_b].d3)
+                    self.edges_ng[f, i_global, i_b].d1 = get_perpendicular_vector(self.edges_ng[f, i_global, i_b].d3)
                 else:
-                    self.edges[f, i_global, i_b].d1 = parallel_transport_normalized(
-                        self.edges[f, i_global - 1, i_b].d3,
-                        self.edges[f, i_global, i_b].d3,
-                        self.edges[f, i_global - 1, i_b].d1,
+                    self.edges_ng[f, i_global, i_b].d1 = parallel_transport_normalized(
+                        self.edges_ng[f, i_global - 1, i_b].d3,
+                        self.edges_ng[f, i_global, i_b].d3,
+                        self.edges_ng[f, i_global - 1, i_b].d1,
                     )
-                self.edges[f, i_global, i_b].d1_ref = self.edges[f, i_global, i_b].d1
+                self.edges_ng[f, i_global, i_b].d1_ref = self.edges_ng[f, i_global, i_b].d1
 
-                self.edges[f, i_global, i_b].d2 = tm.cross(self.edges[f, i_global, i_b].d3, self.edges[f, i_global, i_b].d1)
-                self.edges[f, i_global, i_b].d2_ref = self.edges[f, i_global, i_b].d2
+                self.edges_ng[f, i_global, i_b].d2 = tm.cross(self.edges_ng[f, i_global, i_b].d3, self.edges_ng[f, i_global, i_b].d1)
+                self.edges_ng[f, i_global, i_b].d2_ref = self.edges_ng[f, i_global, i_b].d2
 
                 self.edges[f, i_global, i_b].theta = 0.0  # assume no initial twist
                 self.edges[f, i_global, i_b].omega = 0.0  # assume no initial twist rate
@@ -1109,10 +1225,10 @@ class RodSolver(Solver):
 
             # state (dynamic)
 
-            self.internal_vertices[f, i_global, i_b].kb = curvature_binormal(
-                self.edges[f, e_s, i_b].d3, self.edges[f, e_e, i_b].d3
+            self.internal_vertices_ng[f, i_global, i_b].kb = curvature_binormal(
+                self.edges_ng[f, e_s, i_b].d3, self.edges_ng[f, e_e, i_b].d3
             )
-            self.internal_vertices[f, i_global, i_b].twist = 0.0    # assume no initial twist
+            self.internal_vertices_ng[f, i_global, i_b].twist = 0.0    # assume no initial twist
 
     @ti.kernel
     def _kernel_set_vertices_pos(
@@ -1167,30 +1283,130 @@ class RodSolver(Solver):
                 self.vertices.grad[f, i_global, i_b].vel[j] = vel_grad[i_b, i_v, j]
 
     @ti.kernel
+    def _kernel_set_edges_theta(
+        self,
+        f: ti.i32,
+        e_start: ti.i32,
+        n_edges: ti.i32,
+        theta: ti.types.ndarray(),  # shape [B, n_edges]
+    ):
+        for i_e, i_b in ti.ndrange(n_edges, self._B):
+            i_global = i_e + e_start
+            self.edges[f, i_global, i_b].theta = theta[i_b, i_e]
+
+    @ti.kernel
+    def _kernel_set_edges_theta_grad(
+        self,
+        f: ti.i32,
+        e_start: ti.i32,
+        n_edges: ti.i32,
+        theta_grad: ti.types.ndarray(),  # shape [B, n_edges]
+    ):
+        for i_e, i_b in ti.ndrange(n_edges, self._B):
+            i_global = i_e + e_start
+            self.edges.grad[f, i_global, i_b].theta = theta_grad[i_b, i_e]
+
+    @ti.kernel
+    def _kernel_set_edges_omega(
+        self,
+        f: ti.i32,
+        e_start: ti.i32,
+        n_edges: ti.i32,
+        omega: ti.types.ndarray(),  # shape [B, n_edges]
+    ):
+        for i_e, i_b in ti.ndrange(n_edges, self._B):
+            i_global = i_e + e_start
+            self.edges[f, i_global, i_b].omega = omega[i_b, i_e]
+
+    @ti.kernel
+    def _kernel_set_edges_omega_grad(
+        self,
+        f: ti.i32,
+        e_start: ti.i32,
+        n_edges: ti.i32,
+        omega_grad: ti.types.ndarray(),  # shape [B, n_edges]
+    ):
+        for i_e, i_b in ti.ndrange(n_edges, self._B):
+            i_global = i_e + e_start
+            self.edges.grad[f, i_global, i_b].omega = omega_grad[i_b, i_e]
+
+    @ti.kernel
     def _kernel_set_fixed_states(
         self,
         f: ti.i32,
         v_start: ti.i32,
         n_vertices: ti.i32,
-        fixed: ti.types.ndarray(),  # shape [n_vertices]
+        fixed: ti.types.ndarray(),  # shape [B, n_vertices]
     ):
         for i_v, i_b in ti.ndrange(n_vertices, self._B):
             i_global = i_v + v_start
-            self.vertices_ng[f, i_global, i_b].fixed = fixed[i_v]
+            self.vertices_ng[f, i_global, i_b].fixed = fixed[i_b, i_v]
+
+    # @ti.kernel
+    # def _kernel_set_edges_d1_ref(
+    #     self,
+    #     f: ti.i32,
+    #     e_start: ti.i32,
+    #     n_edges: ti.i32,
+    #     d1_ref: ti.types.ndarray(),  # shape [B, n_edges, 3]
+    # ):
+    #     for i_e, i_b in ti.ndrange(n_edges, self._B):
+    #         i_global = i_e + e_start
+    #         for j in ti.static(range(3)):
+    #             self.edges_ng[f, i_global, i_b].d1_ref[j] = d1_ref[i_b, i_e, j]
+
+    # @ti.kernel
+    # def _kernel_set_edges_d2_ref(
+    #     self,
+    #     f: ti.i32,
+    #     e_start: ti.i32,
+    #     n_edges: ti.i32,
+    #     d2_ref: ti.types.ndarray(),  # shape [B, n_edges, 3]
+    # ):
+    #     for i_e, i_b in ti.ndrange(n_edges, self._B):
+    #         i_global = i_e + e_start
+    #         for j in ti.static(range(3)):
+    #             self.edges_ng[f, i_global, i_b].d2_ref[j] = d2_ref[i_b, i_e, j]
+
+    # @ti.kernel
+    # def _kernel_set_edges_d3(
+    #     self,
+    #     f: ti.i32,
+    #     e_start: ti.i32,
+    #     n_edges: ti.i32,
+    #     d3: ti.types.ndarray(),  # shape [B, n_edges, 3]
+    # ):
+    #     for i_e, i_b in ti.ndrange(n_edges, self._B):
+    #         i_global = i_e + e_start
+    #         for j in ti.static(range(3)):
+    #             self.edges_ng[f, i_global, i_b].d3[j] = d3[i_b, i_e, j]
 
     @ti.kernel
     def _kernel_get_state(
         self,
         f: ti.i32,
-        pos: ti.types.ndarray(),  # shape [B, n_vertices, 3]
-        vel: ti.types.ndarray(),  # shape [B, n_vertices, 3]
-        fixed: ti.types.ndarray(),  # shape [B, n_vertices]
+        pos: ti.types.ndarray(),        # shape [B, n_vertices, 3]
+        vel: ti.types.ndarray(),        # shape [B, n_vertices, 3]
+        fixed: ti.types.ndarray(),      # shape [B, n_vertices]
+        theta: ti.types.ndarray(),      # shape [B, n_edges]
+        omega: ti.types.ndarray(),      # shape [B, n_edges]
+        # d1_ref: ti.types.ndarray(),     # shape [B, n_edges, 3]
+        # d2_ref: ti.types.ndarray(),     # shape [B, n_edges, 3]
+        # d3: ti.types.ndarray(),         # shape [B, n_edges, 3]
     ):
         for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
             for j in ti.static(range(3)):
                 pos[i_b, i_v, j] = self.vertices[f, i_v, i_b].vert[j]
                 vel[i_b, i_v, j] = self.vertices[f, i_v, i_b].vel[j]
             fixed[i_b, i_v] = self.vertices_ng[f, i_v, i_b].fixed
+
+        for i_e, i_b in ti.ndrange(self._n_edges, self._B):
+            theta[i_b, i_e] = self.edges[f, i_e, i_b].theta
+            omega[i_b, i_e] = self.edges[f, i_e, i_b].omega
+            # for j in ti.static(range(3)):
+            #     d1_ref[i_b, i_e, j] = self.edges_ng[f, i_e, i_b].d1_ref[j]
+            #     d2_ref[i_b, i_e, j] = self.edges_ng[f, i_e, i_b].d2_ref[j]
+            #     d3[i_b, i_e, j] = self.edges_ng[f, i_e, i_b].d3[j]
 
     @ti.kernel
     def get_state_render_kernel(self, f: ti.i32):
@@ -1200,15 +1416,28 @@ class RodSolver(Solver):
     def _kernel_set_state(
         self,
         f: ti.i32,
-        pos: ti.types.ndarray(),    # shape [B, n_vertices, 3]
-        vel: ti.types.ndarray(),    # shape [B, n_vertices, 3]
-        fixed: ti.types.ndarray(),  # shape [B, n_vertices]
+        pos: ti.types.ndarray(),        # shape [B, n_vertices, 3]
+        vel: ti.types.ndarray(),        # shape [B, n_vertices, 3]
+        fixed: ti.types.ndarray(),      # shape [B, n_vertices]
+        theta: ti.types.ndarray(),      # shape [B, n_edges]
+        omega: ti.types.ndarray(),      # shape [B, n_edges]
+        # d1_ref: ti.types.ndarray(),     # shape [B, n_edges, 3]
+        # d2_ref: ti.types.ndarray(),     # shape [B, n_edges, 3]
+        # d3: ti.types.ndarray(),         # shape [B, n_edges, 3]
     ):
         for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
             for j in ti.static(range(3)):
                 self.vertices[f, i_v, i_b].vert[j] = pos[i_b, i_v, j]
                 self.vertices[f, i_v, i_b].vel[j] = vel[i_b, i_v, j]
             self.vertices_ng[f, i_v, i_b].fixed = fixed[i_b, i_v]
+        
+        for i_e, i_b in ti.ndrange(self._n_edges, self._B):
+            self.edges[f, i_e, i_b].theta = theta[i_b, i_e]
+            self.edges[f, i_e, i_b].omega = omega[i_b, i_e]
+            # for j in ti.static(range(3)):
+            #     self.edges_ng[f, i_e, i_b].d1_ref[j] = d1_ref[i_b, i_e, j]
+            #     self.edges_ng[f, i_e, i_b].d2_ref[j] = d2_ref[i_b, i_e, j]
+            #     self.edges_ng[f, i_e, i_b].d3[j] = d3[i_b, i_e, j]
 
     # ------------------------------------------------------------------------------------
     # --------------------------------- index utilities -----------------------------------
@@ -1348,17 +1577,29 @@ class RodSolver(Solver):
         return inv_mass
 
     @ti.kernel
-    def _kernel_clear_contact_states(self):
+    def _kernel_clear_contact_states(self, f: ti.i32):
         for i_p, i_b in ti.ndrange(self._n_valid_edge_pairs, self._B):
             for j in ti.static(range(3)):
-                self.rr_constraints[i_p, i_b].normal[j] = 0.0
-            self.rr_constraints[i_p, i_b].penetration = 0.0
+                self.rr_constraints[f, i_p, i_b].normal[j] = 0.0
+            self.rr_constraints[f, i_p, i_b].penetration = 0.0
+
+    @ti.kernel
+    def _kernel_clear_contact_states_all_substeps(self):
+        for i_f, i_p, i_b in ti.ndrange(self._sim.substeps_local, self._n_valid_edge_pairs, self._B):
+            for j in ti.static(range(3)):
+                self.rr_constraints[i_f, i_p, i_b].normal[j] = 0.0
+            self.rr_constraints[i_f, i_p, i_b].penetration = 0.0
 
     @ti.kernel
     def _kernel_clear_kinematic_states(self, f: ti.i32):
         # TODO: do we need to clear kinematic states?
         for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
             self.vertices_ng[f, i_v, i_b].is_kinematic = False
+
+    @ti.kernel
+    def _kernel_clear_kinematic_states_all_substeps(self):
+        for i_f, i_v, i_b in ti.ndrange(self._sim.substeps_local, self._n_vertices, self._B):
+            self.vertices_ng[i_f, i_v, i_b].is_kinematic = False
 
     @ti.kernel
     def _kernel_apply_inextensibility_constraints(self, f: ti.i32):
@@ -1375,7 +1616,7 @@ class RodSolver(Solver):
             inv_mass_sum = inv_mass_s + inv_mass_e
 
             if inv_mass_sum > EPS:
-                p_s, p_e = self.vertices[f, v_s, i_b].vert, self.vertices[f, v_e, i_b].vert
+                p_s, p_e = self.vertices[f + 1, v_s, i_b].vert, self.vertices[f + 1, v_e, i_b].vert
 
                 edge_vec = p_e - p_s
                 dist = tm.length(edge_vec)
@@ -1389,8 +1630,8 @@ class RodSolver(Solver):
                     delta_p_e = -lambda_ * inv_mass_e * normal
 
                     # apply corrections
-                    self.vertices[f, v_s, i_b].vert += delta_p_s
-                    self.vertices[f, v_e, i_b].vert += delta_p_e
+                    self.vertices[f + 1, v_s, i_b].vert += delta_p_s
+                    self.vertices[f + 1, v_e, i_b].vert += delta_p_e
 
     @ti.kernel
     def _kernel_apply_rod_collision_constraints(self, f: ti.i32, iter_idx: ti.i32):
@@ -1400,8 +1641,8 @@ class RodSolver(Solver):
             idx_b1 = self.rr_constraint_info[i_p].valid_pair[1]
             idx_b2 = self.get_next_vertex_of_edge(idx_b1)
 
-            p_a1, p_a2 = self.vertices[f, idx_a1, i_b].vert, self.vertices[f, idx_a2, i_b].vert
-            p_b1, p_b2 = self.vertices[f, idx_b1, i_b].vert, self.vertices[f, idx_b2, i_b].vert
+            p_a1, p_a2 = self.vertices[f + 1, idx_a1, i_b].vert, self.vertices[f + 1, idx_a2, i_b].vert
+            p_b1, p_b2 = self.vertices[f + 1, idx_b1, i_b].vert, self.vertices[f + 1, idx_b2, i_b].vert
 
             radius_a = (self.vertices_info[idx_a1].radius + self.vertices_info[idx_a2].radius) * 0.5
             radius_b = (self.vertices_info[idx_b1].radius + self.vertices_info[idx_b2].radius) * 0.5
@@ -1452,27 +1693,27 @@ class RodSolver(Solver):
                 if w_sum_sq_inv_mass > EPS:
                     lambda_ = penetration / w_sum_sq_inv_mass
 
-                    self.vertices[f, idx_a1, i_b].vert += lambda_ * im[0] * w[0] * normal
-                    self.vertices[f, idx_a2, i_b].vert += lambda_ * im[1] * w[1] * normal
-                    self.vertices[f, idx_b1, i_b].vert -= lambda_ * im[2] * w[2] * normal
-                    self.vertices[f, idx_b2, i_b].vert -= lambda_ * im[3] * w[3] * normal
+                    self.vertices[f + 1, idx_a1, i_b].vert += lambda_ * im[0] * w[0] * normal
+                    self.vertices[f + 1, idx_a2, i_b].vert += lambda_ * im[1] * w[1] * normal
+                    self.vertices[f + 1, idx_b1, i_b].vert -= lambda_ * im[2] * w[2] * normal
+                    self.vertices[f + 1, idx_b2, i_b].vert -= lambda_ * im[3] * w[3] * normal
 
                 if iter_idx == 0:
-                    self.rr_constraints[i_p, i_b].normal = normal
-                    self.rr_constraints[i_p, i_b].penetration = penetration
+                    self.rr_constraints[f, i_p, i_b].normal = normal
+                    self.rr_constraints[f, i_p, i_b].penetration = penetration
 
     @ti.kernel
     def _kernel_apply_rod_friction(self, f: ti.i32):
         for i_p, i_b in ti.ndrange(self._n_valid_edge_pairs, self._B):
-            penetration = self.rr_constraints[i_p, i_b].penetration
+            penetration = self.rr_constraints[f, i_p, i_b].penetration
             if penetration > 0.0:
                 idx_a1 = self.rr_constraint_info[i_p].valid_pair[0]
                 idx_a2 = self.get_next_vertex_of_edge(idx_a1)
                 idx_b1 = self.rr_constraint_info[i_p].valid_pair[1]
                 idx_b2 = self.get_next_vertex_of_edge(idx_b1)
 
-                p_a1, p_a2 = self.vertices[f, idx_a1, i_b].vert, self.vertices[f, idx_a2, i_b].vert
-                p_b1, p_b2 = self.vertices[f, idx_b1, i_b].vert, self.vertices[f, idx_b2, i_b].vert
+                p_a1, p_a2 = self.vertices[f + 1, idx_a1, i_b].vert, self.vertices[f + 1, idx_a2, i_b].vert
+                p_b1, p_b2 = self.vertices[f + 1, idx_b1, i_b].vert, self.vertices[f + 1, idx_b2, i_b].vert
 
                 # compute closest points (t, u) and distance
                 e1, e2 = p_a2 - p_a1, p_b2 - p_b1
@@ -1497,15 +1738,15 @@ class RodSolver(Solver):
                     if d1 > EPS:
                         t = (u * r + s1) / d1
                     t = tm.clamp(t, 0.0, 1.0)
-                
-                v_a1, v_a2 = self.vertices[f, idx_a1, i_b].vel, self.vertices[f, idx_a2, i_b].vel
-                v_b1, v_b2 = self.vertices[f, idx_b1, i_b].vel, self.vertices[f, idx_b2, i_b].vel
+
+                v_a1, v_a2 = self.vertices[f + 1, idx_a1, i_b].vel, self.vertices[f + 1, idx_a2, i_b].vel
+                v_b1, v_b2 = self.vertices[f + 1, idx_b1, i_b].vel, self.vertices[f + 1, idx_b2, i_b].vel
 
                 v_a = (1 - t) * v_a1 + t * v_a2
                 v_b = (1 - u) * v_b1 + u * v_b2
                 v_rel = v_a - v_b
 
-                normal = self.rr_constraints[i_p, i_b].normal
+                normal = self.rr_constraints[f, i_p, i_b].normal
                 v_normal_mag = v_rel.dot(normal)
                 v_tangent = v_rel - v_normal_mag * normal
                 v_tangent_norm = tm.length(v_tangent)
@@ -1532,10 +1773,10 @@ class RodSolver(Solver):
                         delta_v_tangent = -v_tangent.normalized() * mu_k * normal_vel_mag
 
                     lambda_ = delta_v_tangent / w_sum_sq_inv_mass
-                    self.vertices[f, idx_a1, i_b].vel += lambda_ * im[0] * w[0]
-                    self.vertices[f, idx_a2, i_b].vel += lambda_ * im[1] * w[1]
-                    self.vertices[f, idx_b1, i_b].vel -= lambda_ * im[2] * w[2]
-                    self.vertices[f, idx_b2, i_b].vel -= lambda_ * im[3] * w[3]
+                    self.vertices[f + 1, idx_a1, i_b].vel += lambda_ * im[0] * w[0]
+                    self.vertices[f + 1, idx_a2, i_b].vel += lambda_ * im[1] * w[1]
+                    self.vertices[f + 1, idx_b1, i_b].vel -= lambda_ * im[2] * w[2]
+                    self.vertices[f + 1, idx_b2, i_b].vel -= lambda_ * im[3] * w[3]
 
     @ti.kernel
     def _kernel_self_collision(self, f: ti.i32):    # not used

@@ -1248,12 +1248,15 @@ class Rod(Morph):
         The quaternion (w-x-y-z convention) of the entity. If specified, `euler` will be ignored. Defaults to None.
     is_loop : bool, optional
         Whether the rod is a loop. Defaults to False.
+    fixed : bool, optional
+        Whether the rod is fixed. Defaults to False.
     """
 
     file: str = ""
     scale: Union[float, tuple] = 1.0
     rest_state: Literal["default", "straight"] = "default"
     is_loop: bool = False
+    fixed: bool = False
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -1310,6 +1313,8 @@ class ParameterizedRod(Morph):
         Defaults to (0.0, 0.0, 0.0).
     quat : tuple, shape (4,), optional
         The quaternion (w-x-y-z convention) of the entity. If specified, `euler` will be ignored. Defaults to None.
+    fixed : bool, optional
+        Whether the rod is fixed. Defaults to False.
     """
 
     type: Literal["rod", "circle", "half_circle"] = "rod"
@@ -1320,6 +1325,7 @@ class ParameterizedRod(Morph):
     gap: int = 0
     rest_state: Literal["default", "straight"] = "default"
     is_loop: bool = False
+    fixed: bool = False
 
     def __init__(self, **data):
         super().__init__(**data)

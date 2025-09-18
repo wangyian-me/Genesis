@@ -198,24 +198,31 @@ class RODEntityState:
     def __init__(self, entity, s_global):
         self._entity = entity
         self._s_global = s_global
-        base_shape = (self.entity.sim._B, self._entity.n_vertices, 3)
+        base_v_shape = (self.entity.sim._B, self._entity.n_vertices, 3)
+        base_e_shape = (self.entity.sim._B, self._entity.n_edges)
 
         args = {
             "dtype": gs.tc_float,
             "requires_grad": False,
             "scene": self.entity.scene,
         }
-        self._pos = gs.zeros(base_shape, **args)
-        self._vel = gs.zeros(base_shape, **args)
+        self._pos = gs.zeros(base_v_shape, **args)
+        self._vel = gs.zeros(base_v_shape, **args)
+        self._theta = gs.zeros(base_e_shape, **args)
+        self._omega = gs.zeros(base_e_shape, **args)
 
         args["dtype"] = int
         args["requires_grad"] = False
+        self._fixed = gs.zeros(base_v_shape, **args)
 
     def serializable(self):
         self._entity = None
 
         self._pos = self._pos.detach()
         self._vel = self._vel.detach()
+        self._fixed = self._fixed.detach()
+        self._theta = self._theta.detach()
+        self._omega = self._omega.detach()
 
     @property
     def entity(self):
@@ -233,3 +240,14 @@ class RODEntityState:
     def vel(self):
         return self._vel
 
+    @property
+    def fixed(self):
+        return self._fixed
+
+    @property
+    def theta(self):
+        return self._theta
+
+    @property
+    def omega(self):
+        return self._omega

@@ -3,6 +3,7 @@ import gstaichi as ti
 
 import genesis as gs
 import genesis.utils.geom as gu
+from genesis.engine.states.cache import QueriedStates
 from genesis.engine.states.entities import RODEntityState
 from genesis.utils.misc import ALLOCATE_TENSOR_WARNING, to_gs_tensor, tensor_to_array
 
@@ -57,6 +58,8 @@ class RodEntity(Entity):
         self.sample()
 
         self.init_tgt_vars()
+        self.init_ckpt()
+        self._queried_states = QueriedStates()
 
         self.active = False  # This attribute is only used in forward pass. It should NOT be used during backward pass.
 
@@ -155,23 +158,26 @@ class RodEntity(Entity):
         self.get_frame(
             self._sim.cur_substep_local,
             state.pos,
-            state.vel
+            state.vel,
+            state.fixed,
+            state.theta,
+            state.omega,
         )
 
         # we store all queried states to track gradient flow
         self._queried_states.append(state)
 
         return state
+    
+    # def deactivate(self):         # NOTE: Not used
+    #     gs.logger.info(f"{self.__class__.__name__} <{self.id}> deactivated.")
+    #     self._tgt["act"] = gs.INACTIVE
+    #     self.active = False
 
-    def deactivate(self):
-        gs.logger.info(f"{self.__class__.__name__} <{self.id}> deactivated.")
-        self._tgt["act"] = gs.INACTIVE
-        self.active = False
-
-    def activate(self):
-        gs.logger.info(f"{self.__class__.__name__} <{self.id}> activated.")
-        self._tgt["act"] = gs.ACTIVE
-        self.active = True
+    # def activate(self):           # NOTE: Not used
+    #     gs.logger.info(f"{self.__class__.__name__} <{self.id}> activated.")
+    #     self._tgt["act"] = gs.ACTIVE
+    #     self.active = True
 
     # ------------------------------------------------------------------------------------
     # ----------------------------------- instantiation ----------------------------------
@@ -352,6 +358,7 @@ class RodEntity(Entity):
             v_start=self._v_start,
             e_start=self._e_start,
             iv_start=self._iv_start,
+            fixed=self.morph.fixed,
             verts=verts_np,
             edges=edges_np,
         )
@@ -367,7 +374,7 @@ class RodEntity(Entity):
 
         This defines which physical properties (e.g., position, velocity) will be tracked for checkpointing and buffering.
         """
-        self._tgt_keys = ["vel", "pos", "act"]
+        self._tgt_keys = ["vel", "pos", "fixed", "omega", "theta"]
 
     def init_tgt_vars(self):
         """
@@ -385,6 +392,52 @@ class RodEntity(Entity):
             self._tgt[key] = None
             self._tgt_buffer[key] = list()
 
+    def init_ckpt(self):
+        """
+        Initialize checkpoint storage for simulation state.
+        """
+        self._ckpt = dict()
+
+    def save_ckpt(self, ckpt_name):
+        """
+        Save the current target state buffers to a checkpoint.
+
+        Parameters
+        ----------
+        ckpt_name : str
+            Name of the checkpoint to save.
+        """
+        if ckpt_name not in self._ckpt:
+            self._ckpt[ckpt_name] = {
+                "_tgt_buffer": dict(),
+            }
+
+        for key in self._tgt_keys:
+            self._ckpt[ckpt_name]["_tgt_buffer"][key] = list(self._tgt_buffer[key])
+            self._tgt_buffer[key].clear()
+
+    def load_ckpt(self, ckpt_name):
+        """
+        Restore target state buffers from a previously saved checkpoint.
+
+        Parameters
+        ----------
+        ckpt_name : str
+            Name of the checkpoint to load.
+        """
+        for key in self._tgt_keys:
+            self._tgt_buffer[key] = list(self._ckpt[ckpt_name]["_tgt_buffer"][key])
+
+    def reset_grad(self):
+        """
+        Clear target buffers and any externally queried simulation states.
+
+        Used before backpropagation to reset gradients.
+        """
+        for key in self._tgt_keys:
+            self._tgt_buffer[key].clear()
+        self._queried_states.clear()
+
     def process_input(self, in_backward=False):
         """
         Push position, velocity, and activation target states into the simulator.
@@ -394,8 +447,94 @@ class RodEntity(Entity):
         in_backward : bool, default=False
             Whether the simulation is in the backward (gradient) pass.
         """
-        # TODO: implement this
-        pass
+        if in_backward:
+            # use negative index because buffer length might not be full
+            index = self._sim.cur_step_local - self._sim._steps_local
+            for key in self._tgt_keys:
+                self._tgt[key] = self._tgt_buffer[key][index]
+
+        else:
+            for key in self._tgt_keys:
+                self._tgt_buffer[key].append(self._tgt[key])
+
+        # set_pos followed by set_vel, because set_pos resets velocity.
+        if self._tgt["pos"] is not None:
+            self._tgt["pos"].assert_contiguous()
+            self._tgt["pos"].assert_sceneless()
+            self.set_pos(self._sim.cur_substep_local, self._tgt["pos"])
+
+        if self._tgt["vel"] is not None:
+            self._tgt["vel"].assert_contiguous()
+            self._tgt["vel"].assert_sceneless()
+            self.set_vel(self._sim.cur_substep_local, self._tgt["vel"])
+
+        if self._tgt["fixed"] is not None:
+            self._tgt["fixed"].assert_contiguous()
+            self._tgt["fixed"].assert_sceneless()
+            self.set_fixed(self._sim.cur_substep_local, self._tgt["fixed"])
+
+        if self._tgt["theta"] is not None:
+            self._tgt["theta"].assert_contiguous()
+            self._tgt["theta"].assert_sceneless()
+            self.set_vel(self._sim.cur_substep_local, self._tgt["theta"])
+
+        if self._tgt["omega"] is not None:
+            self._tgt["omega"].assert_contiguous()
+            self._tgt["omega"].assert_sceneless()
+            self.set_omega(self._sim.cur_substep_local, self._tgt["omega"])
+
+        # if self._tgt["d1_ref"] is not None:
+        #     self._tgt["d1_ref"].assert_contiguous()
+        #     self._tgt["d1_ref"].assert_sceneless()
+        #     self.set_d1_ref(self._sim.cur_substep_local, self._tgt["d1_ref"])
+
+        # if self._tgt["d2_ref"] is not None:
+        #     self._tgt["d2_ref"].assert_contiguous()
+        #     self._tgt["d2_ref"].assert_sceneless()
+        #     self.set_d2_ref(self._sim.cur_substep_local, self._tgt["d2_ref"])
+
+        # if self._tgt["d3"] is not None:
+        #     self._tgt["d3"].assert_contiguous()
+        #     self._tgt["d3"].assert_sceneless()
+        #     self.set_d3(self._sim.cur_substep_local, self._tgt["d3"])
+
+        # clear kinematic states
+        self._solver._kernel_clear_kinematic_states_all_substeps()
+        # clear contact states
+        self._solver._kernel_clear_contact_states_all_substeps()
+
+        for key in self._tgt_keys:
+            self._tgt[key] = None
+
+    def process_input_grad(self):
+        """
+        Process gradients of input states and propagate them backward.
+
+        Notes
+        -----
+        Automatically applies the backward hooks for position and velocity tensors.
+        Clears the gradients in the solver to avoid double accumulation.
+        """
+        _tgt_vel = self._tgt_buffer["vel"].pop()
+        _tgt_pos = self._tgt_buffer["pos"].pop()
+        _tgt_omega = self._tgt_buffer["omega"].pop()
+        _tgt_theta = self._tgt_buffer["theta"].pop()
+
+        if _tgt_vel is not None and _tgt_vel.requires_grad:
+            _tgt_vel._backward_from_ti(self.set_vel_grad, self._sim.cur_substep_local)
+
+        if _tgt_pos is not None and _tgt_pos.requires_grad:
+            _tgt_pos._backward_from_ti(self.set_pos_grad, self._sim.cur_substep_local)
+
+        if _tgt_omega is not None and _tgt_omega.requires_grad:
+            _tgt_omega._backward_from_ti(self.set_omega_grad, self._sim.cur_substep_local)
+
+        if _tgt_theta is not None and _tgt_theta.requires_grad:
+            _tgt_theta._backward_from_ti(self.set_theta_grad, self._sim.cur_substep_local)
+
+        if _tgt_vel is not None or _tgt_pos is not None:
+            # manually zero the grad since manually setting state breaks gradient flow
+            self.clear_grad(self._sim.cur_substep_local)
 
     def _assert_active(self):
         if not self.active:
@@ -407,7 +546,7 @@ class RodEntity(Entity):
 
     def set_pos(self, f, pos):
         """
-        Set element positions in the solver.
+        Set vertex positions in the solver.
 
         Parameters
         ----------
@@ -427,7 +566,7 @@ class RodEntity(Entity):
 
     def set_pos_grad(self, f, pos_grad):
         """
-        Set gradient of element positions in the solver.
+        Set gradient of vertex positions in the solver.
 
         Parameters
         ----------
@@ -447,7 +586,7 @@ class RodEntity(Entity):
 
     def set_vel(self, f, vel):
         """
-        Set element velocities in the solver.
+        Set vertex velocities in the solver.
 
         Parameters
         ----------
@@ -467,7 +606,7 @@ class RodEntity(Entity):
 
     def set_vel_grad(self, f, vel_grad):
         """
-        Set gradient of element velocities in the solver.
+        Set gradient of vertex velocities in the solver.
 
         Parameters
         ----------
@@ -484,6 +623,86 @@ class RodEntity(Entity):
             n_vertices=self.n_vertices,
             vel_grad=vel_grad,
         )
+
+    def set_theta(self, f, theta):
+        """
+        Set edge twist angles (in radian) in the solver.
+
+        Parameters
+        ----------
+        f : int
+            Current substep/frame index.
+
+        theta : gs.Tensor
+            Tensor of shape (n_envs, n_edges,) containing twist angles.
+        """
+
+        self._solver._kernel_set_edges_theta(
+            f=f,
+            e_start=self._e_start,
+            n_edges=self.n_edges,
+            omega=theta,
+        )
+
+    def set_theta_grad(self, f, theta_grad):
+        """
+        Set gradient of edge twist angles (in radian) in the solver.
+
+        Parameters
+        ----------
+        f : int
+            Current substep/frame index.
+
+        theta_grad : gs.Tensor
+            Tensor of shape (n_envs, n_edges,) containing gradients of twist angles.
+        """
+
+        self._solver._kernel_set_edges_theta_grad(
+            f=f,
+            e_start=self._e_start,
+            n_edges=self.n_edges,
+            theta_grad=theta_grad,
+        )
+
+    def set_omega(self, f, omega):
+        """
+        Set edge angular velocities in the solver.
+
+        Parameters
+        ----------
+        f : int
+            Current substep/frame index.
+
+        omega : gs.Tensor
+            Tensor of shape (n_envs, n_edges,) containing angular velocities.
+        """
+
+        self._solver._kernel_set_edges_omega(
+            f=f,
+            e_start=self._e_start,
+            n_edges=self.n_edges,
+            omega=omega,
+        )
+
+    def set_omega_grad(self, f, omega_grad):
+        """
+        Set gradient of edge angular velocities in the solver.
+
+        Parameters
+        ----------
+        f : int
+            Current substep/frame index.
+
+        omega_grad : gs.Tensor
+            Tensor of shape (n_envs, n_edges,) containing gradients of angular velocities.
+        """
+
+        self._solver._kernel_set_edges_omega_grad(
+            f=f,
+            e_start=self._e_start,
+            n_edges=self.n_edges,
+            omega_grad=omega_grad,
+        )
     
     def set_fixed(self, f, fixed):
         """
@@ -495,7 +714,7 @@ class RodEntity(Entity):
             Current substep/frame index.
 
         fixed : gs.Tensor
-            Tensor of shape (n_vertices,) containing boolean fixed status for each vertex.
+            Tensor of shape (n_envs, n_vertices,) containing boolean fixed status for each vertex.
         """
 
         self._solver._kernel_set_fixed_states(
@@ -504,6 +723,66 @@ class RodEntity(Entity):
             n_vertices=self.n_vertices,
             fixed=fixed,
         )
+
+    # def set_d1_ref(self, f, d1_ref):
+    #     """
+    #     Set the reference frame d1s for each edge in the solver.
+
+    #     Parameters
+    #     ----------
+    #     f : int
+    #         Current substep/frame index.
+
+    #     d1_ref : gs.Tensor
+    #         Tensor of shape (n_envs, n_edges, 3) containing reference frame d1s.
+    #     """
+
+    #     self._solver._kernel_set_edges_d1_ref(
+    #         f=f,
+    #         e_start=self._e_start,
+    #         n_edges=self.n_edges,
+    #         d1_ref=d1_ref,
+    #     )
+    
+    # def set_d2_ref(self, f, d2_ref):
+    #     """
+    #     Set the reference frame d2s for each edge in the solver.
+
+    #     Parameters
+    #     ----------
+    #     f : int
+    #         Current substep/frame index.
+
+    #     d2_ref : gs.Tensor
+    #         Tensor of shape (n_envs, n_edges, 3) containing reference frame d2s.
+    #     """
+
+    #     self._solver._kernel_set_edges_d2_ref(
+    #         f=f,
+    #         e_start=self._e_start,
+    #         n_edges=self.n_edges,
+    #         d2_ref=d2_ref,
+    #     )
+
+    # def set_d3(self, f, d3):
+    #     """
+    #     Set the material frame tangents for each edge in the solver.
+
+    #     Parameters
+    #     ----------
+    #     f : int
+    #         Current substep/frame index.
+
+    #     d3 : gs.Tensor
+    #         Tensor of shape (n_envs, n_edges, 3) containing material frame tangents.
+    #     """
+
+    #     self._solver._kernel_set_edges_d3(
+    #         f=f,
+    #         e_start=self._e_start,
+    #         n_edges=self.n_edges,
+    #         d3=d3,
+    #     )
 
     @gs.assert_built
     def set_init_vertices(self, verts_np, edges_np):
@@ -543,14 +822,15 @@ class RodEntity(Entity):
         else:
             raise ValueError("`fixed_ids` and `fixed_states` cannot be provided at the same time.")
 
-        for f in range(self.sim.substeps_local + 1):
-            # set fixed states for all substeps
-            self._solver._kernel_set_fixed_states(
-                f=f,
-                v_start=self._v_start,
-                n_vertices=self.n_vertices,
-                fixed=is_fixed,
-            )
+        is_fixed = np.tile(is_fixed, (self._sim._B, 1))  # (n_envs, n_vertices)
+
+        # set fixed states for the first local frame
+        self._solver._kernel_set_fixed_states(
+            f=0,    # start from 0, then f -> f+1
+            v_start=self._v_start,
+            n_vertices=self.n_vertices,
+            fixed=is_fixed,
+        )
 
     @ti.kernel
     def _kernel_get_verts_pos(self, f: ti.i32, pos: ti.types.ndarray(), verts_idx: ti.types.ndarray()):
@@ -561,9 +841,17 @@ class RodEntity(Entity):
                 pos[i_b, i_v, j] = self._solver.vertices[f, i_global, i_b].vert[j]
 
     @ti.kernel
-    def get_frame(self, f: ti.i32, pos: ti.types.ndarray(), vel: ti.types.ndarray()):
+    def get_frame(
+        self,
+        f: ti.i32,
+        pos: ti.types.ndarray(),
+        vel: ti.types.ndarray(),
+        fixed: ti.types.ndarray(),
+        theta: ti.types.ndarray(),
+        omega: ti.types.ndarray(),
+    ):
         """
-        Fetch the position, velocity, and activation state of the Rod entity at a specific substep.
+        Extract the state of particles at the given frame.
 
         Parameters
         ----------
@@ -575,6 +863,15 @@ class RodEntity(Entity):
 
         vel : np.ndarray
             Output array of shape (n_envs, n_vertices, 3) to store velocities.
+
+        fixed : np.ndarray
+            Output array of shape (n_envs, n_vertices) to store fixed status.
+
+        theta : np.ndarray
+            Output array of shape (n_envs, n_edges) to store twist angles.
+
+        omega : np.ndarray
+            Output array of shape (n_envs, n_edges) to store angular velocities.
         """
 
         for i_v, i_b in ti.ndrange(self.n_vertices, self._sim._B):
@@ -582,11 +879,17 @@ class RodEntity(Entity):
             for j in ti.static(range(3)):
                 pos[i_b, i_v, j] = self._solver.vertices[f, i_global, i_b].vert[j]
                 vel[i_b, i_v, j] = self._solver.vertices[f, i_global, i_b].vel[j]
+            fixed[i_b, i_v] = self._solver.vertices[f, i_global, i_b].is_fixed
+
+        for i_e, i_b in ti.ndrange(self.n_edges, self._sim._B):
+            i_global = i_e + self.e_start
+            theta[i_b, i_e] = self._solver.edges[f, i_global, i_b].theta
+            omega[i_b, i_e] = self._solver.edges[f, i_global, i_b].omega
 
     @ti.kernel
     def clear_grad(self, f: ti.i32):
         """
-        Zero out the gradients of position, velocity, and actuation for the current substep.
+        Zero out the gradients of position, velocity, and angular velocity for the current substep.
 
         Parameters
         ----------
@@ -603,6 +906,10 @@ class RodEntity(Entity):
             i_global = i_v + self.v_start
             self._solver.vertices.grad[f, i_global, i_b].vert = 0
             self._solver.vertices.grad[f, i_global, i_b].vel = 0
+        for i_e, i_b in ti.ndrange(self.n_edges, self._sim._B):
+            i_global = i_e + self.e_start
+            self._solver.edges.grad[f, i_global, i_b].theta = 0
+            self._solver.edges.grad[f, i_global, i_b].omega = 0
 
     # ------------------------------------------------------------------------------------
     # ----------------------------------- properties -------------------------------------

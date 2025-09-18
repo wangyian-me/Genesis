@@ -307,8 +307,15 @@ class RODSolverState:
         }
         self._pos = gs.zeros((scene.sim._B, scene.sim.rod_solver.n_vertices, 3), **args)
         self._vel = gs.zeros((scene.sim._B, scene.sim.rod_solver.n_vertices, 3), **args)
-        args["dtype"] = gs.tc_bool
+        self._theta = gs.zeros((scene.sim._B, scene.sim.rod_solver.n_edges), **args)
+        self._omega = gs.zeros((scene.sim._B, scene.sim.rod_solver.n_edges), **args)
         args["requires_grad"] = False
+        # # no grad, float
+        # self._d1_ref = gs.zeros((scene.sim._B, scene.sim.rod_solver.n_edges, 3), **args)
+        # self._d2_ref = gs.zeros((scene.sim._B, scene.sim.rod_solver.n_edges, 3), **args)
+        # self._d3 = gs.zeros((scene.sim._B, scene.sim.rod_solver.n_edges, 3), **args)
+        args["dtype"] = gs.tc_bool
+        # no grad, bool
         self._fixed = gs.zeros((scene.sim._B, scene.sim.rod_solver.n_vertices), **args)
 
     def serializable(self):
@@ -317,6 +324,11 @@ class RODSolverState:
         self._pos = self._pos.detach()
         self._vel = self._vel.detach()
         self._fixed = self._fixed.detach()
+        self._theta = self._theta.detach()
+        self._omega = self._omega.detach()
+        # self._d1_ref = self._d1_ref.detach()
+        # self._d2_ref = self._d2_ref.detach()
+        # self._d3 = self._d3.detach()
 
     @property
     def scene(self):
@@ -333,3 +345,23 @@ class RODSolverState:
     @property
     def fixed(self):
         return self._fixed
+
+    @property
+    def theta(self):
+        return self._theta
+
+    @property
+    def omega(self):
+        return self._omega
+
+    # @property
+    # def d1_ref(self):
+    #     return self._d1_ref
+
+    # @property
+    # def d2_ref(self):
+    #     return self._d2_ref
+
+    # @property
+    # def d3(self):
+    #     return self._d3

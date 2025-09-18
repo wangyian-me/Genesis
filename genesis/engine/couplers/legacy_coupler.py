@@ -676,20 +676,20 @@ class LegacyCoupler(RBC):
                             f,
                             i_v,
                             self.rod_solver.vertices[f, i_v, i_b].vert,
-                            self.rod_solver.vertices[f, i_v, i_b].vel,
+                            self.rod_solver.vertices[f + 1, i_v, i_b].vel,
                             self.rod_solver.vertices_info[i_v].mass,
                             self.rod_solver.vertices_info[i_v].radius,
                             i_g,
                             i_b,
                         )
-                        self.rod_solver.vertices[f, i_v, i_b].vel = vel_rod
+                        self.rod_solver.vertices[f + 1, i_v, i_b].vel = vel_rod
 
                 # vel_rod_prime = self.rod_solver.boundary.impose_vel(
                 #     self.rod_solver.vertices[f, i_v, i_b].vert,
-                #     self.rod_solver.vertices[f, i_v, i_b].vel,
+                #     self.rod_solver.vertices[f + 1, i_v, i_b].vel,
                 #     self.rod_solver.vertices_info[i_v].radius,
                 # )
-                # self.rod_solver.vertices[f, i_v, i_b].vel = vel_rod_prime
+                # self.rod_solver.vertices[f + 1, i_v, i_b].vel = vel_rod_prime
 
     @ti.kernel
     def sph_rigid(self, f: ti.i32):
