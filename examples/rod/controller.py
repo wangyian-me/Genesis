@@ -6,6 +6,7 @@ import genesis.utils.geom as gu
 class RobotController:
     def __init__(
         self,
+        scene,
         robot,
         ef,
         configs,
@@ -13,13 +14,16 @@ class RobotController:
         initial_quat=(0., 1., 0., 0.),
         initial_q_dof=0.03,
         n_motors_dofs=7,
-        n_fingers_dofs=2
+        n_fingers_dofs=2,
+        debug=False,
     ):
+        self.scene = scene
         self.robot = robot
         self.ef = ef
         self.configs = configs
         self.motors_dof = torch.arange(n_motors_dofs)
         self.fingers_dof = torch.arange(n_motors_dofs, n_motors_dofs + n_fingers_dofs)
+        self.debug = debug
 
         self.pos_abs = torch.tensor(initial_pos, dtype=gs.tc_float)
         self.quat_abs = torch.tensor(initial_quat, dtype=gs.tc_float)
@@ -87,6 +91,13 @@ class RobotController:
         pos_arg = torch.stack([target_pos] * self.configs.n_envs) if is_batched else target_pos
         quat_arg = torch.stack([target_quat] * self.configs.n_envs) if is_batched else target_quat
         gripper_arg = torch.tensor([[g_dof1, g_dof2]] * self.configs.n_envs) if is_batched else torch.tensor([g_dof1, g_dof2])
+
+        if self.debug:
+            self.scene.clear_debug_objects()
+            self.scene.draw_debug_sphere(
+                pos=target_pos,
+                radius=0.01
+            )
 
         qpos = self.robot.inverse_kinematics(
             link=self.ef,

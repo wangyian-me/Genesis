@@ -63,7 +63,7 @@ def main():
     args = parser.parse_args()
 
     ########################## init ##########################
-    gs.init(seed=0, precision="64", logging_level="debug",backend=gs.gpu)
+    gs.init(seed=0, precision="64", logging_level="debug", backend=gs.gpu)
 
     ########################## create a scene ##########################
     viewer_options = gs.options.ViewerOptions(
@@ -83,6 +83,7 @@ def main():
         rod_options=gs.options.RodOptions(
             damping=15.0,
             angular_damping=10.0,
+            n_pbd_iters=20,
         ),
         show_viewer=args.vis,
     )

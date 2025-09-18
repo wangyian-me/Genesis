@@ -17,7 +17,7 @@ def main():
     args = parser.parse_args()
 
     ########################## init ##########################
-    gs.init(seed=0, precision="64", logging_level="debug",backend=gs.gpu)
+    gs.init(seed=0, precision="64", logging_level="debug", backend=gs.gpu)
 
     ########################## create a scene ##########################
     viewer_options = gs.options.ViewerOptions(
@@ -38,8 +38,8 @@ def main():
             enable_joint_limit=False,
         ),
         rod_options=gs.options.RodOptions(
-            damping=1.0,
-            angular_damping=1.0,
+            damping=5.0,
+            angular_damping=5.0,
             n_pbd_iters=20,
         ),
         show_viewer=args.vis,
@@ -220,8 +220,8 @@ def main():
     open_gap = 0.04
 
     # initial grasp pose
-    c1 = RobotController(franka1, ef1, args, (x1, 0.0, z))
-    c2 = RobotController(franka2, ef2, args, (x2, 0.0, z))
+    c1 = RobotController(scene, franka1, ef1, args, (x1, 0.0, z))
+    c2 = RobotController(scene, franka2, ef2, args, (x2, 0.0, z))
 
     frames = defaultdict(list)
 
