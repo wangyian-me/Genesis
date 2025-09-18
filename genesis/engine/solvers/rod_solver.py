@@ -521,11 +521,13 @@ class RodSolver(Solver):
     @ti.kernel
     def update_angular_velocities(self, f: ti.i32):      # Differential
         for i_e, i_b in ti.ndrange(self._n_edges, self._B):
-            theta_dof_idx = 3 * self._n_vertices + i_e
-            gradient = self.gradients[theta_dof_idx, i_b]
-            inertia = 1.0
-            self.edges[f + 1, i_e, i_b].omega -= gradient / inertia * self.substep_dt
-            self.edges[f + 1, i_e, i_b].omega *= ti.exp(-self.substep_dt * self.angular_damping)
+            v_s, v_e = self.get_edge_vertices(i_e)
+            if not self.vertices_ng[f, v_s, i_b].fixed or not self.vertices_ng[f, v_e, i_b].fixed:
+                theta_dof_idx = 3 * self._n_vertices + i_e
+                gradient = self.gradients[theta_dof_idx, i_b]
+                inertia = 1.0
+                self.edges[f + 1, i_e, i_b].omega -= gradient / inertia * self.substep_dt
+                self.edges[f + 1, i_e, i_b].omega *= ti.exp(-self.substep_dt * self.angular_damping)
 
     @ti.kernel
     def update_centerline_edges(self, f: ti.i32):    # Differential

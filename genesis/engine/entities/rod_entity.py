@@ -314,7 +314,9 @@ class RodEntity(Entity):
         if not in_backward:
             self._step_global_added = self._sim.cur_step_global
             gs.logger.info(
-                f"Entity {self.uid}({self._rod_idx}) added. class: {self.__class__.__name__}, morph: {self.morph.__class__.__name__}, #verts: {self.n_vertices}, loop: {self.morph.is_loop}, material: {self.material}."
+                f"Entity {self.uid}({self._rod_idx}) added. class: {self.__class__.__name__}, "
+                f"morph: {self.morph.__class__.__name__}, #v: {self.n_vertices}, "
+                f"o: {self.morph.is_loop}, fix: {self.morph.fixed}, material: {self.material}."
             )
 
         # Convert to appropriate numpy array types
