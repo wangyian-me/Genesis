@@ -161,7 +161,7 @@ class Simulator(RBC):
         # sensors
         self._sensor_manager = SensorManager(self)
 
-    def _add_entity(self, morph: Morph, material, surface, visualize_contact=False):
+    def _add_entity(self, morph: Morph, material, surface, visualize_contact=False, visualize_twist=False):
         if isinstance(material, gs.materials.Tool):
             entity = self.tool_solver.add_entity(self.n_entities, material, morph, surface)
 
@@ -181,7 +181,7 @@ class Simulator(RBC):
             entity = self.pbd_solver.add_entity(self.n_entities, material, morph, surface)
 
         elif isinstance(material, gs.materials.ROD.Base):
-            entity = self.rod_solver.add_entity(self.n_entities, material, morph, surface)
+            entity = self.rod_solver.add_entity(self.n_entities, material, morph, surface, visualize_twist)
 
         elif isinstance(material, gs.materials.FEM.Base):
             entity = self.fem_solver.add_entity(self.n_entities, material, morph, surface)

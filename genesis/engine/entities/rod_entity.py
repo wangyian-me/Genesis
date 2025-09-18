@@ -41,11 +41,13 @@ class RodEntity(Entity):
         Starting index of this entity's edges in the global edge array (default is 0).
     iv_start : int, optional
         Starting index of this entity's internal vertices in the global internal vertex array (default is 0).
+    visualize_twist : bool, optional
+        Whether to visualize twist frames applied to this (Rod) entity as arrows in the viewer and rendered images. Note that this will not be displayed in images rendered by camera using the `RayTracer` renderer.
     """
 
     def __init__(
         self, scene, solver, material, morph, surface, idx, 
-        rod_idx=0, v_start=0, e_start=0, iv_start=0
+        rod_idx=0, v_start=0, e_start=0, iv_start=0, visualize_twist=False
     ):
         super().__init__(idx, scene, morph, solver, material, surface)
 
@@ -54,6 +56,7 @@ class RodEntity(Entity):
         self._e_start = e_start     # offset for edge index
         self._iv_start = iv_start   # offset for internal vertex index
         self._step_global_added = None
+        self._visualize_twist = visualize_twist
 
         self.sample()
 
@@ -952,6 +955,11 @@ class RodEntity(Entity):
     def iv_start(self):
         """Global internal vertex index offset for this entity."""
         return self._iv_start
+
+    @property
+    def visualize_twist(self):
+        """Whether to visualize twist frames."""
+        return self._visualize_twist
 
     @property
     def material(self):

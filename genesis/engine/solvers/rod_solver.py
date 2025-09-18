@@ -435,7 +435,7 @@ class RodSolver(Solver):
 
             self.init_constraints()
 
-    def add_entity(self, idx, material, morph, surface):
+    def add_entity(self, idx, material, morph, surface, visualize_twist):
 
         # create entity
         entity = RodEntity(
@@ -449,6 +449,7 @@ class RodSolver(Solver):
             v_start=self.n_vertices,
             e_start=self.n_edges,
             iv_start=self.n_internal_vertices,
+            visualize_twist=visualize_twist,
         )
 
         self._entities.append(entity)

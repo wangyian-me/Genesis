@@ -709,6 +709,49 @@ class RasterizerContext:
                     )
                     mesh.visual = mu.surface_uvs_to_trimesh_visual(rod_entity.surface, uvs=mesh.visual.uv, n_verts=len(mesh.vertices))
                     self.add_dynamic_node(rod_entity, pyrender.Mesh.from_trimesh(mesh, smooth=False))
+    
+    def update_twist(self, buffer_updates):
+        if self.sim.rod_solver.is_active():
+            idx = self.rendered_envs_idx[0]
+            verts_all = self.sim.rod_solver.vertices.vert.to_numpy()[0, :, idx]
+            radii_all = self.sim.rod_solver.vertices_info.radius.to_numpy()
+            d1_all = self.sim.rod_solver.edges_ng.d1.to_numpy()[0, :, idx]
+            d2_all = self.sim.rod_solver.edges_ng.d2.to_numpy()[0, :, idx]
+
+            for rod_entity in self.sim.rod_solver.entities:
+                rod_idx = rod_entity._rod_idx
+                if rod_entity.visualize_twist:
+                    first_vert_idx = self.sim.rod_solver.rods_info[rod_idx].first_vert_idx
+                    first_edge_idx = self.sim.rod_solver.rods_info[rod_idx].first_edge_idx
+                    is_loop = self.sim.rod_solver.rods_info[rod_idx].is_loop
+                    n_verts = self.sim.rod_solver.rods_info[rod_idx].n_verts
+                    n_edges = n_verts - (0 if is_loop else 1)
+
+                    verts = verts_all[first_vert_idx : first_vert_idx + n_verts]
+                    radii = radii_all[first_vert_idx : first_vert_idx + n_verts]
+                    d1 = d1_all[first_edge_idx : first_edge_idx + n_edges]
+                    d2 = d2_all[first_edge_idx : first_edge_idx + n_edges]
+
+                    for i_e in range(n_edges):
+                        i_v1 = i_e
+                        i_v2 = (i_e + 1) % n_edges if is_loop else i_e + 1
+                        pos = (verts[i_v1] + verts[i_v2]) / 2
+                        radius = (radii[i_v1] + radii[i_v2]) / 2
+                        
+                        self.draw_debug_arrow(
+                            pos=pos,
+                            vec=d1[i_e] * radius * 2.0,
+                            radius=radius * 0.1,
+                            color=(1.0, 0.0, 0.0, 1.0),
+                            persistent=False,
+                        )
+                        self.draw_debug_arrow(
+                            pos=pos,
+                            vec=d2[i_e] * radius * 2.0,
+                            radius=radius * 0.1,
+                            color=(0.0, 1.0, 0.0, 1.0),
+                            persistent=False,
+                        )
 
     def on_fem(self):
         if self.sim.fem_solver.is_active():
@@ -887,6 +930,7 @@ class RasterizerContext:
         self.update_sph(self.buffer)
         self.update_pbd(self.buffer)
         self.update_rod(self.buffer)
+        self.update_twist(self.buffer)
         self.update_fem(self.buffer)
 
     def add_light(self, light):

@@ -287,6 +287,7 @@ class Scene(RBC):
         material: Material | None = None,
         surface: Surface | None = None,
         visualize_contact: bool = False,
+        visualize_twist: bool = False,
         vis_mode: str | None = None,
     ):
         """
@@ -302,6 +303,8 @@ class Scene(RBC):
             The surface of the entity. If None, use ``gs.surfaces.Default()``.
         visualize_contact : bool
             Whether to visualize contact forces applied to this entity as arrows in the viewer and rendered images. Note that this will not be displayed in images rendered by camera using the `RayTracer` renderer.
+        visualize_twist : bool
+            Whether to visualize twist frames applied to this (Rod) entity as arrows in the viewer and rendered images. Note that this will not be displayed in images rendered by camera using the `RayTracer` renderer.
         vis_mode : str | None, optional
             The visualization mode of the entity. This is a handy shortcut for setting `surface.vis_mode` without explicitly creating a surface object.
 
@@ -415,7 +418,7 @@ class Scene(RBC):
             if morph.convexify is None:
                 morph.convexify = isinstance(material, (gs.materials.Rigid, gs.materials.Avatar))
 
-        entity = self._sim._add_entity(morph, material, surface, visualize_contact)
+        entity = self._sim._add_entity(morph, material, surface, visualize_contact, visualize_twist)
 
         return entity
 

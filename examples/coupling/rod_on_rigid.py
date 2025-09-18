@@ -21,9 +21,11 @@ def test_v1(scene):
             euler=(0.0, 0.0, 15.0),
         ),
         surface=gs.surfaces.Default(
+            # diffuse_texture=gs.textures.ImageTexture(image_path="data/color.png",),   # Any image is OK.
             color=(1.0, 0.4, 0.4),
             vis_mode='recon',
         ),
+        visualize_twist=True,       # Visualize the twist of the rod.
     )
 
     v2 = scene.add_entity(
@@ -504,6 +506,7 @@ def main():
         cams = list()
         cams.append(scene.add_camera(
             res=(600, 450), pos=(2.6, 1.8, 1.6), up=(0, 0, 1),
+            # res=(1024, 1024), pos=(1.6, 0.8, 0.6), up=(0, 0, 1),
             lookat=(0.9, 0.1, 0), fov=args.fov, GUI = False
         ))
         cams.append(scene.add_camera(
