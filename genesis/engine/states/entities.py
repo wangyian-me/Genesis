@@ -198,12 +198,12 @@ class RODEntityState:
     def __init__(self, entity, s_global):
         self._entity = entity
         self._s_global = s_global
-        base_v_shape = (self.entity.sim._B, self._entity.n_vertices, 3)
-        base_e_shape = (self.entity.sim._B, self._entity.n_edges)
+        base_v_shape = (self.entity.sim._B, self.entity.n_vertices, 3)
+        base_e_shape = (self.entity.sim._B, self.entity.n_edges)
 
         args = {
             "dtype": gs.tc_float,
-            "requires_grad": False,
+            "requires_grad": self.entity.scene.requires_grad,
             "scene": self.entity.scene,
         }
         self._pos = gs.zeros(base_v_shape, **args)
@@ -213,7 +213,7 @@ class RODEntityState:
 
         args["dtype"] = int
         args["requires_grad"] = False
-        self._fixed = gs.zeros(base_v_shape, **args)
+        self._fixed = gs.zeros((self.entity.sim._B, self.entity.n_vertices), **args)
 
     def serializable(self):
         self._entity = None

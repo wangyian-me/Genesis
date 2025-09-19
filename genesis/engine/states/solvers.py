@@ -310,10 +310,15 @@ class RODSolverState:
         self._theta = gs.zeros((scene.sim._B, scene.sim.rod_solver.n_edges), **args)
         self._omega = gs.zeros((scene.sim._B, scene.sim.rod_solver.n_edges), **args)
         args["requires_grad"] = False
-        # # no grad, float
-        # self._d1_ref = gs.zeros((scene.sim._B, scene.sim.rod_solver.n_edges, 3), **args)
-        # self._d2_ref = gs.zeros((scene.sim._B, scene.sim.rod_solver.n_edges, 3), **args)
-        # self._d3 = gs.zeros((scene.sim._B, scene.sim.rod_solver.n_edges, 3), **args)
+        # no grad, float
+        self._d1 = gs.zeros((scene.sim._B, scene.sim.rod_solver.n_edges, 3), **args)
+        self._d2 = gs.zeros((scene.sim._B, scene.sim.rod_solver.n_edges, 3), **args)
+        self._d3 = gs.zeros((scene.sim._B, scene.sim.rod_solver.n_edges, 3), **args)
+        self._d1_ref = gs.zeros((scene.sim._B, scene.sim.rod_solver.n_edges, 3), **args)
+        self._d2_ref = gs.zeros((scene.sim._B, scene.sim.rod_solver.n_edges, 3), **args)
+        self._kb = gs.zeros((scene.sim._B, scene.sim.rod_solver.n_internal_vertices, 3), **args)
+        self._twist = gs.zeros((scene.sim._B, scene.sim.rod_solver.n_internal_vertices), **args)
+        self._kappa_rest = gs.zeros((scene.sim._B, scene.sim.rod_solver.n_internal_vertices, 2), **args)
         args["dtype"] = gs.tc_bool
         # no grad, bool
         self._fixed = gs.zeros((scene.sim._B, scene.sim.rod_solver.n_vertices), **args)
@@ -326,9 +331,16 @@ class RODSolverState:
         self._fixed = self._fixed.detach()
         self._theta = self._theta.detach()
         self._omega = self._omega.detach()
-        # self._d1_ref = self._d1_ref.detach()
-        # self._d2_ref = self._d2_ref.detach()
-        # self._d3 = self._d3.detach()
+
+        self._d1 = self._d1.detach()
+        self._d2 = self._d2.detach()
+        self._d3 = self._d3.detach()
+        self._d1_ref = self._d1_ref.detach()
+        self._d2_ref = self._d2_ref.detach()
+
+        self._kb = self._kb.detach()
+        self._twist = self._twist.detach()
+        self._kappa_rest = self._kappa_rest.detach()
 
     @property
     def scene(self):
@@ -354,14 +366,34 @@ class RODSolverState:
     def omega(self):
         return self._omega
 
-    # @property
-    # def d1_ref(self):
-    #     return self._d1_ref
+    @property
+    def d1(self):
+        return self._d1
 
-    # @property
-    # def d2_ref(self):
-    #     return self._d2_ref
+    @property
+    def d2(self):
+        return self._d2
 
-    # @property
-    # def d3(self):
-    #     return self._d3
+    @property
+    def d3(self):
+        return self._d3
+
+    @property
+    def d1_ref(self):
+        return self._d1_ref
+
+    @property
+    def d2_ref(self):
+        return self._d2_ref
+
+    @property
+    def kb(self):
+        return self._kb
+
+    @property
+    def twist(self):
+        return self._twist
+
+    @property
+    def kappa_rest(self):
+        return self._kappa_rest

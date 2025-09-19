@@ -488,21 +488,6 @@ class RodEntity(Entity):
             self._tgt["omega"].assert_sceneless()
             self.set_omega(self._sim.cur_substep_local, self._tgt["omega"])
 
-        # if self._tgt["d1_ref"] is not None:
-        #     self._tgt["d1_ref"].assert_contiguous()
-        #     self._tgt["d1_ref"].assert_sceneless()
-        #     self.set_d1_ref(self._sim.cur_substep_local, self._tgt["d1_ref"])
-
-        # if self._tgt["d2_ref"] is not None:
-        #     self._tgt["d2_ref"].assert_contiguous()
-        #     self._tgt["d2_ref"].assert_sceneless()
-        #     self.set_d2_ref(self._sim.cur_substep_local, self._tgt["d2_ref"])
-
-        # if self._tgt["d3"] is not None:
-        #     self._tgt["d3"].assert_contiguous()
-        #     self._tgt["d3"].assert_sceneless()
-        #     self.set_d3(self._sim.cur_substep_local, self._tgt["d3"])
-
         # clear kinematic states
         self._solver._kernel_clear_kinematic_states_all_substeps()
         # clear contact states
@@ -540,6 +525,15 @@ class RodEntity(Entity):
         if _tgt_vel is not None or _tgt_pos is not None:
             # manually zero the grad since manually setting state breaks gradient flow
             self.clear_grad(self._sim.cur_substep_local)
+
+    def collect_output_grads(self):
+        """
+        Collect gradients from external queried states.
+        """
+        if self._sim.cur_step_global in self._queried_states:
+            # one step could have multiple states
+            for state in self._queried_states[self._sim.cur_step_global]:
+                self.add_grad_from_state(state)
 
     def _assert_active(self):
         if not self.active:
@@ -884,12 +878,63 @@ class RodEntity(Entity):
             for j in ti.static(range(3)):
                 pos[i_b, i_v, j] = self._solver.vertices[f, i_global, i_b].vert[j]
                 vel[i_b, i_v, j] = self._solver.vertices[f, i_global, i_b].vel[j]
-            fixed[i_b, i_v] = self._solver.vertices[f, i_global, i_b].is_fixed
+            fixed[i_b, i_v] = self._solver.vertices_ng[f, i_global, i_b].fixed
 
         for i_e, i_b in ti.ndrange(self.n_edges, self._sim._B):
             i_global = i_e + self.e_start
             theta[i_b, i_e] = self._solver.edges[f, i_global, i_b].theta
             omega[i_b, i_e] = self._solver.edges[f, i_global, i_b].omega
+
+    @ti.kernel
+    def set_frame_add_grad_pos(self, f: ti.i32, pos_grad: ti.types.ndarray()):
+        for i_v, i_b in ti.ndrange(self.n_vertices, self._sim._B):
+            i_global = i_v + self.v_start
+            for j in ti.static(range(3)):
+                self._solver.vertices.grad[f, i_global, i_b].vert[j] += pos_grad[i_b, i_v, j]
+
+    @ti.kernel
+    def set_frame_add_grad_vel(self, f: ti.i32, vel_grad: ti.types.ndarray()):
+        for i_v, i_b in ti.ndrange(self.n_vertices, self._sim._B):
+            i_global = i_v + self.v_start
+            for j in ti.static(range(3)):
+                self._solver.vertices.grad[f, i_global, i_b].vel[j] += vel_grad[i_b, i_v, j]
+
+    @ti.kernel
+    def set_frame_add_grad_theta(self, f: ti.i32, theta_grad: ti.types.ndarray()):
+        for i_e, i_b in ti.ndrange(self.n_edges, self._sim._B):
+            i_global = i_e + self.e_start
+            self._solver.edges.grad[f, i_global, i_b].theta += theta_grad[i_b, i_e]
+
+    @ti.kernel
+    def set_frame_add_grad_omega(self, f: ti.i32, omega_grad: ti.types.ndarray()):
+        for i_e, i_b in ti.ndrange(self.n_edges, self._sim._B):
+            i_global = i_e + self.e_start
+            self._solver.edges.grad[f, i_global, i_b].omega += omega_grad[i_b, i_e]
+    
+    def add_grad_from_state(self, state):
+        """
+        Accumulate gradients from a recorded state back into the solver.
+
+        Parameters
+        ----------
+        state : RODEntityState
+            The state object containing gradients for physical quantities.
+        """
+        if state.pos.grad is not None:
+            state.pos.assert_contiguous()
+            self.set_frame_add_grad_pos(self._sim.cur_substep_local, state.pos.grad)
+
+        if state.vel.grad is not None:
+            state.vel.assert_contiguous()
+            self.set_frame_add_grad_vel(self._sim.cur_substep_local, state.vel.grad)
+
+        if state.theta.grad is not None:
+            state.theta.assert_contiguous()
+            self.set_frame_add_grad_theta(self._sim.cur_substep_local, state.theta.grad)
+
+        if state.omega.grad is not None:
+            state.omega.assert_contiguous()
+            self.set_frame_add_grad_omega(self._sim.cur_substep_local, state.omega.grad)
 
     @ti.kernel
     def clear_grad(self, f: ti.i32):
