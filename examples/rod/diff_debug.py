@@ -78,7 +78,7 @@ def test_v1(args, scene, cameras, frames):
 
 def test_v2(args, scene, cameras, frames):
     """
-    10 vertices fall down
+    25 vertices fall down
     try to optimize the initial pos to reach the target
     """
     segment_radius = 0.005
@@ -140,7 +140,7 @@ def test_v2(args, scene, cameras, frames):
 
     lr = 0.01
 
-    for it in range(20):
+    for it in range(1):
         scene.reset()
         r1.set_position(init_pos)
         b1.set_position(gs.tensor([0., 0., 0.14]))
@@ -161,6 +161,9 @@ def test_v2(args, scene, cameras, frames):
                 loss += torch.relu(0.02 - state.pos[:, :, 2]).sum()
                 print("final pos z:", state.pos.detach().cpu().numpy())
 
+        # print(r1._queried_states.states.keys())
+        # print(scene.rod_solver._ckpt.keys())
+
         loss.backward()
         print(f"it: {it}, loss: {loss.item()} grad: {init_pos.grad.detach().cpu().numpy()}")
         with torch.no_grad():
@@ -169,6 +172,102 @@ def test_v2(args, scene, cameras, frames):
         print(f"new init pos: {init_pos.detach().cpu().numpy()}")
         print("------------------------------")
 
+
+def test_v3(args, scene, cameras, frames):
+    """
+    25 vertices fall down
+    try to optimize the initial pos to reach the target
+    """
+    segment_radius = 0.005
+    r1 = scene.add_entity(
+        material=gs.materials.ROD.Base(
+            segment_radius=segment_radius,
+            segment_mass=0.001,
+            # K=1e4,
+            E=1e4,
+            G=1e3,
+            # use_inextensible=False,
+        ),
+        morph=gs.morphs.ParameterizedRod(
+            type="rod",
+            n_vertices=25,
+            interval=0.01,
+            axis="x",
+        ),
+        surface=gs.surfaces.Default(
+            diffuse_texture=gs.textures.ImageTexture(
+                image_path="textures/rope03.png",
+            ),
+            vis_mode='recon',
+        )
+    )
+
+    b1 = scene.add_entity(
+        material=gs.materials.ROD.Base(
+            segment_radius=0.02,
+        ),
+        morph=gs.morphs.ParameterizedRod(
+            type="rod",
+            n_vertices=5,
+            interval=0.1,
+            axis="x",
+            euler=(0.0, 0.0, -90.0),
+            fixed=True,
+        ),
+        surface=gs.surfaces.Default(
+            color=(0.4, 0.4, 0.4),
+            vis_mode='recon',
+        ),
+    )
+
+    gripper_geom_indices = list()
+    scene.rod_solver.register_gripper_geom_indices(gripper_geom_indices)
+
+    ########################## build ##########################
+    scene.build(n_envs=args.n_envs, env_spacing=(1, 1))
+
+    init_pos = gs.tensor([0., 0., 0.2], requires_grad=True)
+    # init_pos = gs.tensor([0., 0., 0.1], requires_grad=True)
+    target_pos = gs.tensor([0., 0.2, 0.02])
+
+    scene.draw_debug_sphere(
+        pos=target_pos,
+        radius=0.01
+    )
+
+    lr = 0.01
+
+    for it in range(1):
+        scene.reset()
+        r1.set_position(init_pos)
+        b1.set_position(gs.tensor([0., 0., 0.14]))
+        loss = 0
+
+        horizon = 100
+        for i in range(horizon):
+            scene.step()
+            for cid, cam in enumerate(cameras):
+                img = cam.render()[0]
+                frames[cid].append(img)
+                if i == horizon - 1:
+                    frames[cid].extend([img]*15)
+            state = r1.get_state()
+            if i == horizon - 1:
+                loss += torch.pow(state.pos - target_pos, 2).sum()
+                # ensure z is above the table, pos is [env, n_vertices, 3]
+                loss += torch.relu(0.02 - state.pos[:, :, 2]).sum()
+                print("final pos z:", state.pos.detach().cpu().numpy())
+
+        print(r1._queried_states.states.keys())
+        print(scene.rod_solver._ckpt.keys())
+
+        loss.backward()
+        print(f"it: {it}, loss: {loss.item()} grad: {init_pos.grad.detach().cpu().numpy()}")
+        with torch.no_grad():
+            init_pos -= lr * init_pos.grad
+            init_pos.zero_grad()
+        print(f"new init pos: {init_pos.detach().cpu().numpy()}")
+        print("------------------------------")
 
 def main():
     parser = argparse.ArgumentParser()
@@ -227,6 +326,7 @@ def main():
 
     # test_v1(args, scene, cameras, frames)
     # test_v2(args, scene, cameras, frames)
+    # test_v3(args, scene, cameras, frames)
 
     for cid in frames:
         mediapy.write_video(args.path.replace(".mp4", f"_c{cid}.mp4"), frames[cid], fps=30, qp=18)
