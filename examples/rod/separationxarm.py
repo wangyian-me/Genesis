@@ -35,7 +35,7 @@ def main():
             # gravity=(0.,0.,0.)
         ),
         rod_options=gs.options.RodOptions(
-            damping=15.0,
+            damping=25.0,
             angular_damping=10.0,
             n_pbd_iters=20,
         ),
@@ -134,14 +134,14 @@ def main():
         else:
             f.set_qpos(np.array([[0, -0.44, 0, 0.96, 0, 1.4, 0, 0, 0]] * args.n_envs))
         f.set_dofs_kp(
-            np.array([4500, 4500, 3500, 3500, 2000, 2000, 2000, 100, 100]),
+            np.array([4500, 4500, 3500, 3500, 2000, 2000, 2000, 80, 80]),
         )
         f.set_dofs_kv(
             np.array([450, 450, 350, 350, 200, 200, 200, 30, 30]),
         )
         f.set_dofs_force_range(
-            np.array([-87, -87, -87, -87, -12, -12, -12, -300, -300]),
-            np.array([87, 87, 87, 87, 12, 12, 12, 300, 300]),
+            np.array([-87, -87, -87, -87, -12, -12, -12, -30, -30]),
+            np.array([87, 87, 87, 87, 12, 12, 12, 30, 30]),
         )
 
     ef1 = franka1.get_link("link_tcp")
@@ -158,19 +158,27 @@ def main():
     open_gap = 0.015
     close_gap = 0.044
 
-    force = 1.4
+    force = 1
 
-    debug = False
+    debug = True
 
     frames = defaultdict(list)
+    positions = list()
 
     print('red', scene.rod_solver.vertices.vert.to_numpy()[0,:50, 0])
+    red_init_pos = scene.rod_solver.vertices.vert.to_numpy()[0,:50, :].copy()
+    green_init_pos = scene.rod_solver.vertices.vert.to_numpy()[0,50:, :].copy()
 
     # move to pre-grasp pose
     c1 = RobotController(scene, franka1, ef1, args, (x1, 0, z), initial_q_dof=open_gap, debug=debug)
+    p = c1.robot.get_dofs_position().cpu().numpy()
+    positions.append(p)
+
     c1.control_robot(open_gap, open_gap, dk=-25)
     for i in range(80):
         scene.step()
+        p = c1.robot.get_dofs_position().cpu().numpy()
+        positions.append(p)
         for cid, cam in enumerate(cameras):
             img = cam.render()[0]
             frames[cid].append(img)
@@ -178,6 +186,8 @@ def main():
     c1.control_robot(open_gap, open_gap, dy=y_delta1)
     for i in range(80):
         scene.step()
+        p = c1.robot.get_dofs_position().cpu().numpy()
+        positions.append(p)
         for cid, cam in enumerate(cameras):
             img = cam.render()[0]
             frames[cid].append(img)
@@ -185,6 +195,8 @@ def main():
     c1.control_robot(open_gap, open_gap, dz=z_delta1)
     for i in range(80):
         scene.step()
+        p = c1.robot.get_dofs_position().cpu().numpy()
+        positions.append(p)
         for cid, cam in enumerate(cameras):
             img = cam.render()[0]
             frames[cid].append(img)
@@ -192,6 +204,8 @@ def main():
     c1.control_robot(force, force, g_dof_use_force=True)
     for i in range(80):
         scene.step()
+        p = c1.robot.get_dofs_position().cpu().numpy()
+        positions.append(p)
         for cid, cam in enumerate(cameras):
             img = cam.render()[0]
             frames[cid].append(img)
@@ -199,6 +213,8 @@ def main():
     c1.control_robot(force, force, g_dof_use_force=True, dz=z_delta_lift1)
     for i in range(80):
         scene.step()
+        p = c1.robot.get_dofs_position().cpu().numpy()
+        positions.append(p)
         for cid, cam in enumerate(cameras):
             img = cam.render()[0]
             frames[cid].append(img)
@@ -206,6 +222,8 @@ def main():
     c1.control_robot(force, force, g_dof_use_force=True, dz=z_delta_lift2)
     for i in range(80):
         scene.step()
+        p = c1.robot.get_dofs_position().cpu().numpy()
+        positions.append(p)
         for cid, cam in enumerate(cameras):
             img = cam.render()[0]
             frames[cid].append(img)
@@ -213,6 +231,8 @@ def main():
     c1.control_robot(force, force, g_dof_use_force=True, dx=-x_delta1)
     for i in range(80):
         scene.step()
+        p = c1.robot.get_dofs_position().cpu().numpy()
+        positions.append(p)
         for cid, cam in enumerate(cameras):
             img = cam.render()[0]
             frames[cid].append(img)
@@ -220,6 +240,8 @@ def main():
     c1.control_robot(force, force, g_dof_use_force=True, dx=-x_delta1)
     for i in range(80):
         scene.step()
+        p = c1.robot.get_dofs_position().cpu().numpy()
+        positions.append(p)
         for cid, cam in enumerate(cameras):
             img = cam.render()[0]
             frames[cid].append(img)
@@ -227,12 +249,21 @@ def main():
     c1.control_robot(force, force, g_dof_use_force=True, dx=-x_delta1)
     for i in range(80):
         scene.step()
+        p = c1.robot.get_dofs_position().cpu().numpy()
+        positions.append(p)
         for cid, cam in enumerate(cameras):
             img = cam.render()[0]
             frames[cid].append(img)
 
     for cid in frames:
         mediapy.write_video(args.path.replace(".mp4", f"_c{cid}.mp4"), frames[cid], fps=30, qp=18)
+
+    positions = np.array(positions).squeeze(1)
+    print(positions.shape)
+    np.savez(args.path.replace(".mp4", f"_pos.npz"),
+             positions=positions,
+             red_init_pos=red_init_pos,
+             green_init_pos=green_init_pos)
 
 if __name__ == "__main__":
     main()

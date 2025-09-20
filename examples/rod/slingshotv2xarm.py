@@ -229,14 +229,21 @@ def main():
 
     debug = True
 
+    frames = defaultdict(list)
+    positions = list()
+
+    r1_init_pos = scene.rod_solver.vertices.vert.to_numpy()[0,:24, :].copy()
+
     # move to pre-grasp pose
     c1 = RobotController(scene, franka1, ef1, args, (x1, y, z), initial_q_dof=open_gap, debug=debug)
-
-    frames = defaultdict(list)
+    p = c1.robot.get_dofs_position().cpu().numpy()
+    positions.append(p)
 
     c1.control_robot(open_gap, open_gap, di=90)
     for i in range(200):
         scene.step()
+        p = c1.robot.get_dofs_position().cpu().numpy()
+        positions.append(p)
         for cid, cam in enumerate(cameras):
             img = cam.render()[0]
             frames[cid].append(img)
@@ -245,6 +252,8 @@ def main():
     c1.control_robot(open_gap, open_gap, dy=y_delta)
     for i in range(120):
         scene.step()
+        p = c1.robot.get_dofs_position().cpu().numpy()
+        positions.append(p)
         for cid, cam in enumerate(cameras):
             img = cam.render()[0]
             frames[cid].append(img)
@@ -253,6 +262,8 @@ def main():
     c1.control_robot(force1, force1, g_dof_use_force=True)
     for i in range(160):
         scene.step()
+        p = c1.robot.get_dofs_position().cpu().numpy()
+        positions.append(p)
         for cid, cam in enumerate(cameras):
             img = cam.render()[0]
             frames[cid].append(img)
@@ -262,6 +273,8 @@ def main():
     c1.control_robot(force2, force2, g_dof_use_force=True, dy=y_back)
     for i in range(20):
         scene.step()
+        p = c1.robot.get_dofs_position().cpu().numpy()
+        positions.append(p)
         for cid, cam in enumerate(cameras):
             img = cam.render()[0]
             frames[cid].append(img)
@@ -271,6 +284,8 @@ def main():
     c1.control_robot(open_gap, open_gap)
     for i in range(80):
         scene.step()
+        p = c1.robot.get_dofs_position().cpu().numpy()
+        positions.append(p)
         for cid, cam in enumerate(cameras):
             img = cam.render()[0]
             frames[cid].append(img)
@@ -278,6 +293,12 @@ def main():
 
     for cid in frames:
         mediapy.write_video(args.path.replace(".mp4", f"_c{cid}.mp4"), frames[cid], fps=30, qp=18)
+
+    positions = np.array(positions).squeeze(1)
+    print(positions.shape)
+    np.savez(args.path.replace(".mp4", "_pos.npz"),
+             positions=positions,
+             init_pos=r1_init_pos)
 
 if __name__ == "__main__":
     main()

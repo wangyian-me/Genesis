@@ -1,5 +1,6 @@
 import torch
 import genesis as gs
+import gstaichi as ti
 import genesis.utils.geom as gu
 
 
@@ -115,3 +116,55 @@ class RobotController:
 
         self.pos_abs = target_pos
         self.quat_abs = target_quat
+
+
+class RobotControllerOptim(RobotController):
+    def __init__(
+        self,
+        scene,
+        robot,
+        ef,
+        configs,
+        initial_pos=(0., 0., 0.),
+        initial_quat=(0., 1., 0., 0.),
+        initial_q_dof=0.03,
+        n_motors_dofs=7,
+        n_fingers_dofs=2,
+        n_envs=1,
+        n_stages=10,
+        n_optim_dofs=6,
+        debug=False,
+    ):
+        super().__init__(
+            scene, robot, ef, configs,
+            initial_pos, initial_quat, initial_q_dof,
+            n_motors_dofs, n_fingers_dofs, debug
+        )
+
+        self.traj = gs.zeros(
+            size=(n_envs, n_stages, n_optim_dofs), dtype=gs.tc_float
+        )
+        self.n_envs = n_envs
+        self.n_stages = n_stages
+        self.n_optim_dofs = n_optim_dofs
+
+    def gather_grad(self, grad, pos, active_grad_ids, stage_idx, lr=0.01):
+        # [n_envs, 3]
+        contact_grad = grad[:, active_grad_ids, :].mean(dim=1)
+
+        # [n_envs, 3]
+        contact_pos = pos[:, active_grad_ids, :].mean(dim=1)
+
+        d_pos = lr * contact_grad
+
+        d_torque = torch.linalg.cross(
+            pos[:, active_grad_ids, :] - contact_pos[:, None, :],
+            grad[:, active_grad_ids, :], dim=-1
+        )
+        t_torque = d_torque.sum(dim=1)
+        d_rad = -lr * t_torque
+        d_angle = torch.rad2deg(d_rad)
+
+        d_dof = torch.cat([d_pos, d_angle], dim=-1)
+        self.traj[:, stage_idx, :] = d_dof
+
