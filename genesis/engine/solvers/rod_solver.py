@@ -130,6 +130,7 @@ class RodSolver(Solver):
         self._damping = options.damping
         self._angular_damping = options.angular_damping
         self._n_pbd_iters = options.n_pbd_iters
+        self._max_collision_grad_norm = 0.1
 
         # boundary
         self.setup_boundary()
@@ -367,7 +368,7 @@ class RodSolver(Solver):
 
         self.rr_constraints = struct_rr_state.field(
             shape=self._batch_shape((self.sim.substeps_local + 1, self._n_valid_edge_pairs)),
-            needs_grad=False,
+            needs_grad=True,
             layout=ti.Layout.AOS
         )
 
@@ -834,11 +835,13 @@ class RodSolver(Solver):
 
             for i in range(self._n_pbd_iters):
                 self._kernel_apply_inextensibility_constraints(f)
-                self._kernel_apply_rod_collision_constraints(f, i)
+                # self._kernel_apply_rod_collision_constraints(f, i)
+                self.collision_forward(f, i)
             self.update_centerline_edges(f)
             self.update_material_states(f)
             self.update_velocities_after_projection(f)
-            self._kernel_apply_rod_friction(f)
+            # self._kernel_apply_rod_friction(f)
+            self.friction_forward(f)
 
             self.transfer_fixed_states(f)   # f -> f+1
 
@@ -855,13 +858,15 @@ class RodSolver(Solver):
         if self.is_active():
             self.transfer_fixed_states.grad(f)
 
+            self.friction_forward.grad(self, f)
             # self._kernel_apply_rod_friction.grad(f)
             self.update_velocities_after_projection.grad(f)
             self.update_material_states.grad(f)
             self.update_centerline_edges.grad(f)
-            # for i in range(self._n_pbd_iters)[::-1]:
-            #     self._kernel_apply_rod_collision_constraints.grad(f, i)
-            #     self._kernel_apply_inextensibility_constraints.grad(f)
+            for i in range(self._n_pbd_iters)[::-1]:
+                # self._kernel_apply_rod_collision_constraints.grad(f, i)
+                self.collision_forward.grad(self, f, i)
+                self._kernel_apply_inextensibility_constraints.grad(f)
 
             self.update_frame_thetas.grad(f)
             self.update_centerline_positions.grad(f)
@@ -1801,6 +1806,106 @@ class RodSolver(Solver):
                     self.rr_constraints[f, i_p, i_b].penetration = penetration
 
     @ti.kernel
+    def _kernel_apply_rod_collision_constraints_grad(self, f: ti.i32, iter_idx: ti.i32):
+        for i_p, i_b in ti.ndrange(self._n_valid_edge_pairs, self._B):
+            idx_a1 = self.rr_constraint_info[i_p].valid_pair[0]
+            idx_a2 = self.get_next_vertex_of_edge(idx_a1)
+            idx_b1 = self.rr_constraint_info[i_p].valid_pair[1]
+            idx_b2 = self.get_next_vertex_of_edge(idx_b1)
+
+            p_a1, p_a2 = self.vertices[f + 1, idx_a1, i_b].vert, self.vertices[f + 1, idx_a2, i_b].vert
+            p_b1, p_b2 = self.vertices[f + 1, idx_b1, i_b].vert, self.vertices[f + 1, idx_b2, i_b].vert
+
+            radius_a = (self.vertices_info[idx_a1].radius + self.vertices_info[idx_a2].radius) * 0.5
+            radius_b = (self.vertices_info[idx_b1].radius + self.vertices_info[idx_b2].radius) * 0.5
+
+            # compute closest points (t, u) and distance
+            e1, e2 = p_a2 - p_a1, p_b2 - p_b1
+            e12 = p_b1 - p_a1
+            d1, d2 = e1.dot(e1), e2.dot(e2)
+            r = e1.dot(e2)
+            s1, s2 = e1.dot(e12), e2.dot(e12)
+            den = d1 * d2 - r * r
+
+            t = 0.0
+            if den > EPS:
+                t = (s1 * d2 - s2 * r) / den
+            t = tm.clamp(t, 0.0, 1.0)
+
+            u_unclamped = 0.0
+            if d2 > EPS:
+                u_unclamped = (t * r - s2) / d2
+            u = tm.clamp(u_unclamped, 0.0, 1.0)
+
+            # re-compute t if u was clamped
+            if ti.abs(u - u_unclamped) > EPS:
+                if d1 > EPS:
+                    t = (u * r + s1) / d1
+                t = tm.clamp(t, 0.0, 1.0)
+
+            # check for penetration
+            closest_p_a = p_a1 + t * e1
+            closest_p_b = p_b1 + u * e2
+            dist_vec = closest_p_a - closest_p_b
+            dist = tm.length(dist_vec)
+
+            penetration = radius_a + radius_b - dist
+            if penetration > 0.:
+                g_p_a1 = self.vertices.grad[f + 1, idx_a1, i_b].vert
+                g_p_a2 = self.vertices.grad[f + 1, idx_a2, i_b].vert
+                g_p_b1 = self.vertices.grad[f + 1, idx_b1, i_b].vert
+                g_p_b2 = self.vertices.grad[f + 1, idx_b2, i_b].vert
+
+                normal = dist_vec.normalized() if dist > EPS else ti.Vector([0.0, 0.0, 1.0])
+                w = ti.Vector([1.0 - t, t, 1.0 - u, u])
+                im = ti.Vector([
+                    self._func_get_inverse_mass(f, idx_a1, i_b),
+                    self._func_get_inverse_mass(f, idx_a2, i_b),
+                    self._func_get_inverse_mass(f, idx_b1, i_b),
+                    self._func_get_inverse_mass(f, idx_b2, i_b),
+                ])
+
+                w_sum_sq_inv_mass = tm.dot(w * w, im)
+                if w_sum_sq_inv_mass > EPS:
+                    g_displacement_vec = (
+                        im[0] * w[0] * g_p_a1 + im[1] * w[1] * g_p_a2 -
+                        im[2] * w[2] * g_p_b1 - im[3] * w[3] * g_p_b2
+                    )
+
+                    g_lambda = normal.dot(g_displacement_vec)
+                    g_penetration = g_lambda / w_sum_sq_inv_mass
+
+                    if iter_idx == 0:
+                        g_penetration += self.rr_constraints.grad[f, i_p, i_b].penetration
+
+                    g_dist = -g_penetration
+                    g_dist_vec = g_dist * normal
+
+                    g_closest_p_a = g_dist_vec
+                    g_closest_p_b = -g_dist_vec
+
+                    # ratio-preserve distribution
+                    g_v_a1 = (1.0 - t) * g_closest_p_a
+                    g_v_a2 = t * g_closest_p_a
+                    g_v_b1 = (1.0 - u) * g_closest_p_b
+                    g_v_b2 = u * g_closest_p_b
+
+                    total_mag_sq = (
+                        g_v_a1.dot(g_v_a1) + g_v_a2.dot(g_v_a2) +
+                        g_v_b1.dot(g_v_b1) + g_v_b2.dot(g_v_b2)
+                    )
+                    scale = 1.0
+                    if total_mag_sq > self._max_collision_grad_norm ** 2:
+                        total_mag = tm.sqrt(total_mag_sq)
+                        if total_mag > EPS:
+                            scale = self._max_collision_grad_norm / total_mag
+
+                    self.vertices.grad[f + 1, idx_a1, i_b].vert += g_v_a1 * scale
+                    self.vertices.grad[f + 1, idx_a2, i_b].vert += g_v_a2 * scale
+                    self.vertices.grad[f + 1, idx_b1, i_b].vert += g_v_b1 * scale
+                    self.vertices.grad[f + 1, idx_b2, i_b].vert += g_v_b2 * scale
+
+    @ti.kernel
     def _kernel_apply_rod_friction(self, f: ti.i32):
         for i_p, i_b in ti.ndrange(self._n_valid_edge_pairs, self._B):
             penetration = self.rr_constraints[f, i_p, i_b].penetration
@@ -1875,6 +1980,134 @@ class RodSolver(Solver):
                     self.vertices[f + 1, idx_a2, i_b].vel += lambda_ * im[1] * w[1]
                     self.vertices[f + 1, idx_b1, i_b].vel -= lambda_ * im[2] * w[2]
                     self.vertices[f + 1, idx_b2, i_b].vel -= lambda_ * im[3] * w[3]
+
+    @ti.kernel
+    def _kernel_apply_rod_friction_grad(self, f: ti.i32):
+        for i_p, i_b in ti.ndrange(self._n_valid_edge_pairs, self._B):
+            if self.rr_constraints[f, i_p, i_b].penetration > 0.0:
+                idx_a1 = self.rr_constraint_info[i_p].valid_pair[0]
+                idx_a2 = self.get_next_vertex_of_edge(idx_a1)
+                idx_b1 = self.rr_constraint_info[i_p].valid_pair[1]
+                idx_b2 = self.get_next_vertex_of_edge(idx_b1)
+
+                p_a1, p_a2 = self.vertices[f + 1, idx_a1, i_b].vert, self.vertices[f + 1, idx_a2, i_b].vert
+                p_b1, p_b2 = self.vertices[f + 1, idx_b1, i_b].vert, self.vertices[f + 1, idx_b2, i_b].vert
+
+                # compute closest points (t, u) and distance
+                e1, e2 = p_a2 - p_a1, p_b2 - p_b1
+                e12 = p_b1 - p_a1
+                d1, d2 = e1.dot(e1), e2.dot(e2)
+                r = e1.dot(e2)
+                s1, s2 = e1.dot(e12), e2.dot(e12)
+                den = d1 * d2 - r * r
+
+                t = 0.0
+                if den > EPS:
+                    t = (s1 * d2 - s2 * r) / den
+                t = tm.clamp(t, 0.0, 1.0)
+
+                u_unclamped = 0.0
+                if d2 > EPS:
+                    u_unclamped = (t * r - s2) / d2
+                u = tm.clamp(u_unclamped, 0.0, 1.0)
+
+                # Re-compute t if u was clamped
+                if ti.abs(u - u_unclamped) > EPS:
+                    if d1 > EPS:
+                        t = (u * r + s1) / d1
+                    t = tm.clamp(t, 0.0, 1.0)
+
+                g_v_a1_out = self.vertices.grad[f + 1, idx_a1, i_b].vel
+                g_v_a2_out = self.vertices.grad[f + 1, idx_a2, i_b].vel
+                g_v_b1_out = self.vertices.grad[f + 1, idx_b1, i_b].vel
+                g_v_b2_out = self.vertices.grad[f + 1, idx_b2, i_b].vel
+
+                w = ti.Vector([1.0 - t, t, 1.0 - u, u])
+                im = ti.Vector([
+                    self._func_get_inverse_mass(f, idx_a1, i_b), self._func_get_inverse_mass(f, idx_a2, i_b),
+                    self._func_get_inverse_mass(f, idx_b1, i_b), self._func_get_inverse_mass(f, idx_b2, i_b),
+                ])
+                w_sum_sq_inv_mass = tm.dot(w * w, im)
+
+                if w_sum_sq_inv_mass > EPS:
+                    g_lambda_vec = (
+                        g_v_a1_out * im[0] * w[0] + g_v_a2_out * im[1] * w[1] -
+                        g_v_b1_out * im[2] * w[2] - g_v_b2_out * im[3] * w[3]
+                    )
+
+                    g_delta_v_tangent = g_lambda_vec / w_sum_sq_inv_mass
+
+                    v_a1, v_a2 = self.vertices[f + 1, idx_a1, i_b].vel, self.vertices[f + 1, idx_a2, i_b].vel
+                    v_b1, v_b2 = self.vertices[f + 1, idx_b1, i_b].vel, self.vertices[f + 1, idx_b2, i_b].vel
+                    v_rel = ((1 - t) * v_a1 + t * v_a2) - ((1 - u) * v_b1 + u * v_b2)
+                    normal = self.rr_constraints[f, i_p, i_b].normal
+                    v_tangent = v_rel - v_rel.dot(normal) * normal
+                    v_tangent_norm = tm.length(v_tangent)
+
+                    penetration = self.rr_constraints[f, i_p, i_b].penetration
+                    normal_vel_mag = penetration / self._substep_dt
+                    mu_s = (self.vertices_info[idx_a1].mu_s + self.vertices_info[idx_a2].mu_s + self.vertices_info[idx_b1].mu_s + self.vertices_info[idx_b2].mu_s) * 0.25
+                    mu_k = (self.vertices_info[idx_a1].mu_k + self.vertices_info[idx_a2].mu_k + self.vertices_info[idx_b1].mu_k + self.vertices_info[idx_b2].mu_k) * 0.25
+
+                    g_v_tangent = ti.Vector.zero(gs.ti_float, 3)
+                    g_normal_vel_mag = 0.0
+
+                    if v_tangent_norm < mu_s * normal_vel_mag:
+                        g_v_tangent -= g_delta_v_tangent
+                    else: # Differentiate through the kinetic friction case
+                        n_t = v_tangent.normalized()
+                        F_k = mu_k * normal_vel_mag
+                        g_F_k = -n_t.dot(g_delta_v_tangent)
+                        g_n_t = -F_k * g_delta_v_tangent
+                        inv_norm = 1.0 / tm.max(v_tangent_norm, EPS)
+                        g_v_tangent += (g_n_t - n_t.dot(g_n_t) * n_t) * inv_norm
+                        g_normal_vel_mag += g_F_k * mu_k
+                    
+                    self.rr_constraints.grad[f, i_p, i_b].penetration += g_normal_vel_mag / self._substep_dt
+                    
+                    g_v_rel = g_v_tangent - normal.dot(g_v_tangent) * normal
+                    
+                    g_v_a = g_v_rel
+                    g_v_b = -g_v_rel
+
+                    # ratio-preserve distribution
+                    g_v_a1 = (1.0 - t) * g_v_a
+                    g_v_a2 = t * g_v_a
+                    g_v_b1 = (1.0 - u) * g_v_b
+                    g_v_b2 = u * g_v_b
+
+                    total_mag_sq = (
+                        g_v_a1.dot(g_v_a1) + g_v_a2.dot(g_v_a2) +
+                        g_v_b1.dot(g_v_b1) + g_v_b2.dot(g_v_b2)
+                    )
+                    scale = 1.0
+                    if total_mag_sq > self._max_collision_grad_norm ** 2:
+                        total_mag = tm.sqrt(total_mag_sq)
+                        if total_mag > EPS:
+                            scale = self._max_collision_grad_norm / total_mag
+
+                    self.vertices.grad[f + 1, idx_a1, i_b].vel += g_v_a1 * scale
+                    self.vertices.grad[f + 1, idx_a2, i_b].vel += g_v_a2 * scale
+                    self.vertices.grad[f + 1, idx_b1, i_b].vel += g_v_b1 * scale
+                    self.vertices.grad[f + 1, idx_b2, i_b].vel += g_v_b2 * scale
+
+    @ti.ad.grad_replaced
+    def collision_forward(self, f, iter_idx):
+        self._kernel_apply_rod_collision_constraints(f, iter_idx)
+
+    @ti.ad.grad_for(collision_forward)
+    def collision_backward(self, f, iter_idx):
+        # self._kernel_apply_rod_collision_constraints_grad(f, iter_idx)
+        pass # NOTE: just ignore also works
+
+    @ti.ad.grad_replaced
+    def friction_forward(self, f):
+        self._kernel_apply_rod_friction(f)
+
+    @ti.ad.grad_for(friction_forward)
+    def friction_backward(self, f):
+        # self._kernel_apply_rod_friction_grad(f)
+        pass # NOTE: just ignore also works
 
     # ------------------------- NOTE: Smooth version (may be less stable) -------------------------
 

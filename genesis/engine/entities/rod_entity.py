@@ -171,7 +171,17 @@ class RodEntity(Entity):
         self._queried_states.append(state)
 
         return state
-    
+
+    def get_kinematic_indices(self):
+        # TODO: env idx
+        kinematic_indices = list()
+        f = self._sim.cur_substep_local
+        for i_v in range(self.n_vertices):
+            i_global = self._v_start + i_v
+            if self.solver.vertices_ng[f, i_v, 0].is_kinematic:
+                kinematic_indices.append(i_global)
+        return kinematic_indices
+
     # def deactivate(self):         # NOTE: Not used
     #     gs.logger.info(f"{self.__class__.__name__} <{self.id}> deactivated.")
     #     self._tgt["act"] = gs.INACTIVE
