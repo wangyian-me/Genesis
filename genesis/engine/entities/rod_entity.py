@@ -70,6 +70,13 @@ class RodEntity(Entity):
     # ----------------------------------- basic entity ops -------------------------------
     # ------------------------------------------------------------------------------------
 
+    def set_pos_single(self, pos, verts_idx):
+        for i_b in range(self._B):
+            i_global = verts_idx + self._v_start
+            for j in ti.static(range(3)):
+                self.vertices[0, i_global, i_b].vert[j] = pos[i_b, j]
+
+    
     def set_position(self, pos):
         """
         Set the target position(s) for the Rod entity.
@@ -894,6 +901,27 @@ class RodEntity(Entity):
             i_global = i_e + self.e_start
             theta[i_b, i_e] = self._solver.edges[f, i_global, i_b].theta
             omega[i_b, i_e] = self._solver.edges[f, i_global, i_b].omega
+
+    @ti.kernel
+    def get_all_verts_kernel(
+        self,
+        pos: ti.types.ndarray(),
+    ):
+        for i_v, i_b in ti.ndrange(self.n_vertices, self._sim._B):
+            i_global = i_v + self.v_start
+            for j in ti.static(range(3)):
+                pos[i_b, i_v, j] = self._solver.vertices[0, i_global, i_b].vert[j]
+
+    def get_all_verts(self):
+        base_v_shape = (self.sim._B, self.n_vertices, 3)
+        args = {
+            "dtype": gs.np_float,
+            "requires_grad": False,
+            "scene": self.scene,
+        }
+        pos = gs.zeros(base_v_shape, **args)
+        self.get_all_verts_kernel(pos)
+        return pos
 
     @ti.kernel
     def set_frame_add_grad_pos(self, f: ti.i32, pos_grad: ti.types.ndarray()):
