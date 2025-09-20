@@ -71,10 +71,10 @@ class RodEntity(Entity):
     # ------------------------------------------------------------------------------------
 
     def set_pos_single(self, pos, verts_idx):
-        for i_b in range(self._B):
+        for i_b in range(self._sim._B):
             i_global = verts_idx + self._v_start
             for j in ti.static(range(3)):
-                self.vertices[0, i_global, i_b].vert[j] = pos[i_b, j]
+                self.solver.vertices[0, i_global, i_b].vert[j] = pos[i_b, j]
 
     
     def set_position(self, pos):
@@ -916,10 +916,10 @@ class RodEntity(Entity):
         base_v_shape = (self.sim._B, self.n_vertices, 3)
         args = {
             "dtype": gs.np_float,
-            "requires_grad": False,
-            "scene": self.scene,
+            # "requires_grad": False,
+            # "scene": self.scene,
         }
-        pos = gs.zeros(base_v_shape, **args)
+        pos = np.zeros(base_v_shape, **args)
         self.get_all_verts_kernel(pos)
         return pos
 

@@ -104,8 +104,8 @@ class Train_Env_Wiring(Train_Env):
         rewards = []
         for i in range(self.n_envs):
             verts_rode = verts_rode_batch[i]
-            verts_ring1 = verts_ring1_batch
-            verts_ring2 = verts_ring2_batch
+            verts_ring1 = verts_ring1_batch[i]
+            verts_ring2 = verts_ring2_batch[i]
             c1, hits = ring_crossing_count_axis_aligned(verts_rode, verts_ring1, 1e-6)
             c2, hits = ring_crossing_count_axis_aligned(verts_rode, verts_ring2, 1e-6)
 
@@ -133,9 +133,9 @@ class Train_Env_Wiring(Train_Env):
     def eval_traj(self, trajs):
         # trajs should be (n_envs, n_steps, x)
         self.scene.reset()
-        fixed_np = np.zeros((self._n_envs, self.rope.n_vertices), dtype=bool)
+        fixed_np = np.zeros((self.n_envs, self.rope.n_vertices), dtype=bool)
         fixed_np[:, 0] = True
-        self.rope.set_fixed(fixed_np)
+        self.rope.set_fixed(0, fixed_np)
         steps_interval = 50
 
         for i in range(trajs.shape[1]):
@@ -144,5 +144,5 @@ class Train_Env_Wiring(Train_Env):
             current_pos = verts_rode[:, 0]
             for j in range(steps_interval):
                 target_pos = current_pos + delta * (j + 1) / steps_interval
-                self.rope.set_pos_single(target_pos)
+                self.rope.set_pos_single(target_pos, 0)
                 self.scene.step()
