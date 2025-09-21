@@ -8,7 +8,7 @@ from typing import Tuple, List, Optional, Sequence
 import numpy as np
 import cma
 
-from train_env_wiring import Train_Env_Wiring  # keep if you still want the example main
+from train_env_wiring_ring import Train_Env_Wiring_ring  # keep if you still want the example main
 
 
 # ----------------------------
