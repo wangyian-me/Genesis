@@ -15,7 +15,7 @@ class Train_Env():
         self.GUI = GUI
         self.n_envs = n_envs
         print("GUI:", self.GUI)
-        gs.init()
+        gs.init(seed=0, precision="64", logging_level="info", backend=gs.gpu)
         if scene is None:
             viewer_options = gs.options.ViewerOptions(
                 camera_pos=(3, -1, 1.5),
@@ -27,8 +27,8 @@ class Train_Env():
             self.scene = gs.Scene(
                 viewer_options=viewer_options,
                 sim_options=gs.options.SimOptions(
-                    dt=5e-3,
-                    substeps=25,
+                    dt=1e-3,
+                    substeps=5,
                     # gravity=(0.,0.,0.)
                 ),
                 rod_options=gs.options.RodOptions(
