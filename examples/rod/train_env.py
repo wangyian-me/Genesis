@@ -15,7 +15,7 @@ class Train_Env():
         self.GUI = GUI
         self.n_envs = n_envs
         print("GUI:", self.GUI)
-        gs.init(seed=0, precision="64", logging_level="info", backend=gs.gpu)
+        gs.init(seed=0, precision="64", logging_level="error", backend=gs.gpu, performance_mode=True)
         if scene is None:
             viewer_options = gs.options.ViewerOptions(
                 camera_pos=(3, -1, 1.5),

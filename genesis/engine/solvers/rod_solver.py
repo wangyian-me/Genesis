@@ -863,13 +863,13 @@ class RodSolver(Solver):
 
             self.transfer_fixed_states(f)   # f -> f+1
 
-            if f % 20 == 0:
-                vert = self.vertices.vert.to_numpy()[f, :, 0]
-                nan_mask = np.isnan(vert)
-                if np.sum(nan_mask) > 0:
-                    gs.logger.warning(f"[Debug][RodSolver] NaN vertices: {len(np.where(nan_mask)[0])} / {vert.shape[0]}, id: {np.where(nan_mask)[0]}")
-                length = np.zeros((self._B,), dtype=gs.np_float)
-                self.get_rod_length(f, 0, length)
+            # if f % 20 == 0:
+            #     vert = self.vertices.vert.to_numpy()[f, :, 0]
+            #     nan_mask = np.isnan(vert)
+            #     if np.sum(nan_mask) > 0:
+            #         gs.logger.warning(f"[Debug][RodSolver] NaN vertices: {len(np.where(nan_mask)[0])} / {vert.shape[0]}, id: {np.where(nan_mask)[0]}")
+            #     length = np.zeros((self._B,), dtype=gs.np_float)
+            #     self.get_rod_length(f, 0, length)
                 # print(f"[Debug][RodSolver] rod length: {length}, v[0, 0]: {self.vertices[f, 0, 0].vert}")
 
     def substep_post_coupling_grad(self, f):

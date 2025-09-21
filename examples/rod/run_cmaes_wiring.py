@@ -2,6 +2,7 @@ import os
 import json
 import csv
 import time
+import pickle
 from typing import Tuple, List, Optional, Sequence
 
 import numpy as np
@@ -14,18 +15,9 @@ from train_env_wiring import Train_Env_Wiring  # keep if you still want the exam
 # Helpers: shape & constraints
 # ----------------------------
 def reshape_to_traj(x: np.ndarray, n_steps: int, act_dim: int) -> np.ndarray:
-    """
-    x: flat vector of length n_steps*act_dim
-    returns (n_steps, act_dim)
-    """
     return x.reshape(n_steps, act_dim)
 
-
 def _as_per_comp_array(per_comp_bound: Optional[Sequence[float]], act_dim: int) -> np.ndarray:
-    """
-    Accept a float or a sequence; return np.ndarray of shape (act_dim,)
-    If None, return +inf bounds (i.e., no per-component clamp).
-    """
     if per_comp_bound is None:
         return np.full((act_dim,), np.inf, dtype=np.float32)
     if np.isscalar(per_comp_bound):
@@ -35,32 +27,19 @@ def _as_per_comp_array(per_comp_bound: Optional[Sequence[float]], act_dim: int) 
         raise ValueError(f"per_comp_bound length {arr.size} != act_dim {act_dim}")
     return arr
 
-
 def project_deltas(traj: np.ndarray,
                    per_comp_bound: Optional[Sequence[float]],
                    max_l2_per_step: Optional[float]) -> np.ndarray:
-    """
-    Enforce optional per-component bounds and per-step L2 norm bounds on the trajectory.
-    traj: (n_steps, act_dim)
-    per_comp_bound: float or sequence of length act_dim, or None for no per-comp clamp
-    max_l2_per_step: float or None for no L2 clamp
-    """
     n_steps, act_dim = traj.shape
-
-    # Per-component clamp (if provided)
     pcb = _as_per_comp_array(per_comp_bound, act_dim)
     if np.isfinite(pcb).any():
         traj = np.clip(traj, -pcb, pcb)
-
-    # Per-step L2 clamp (if provided)
     if max_l2_per_step is not None and np.isfinite(max_l2_per_step):
-        norms = np.linalg.norm(traj, axis=1, keepdims=True)  # (n_steps, 1)
+        norms = np.linalg.norm(traj, axis=1, keepdims=True)
         scale = np.ones_like(norms, dtype=traj.dtype)
         over = norms > max_l2_per_step
-        # avoid divide-by-zero
         scale[over] = max_l2_per_step / (norms[over] + 1e-12)
         traj = traj * scale
-
     return traj
 
 
@@ -68,21 +47,13 @@ def project_deltas(traj: np.ndarray,
 # Parallel evaluation (batch)
 # ----------------------------
 def evaluate_batch(env, traj_list: List[np.ndarray]) -> np.ndarray:
-    """
-    env: your multi-env. Must provide env.eval_traj(trajs) -> rewards
-    traj_list: list of (n_steps, act_dim) arrays, length <= env.n_envs
-    Returns: rewards np.array of shape (len(traj_list),)
-    """
     n_envs = env.n_envs
     n_steps = traj_list[0].shape[0]
     act_dim = traj_list[0].shape[1]
-
-    # Prepare a (n_envs, n_steps, act_dim) tensor; pad if needed
     trajs = np.zeros((n_envs, n_steps, act_dim), dtype=np.float32)
     for i, tr in enumerate(traj_list):
         trajs[i] = tr
-
-    rewards = env.eval_traj(trajs)  # advances each env to the end of its traj
+    rewards = env.eval_traj(trajs)
     return np.asarray(rewards, dtype=np.float32)
 
 
@@ -92,55 +63,85 @@ def evaluate_batch(env, traj_list: List[np.ndarray]) -> np.ndarray:
 def _ensure_dir(d: str):
     os.makedirs(d, exist_ok=True)
 
-
 def _maybe_write_header(path: str, header: List[str]):
     needs_header = not os.path.exists(path) or os.path.getsize(path) == 0
     if needs_header:
         with open(path, "w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(header)
-
+            csv.writer(f).writerow(header)
 
 def _append_rewards(log_dir: str, iteration: int, rewards: np.ndarray):
-    """
-    Appends rows to rewards_all.csv with columns:
-    iter, idx, reward
-    """
     path = os.path.join(log_dir, "rewards_all.csv")
     _maybe_write_header(path, ["iter", "idx", "reward"])
     with open(path, "a", newline="") as f:
-        writer = csv.writer(f)
+        w = csv.writer(f)
         for idx, r in enumerate(rewards.tolist()):
-            writer.writerow([iteration, idx, float(r)])
-
+            w.writerow([iteration, idx, float(r)])
 
 def _append_summary(log_dir: str, iteration: int, pop: int, n_chunks: int,
                     mean: float, std: float, rmin: float, rmax: float,
                     best_so_far: float, sigma_now: float,
                     t_iter_sec: float, t_total_sec: float):
-    """
-    Appends a row to summary.csv with per-generation stats.
-    """
     path = os.path.join(log_dir, "summary.csv")
     _maybe_write_header(path, [
         "iter", "pop", "chunks", "mean", "std", "min", "max",
         "best_so_far", "sigma", "t_iter_s", "t_total_s"
     ])
     with open(path, "a", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow([
+        csv.writer(f).writerow([
             iteration, pop, n_chunks, mean, std, rmin, rmax,
             best_so_far, sigma_now, t_iter_sec, t_total_sec
         ])
 
-
 def _save_best_traj(log_dir: str, best_traj: np.ndarray):
     np.save(os.path.join(log_dir, "best_traj.npy"), best_traj)
-
 
 def _save_run_config(log_dir: str, cfg: dict):
     with open(os.path.join(log_dir, "run_config.json"), "w") as f:
         json.dump(cfg, f, indent=2)
+
+
+# ----------------------------
+# CMA-ES checkpoint helpers
+# ----------------------------
+def _ckpt_dir(work_dir: Optional[str], trial_name: Optional[str]) -> Optional[str]:
+    if work_dir is None or trial_name is None:
+        return None
+    return os.path.join(work_dir, trial_name)
+
+def _ckpt_paths(work_dir: Optional[str], trial_name: Optional[str]):
+    d = _ckpt_dir(work_dir, trial_name)
+    if d is None:
+        return None, None
+    _ensure_dir(d)
+    return os.path.join(d, "cmaes_ckpt.pkl"), os.path.join(d, "resume_meta.json")
+
+def _save_cma_ckpt(es, work_dir: Optional[str], trial_name: Optional[str], iter_idx: int):
+    pkl_path, meta_path = _ckpt_paths(work_dir, trial_name)
+    if pkl_path is None:
+        return
+    # Save CMA-ES opaque state
+    with open(pkl_path, "wb") as f:
+        f.write(es.pickle_dumps())
+    # Save minimal meta so logs can continue with correct iteration index
+    with open(meta_path, "w") as f:
+        json.dump({"iter": iter_idx}, f)
+
+def _load_cma_ckpt(work_dir: Optional[str], trial_name: Optional[str]):
+    pkl_path, meta_path = _ckpt_paths(work_dir, trial_name)
+    if pkl_path is None:
+        return None, 0
+    if not os.path.exists(pkl_path):
+        return None, 0
+    with open(pkl_path, "rb") as f:
+        es = pickle.load(f)
+    start_iter = 0
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, "r") as f:
+                start_iter = int(json.load(f).get("iter", 0)) + 1
+        except Exception:
+            start_iter = 0
+    return es, start_iter
 
 
 # ----------------------------
@@ -155,7 +156,6 @@ def _infer_act_dim(env) -> Optional[int]:
         return int(env.action_space.shape[0])
     return None
 
-
 def _infer_n_steps(env) -> Optional[int]:
     for attr in ("n_steps", "traj_len", "horizon", "T"):
         if hasattr(env, attr):
@@ -169,37 +169,29 @@ def optimize_wiring_trajectory(
     act_dim: Optional[int] = None,
     popsize: Optional[int] = None,
     sigma0: float = 0.01,
-    per_comp_bound: Optional[Sequence[float]] = 0.03,
+    per_comp_bound: Optional[Sequence[float]] = 0.01,
     l2_bound: Optional[float] = None,
     max_iters: int = 200,
     seed: int = 42,
     log_dir: Optional[str] = None,
+    # NEW: checkpointing
+    work_dir: Optional[str] = None,
+    trial_name: Optional[str] = None,
+    resume: bool = False,
+    save_every: int = 1,
 ) -> Tuple[np.ndarray, float]:
     """
-    General CMA-ES trajectory optimizer across tasks.
+    Adds CMA-ES checkpointing via (work_dir/trial_name)/cmaes_ckpt.pkl.
+    - If resume=True and the file exists, loads the CMA state and continues.
+    - Saves checkpoint every `save_every` iters and at the end.
 
-    Requirements the env must satisfy:
-      - env.n_envs : int (parallel evaluation batch size)
-      - env.eval_traj(trajs: (n_envs, n_steps, act_dim)) -> rewards (n_envs,)
-    Optional env attributes used if not given as args:
-      - env.l2_bound : float
-      - env.action_dim or env.action_space.shape[0]
-      - env.n_steps / env.traj_len / env.horizon / env.T
-      - env.log_dir
-
-    Args:
-      n_steps: if None, try to infer from env; otherwise required.
-      act_dim: if None, try to infer from env or from first candidate shape.
-      per_comp_bound: float or sequence (len==act_dim) or None (no per-comp clamp)
-      l2_bound: if None, will try env.l2_bound; can be None for no L2 clamp
-      log_dir: where to write logs; if None, tries env.log_dir; if still None, logging disabled (prints only).
+    Other behavior: general shapes, logging, and optional bound inference unchanged.
     """
     # Resolve shapes
     if act_dim is None:
         act_dim = _infer_act_dim(env)
     if n_steps is None:
         n_steps = _infer_n_steps(env)
-
     if act_dim is None:
         raise ValueError("act_dim could not be inferred; please pass act_dim explicitly.")
     if n_steps is None:
@@ -214,7 +206,6 @@ def optimize_wiring_trajectory(
         log_dir = getattr(env, "log_dir")
     if log_dir is not None:
         _ensure_dir(log_dir)
-        # Save a one-time config snapshot
         _save_run_config(log_dir, {
             "n_steps": n_steps,
             "act_dim": act_dim,
@@ -225,48 +216,65 @@ def optimize_wiring_trajectory(
             "l2_bound": l2_bound,
             "max_iters": max_iters,
             "seed": seed,
+            "work_dir": work_dir,
+            "trial_name": trial_name,
         })
 
     dim = n_steps * act_dim
-    lower = []
-    upper = []
-    # Build bounds for CMA (per-component box bounds)
     pcb = _as_per_comp_array(per_comp_bound, act_dim)
+    lower, upper = [], []
     for _ in range(n_steps):
         lower.extend((-pcb).tolist())
         upper.extend((+pcb).tolist())
 
-    # CMA-ES setup
-    es = cma.CMAEvolutionStrategy(
-        x0=[0.0] * dim,
-        sigma0=sigma0,
-        inopts={
-            'bounds': [lower, upper],
-            'popsize': popsize,
-            'seed': seed,
-            'CMA_elitist': True,
-            'verb_disp': 0,   # quieter
-        }
-    )
+    # Try to resume CMA-ES
+    es = None
+    start_iter = 0
+    if resume:
+        es_loaded, start_iter = _load_cma_ckpt(work_dir, trial_name)
+        if es_loaded is not None:
+            es = es_loaded
+            # quick sanity: check dimension matches
+            if getattr(es, "N", dim) != dim:
+                raise ValueError(f"Loaded CMA-ES dimension {getattr(es, 'N', None)} "
+                                 f"does not match expected dim {dim}.")
+            # Note: popsize is internal in es.opts; we trust the checkpoint.
+            print(f"[resume] Loaded CMA-ES from iteration {start_iter} "
+                  f"with dim={dim}, expected max_iters={max_iters}.")
+        else:
+            print("[resume] No checkpoint found; starting fresh.")
+
+    # Fresh CMA-ES if not resumed
+    if es is None:
+        es = cma.CMAEvolutionStrategy(
+            x0=[0.0] * dim,
+            sigma0=sigma0,
+            inopts={
+                'bounds': [lower, upper],
+                'popsize': popsize,
+                'seed': seed,
+                'CMA_elitist': True,
+                'verb_disp': 0,
+            }
+        )
 
     best_traj = None
     best_reward = -np.inf
 
     batch_size = env.n_envs
-    it = 0
-    eval_count = 0
+    it = start_iter
     t0_all = time.time()
 
+    # If resuming, keep the previous total time in resume_meta (optional)
     print(f"{'iter':>5} | {'pop':>4} | {'chunks':>6} | {'mean':>8} | {'std':>8} | "
           f"{'min':>8} | {'max':>8} | {'best':>8} | {'sigma':>7} | {'t_iter(s)':>8} | {'t_total(s)':>9}")
 
     while not es.stop() and it < max_iters:
         t_iter = time.time()
-        X = es.ask()  # list of candidate flat vectors
+        X = es.ask()
         pop = len(X)
         n_chunks = (pop + batch_size - 1) // batch_size
 
-        # Evaluate in chunks
         all_rewards = []
         for ci, start in enumerate(range(0, pop, batch_size), 1):
             t_chunk = time.time()
@@ -277,24 +285,20 @@ def optimize_wiring_trajectory(
                 tr = reshape_to_traj(x_arr, n_steps, act_dim)
                 tr = project_deltas(tr, per_comp_bound, l2_bound)
                 trajs.append(tr)
-
             rewards = evaluate_batch(env, trajs)
             all_rewards.extend(rewards.tolist())
-
             print(f"  └─ chunk {ci:>2}/{n_chunks}: {len(chunk):>3} evals | t={time.time() - t_chunk:.3f}s")
 
         all_rewards = np.asarray(all_rewards, dtype=np.float32)
-        eval_count += all_rewards.size
 
         # Log raw rewards for this generation
         if log_dir is not None:
             _append_rewards(log_dir, it, all_rewards)
 
         # CMA-ES minimizes; negate to maximize reward
-        losses = (-all_rewards).tolist()
-        es.tell(X, losses)
+        es.tell(X, (-all_rewards).tolist())
 
-        # Track best
+        # Track best of gen
         gen_best_idx = int(np.argmax(all_rewards))
         gen_best_reward = float(all_rewards[gen_best_idx])
         gen_best_x = np.asarray(X[gen_best_idx], dtype=np.float32)
@@ -314,7 +318,6 @@ def optimize_wiring_trajectory(
         s = float(all_rewards.std()) if all_rewards.size else float('nan')
         mn = float(all_rewards.min()) if all_rewards.size else float('nan')
         mx = float(all_rewards.max()) if all_rewards.size else float('nan')
-
         try:
             sigma_now = float(es.sigma)
         except Exception:
@@ -327,11 +330,17 @@ def optimize_wiring_trajectory(
               f"{mn:8.4f} | {mx:8.4f} | {best_reward:8.4f} | {sigma_now:7.4f} | "
               f"{t_iter_sec:8.3f} | {t_total_sec:9.3f}")
 
-        # Log summary line
         if log_dir is not None:
             _append_summary(log_dir, it, pop, n_chunks, m, s, mn, mx, best_reward, sigma_now, t_iter_sec, t_total_sec)
 
+        # Save checkpoint periodically
+        if save_every > 0 and (it % save_every == 0):
+            _save_cma_ckpt(es, work_dir, trial_name, it)
+
         it += 1
+
+    # Final checkpoint
+    _save_cma_ckpt(es, work_dir, trial_name, it - 1)
 
     return best_traj, best_reward
 
@@ -340,24 +349,23 @@ def optimize_wiring_trajectory(
 # Example usage
 # ----------------------------
 if __name__ == "__main__":
-    # Example env (your wiring task)
     env = Train_Env_Wiring(task='wiring', log_dir="logs/wiring", n_envs=10)
-
-    # If your task has a natural step count, you can pass it; else rely on inference.
     n_steps = 10
 
     best_traj, best_reward = optimize_wiring_trajectory(
         env,
-        n_steps=n_steps,        # or None to try to infer
-        act_dim=None,           # try to infer from env
+        n_steps=n_steps,
+        act_dim=None,           # infer if available
         popsize=100,
         sigma0=0.01,
-        per_comp_bound=0.03,    # float or sequence length act_dim
-        l2_bound=None,          # pull from env.l2_bound if present
+        per_comp_bound=0.01,
+        l2_bound=0.01,          # use env.l2_bound if present
         max_iters=15,
         seed=123,
-        log_dir="logs/wiring"   # overrides env.log_dir if set
+        log_dir="logs/wiring",
+        # NEW: checkpoint controls
+        work_dir="checkpoints",
+        trial_name="wiring_trial_A",
+        resume=True,            # set True to load if checkpoint exists
+        save_every=1,           # save each generation
     )
-
-    # Optionally visualize:
-    # env.eval_traj(best_traj[None, ...])
