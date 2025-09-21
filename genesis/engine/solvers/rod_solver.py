@@ -224,6 +224,7 @@ class RodSolver(Solver):
         struct_vertex_state_ng = ti.types.struct(
             fixed=gs.ti_bool,           # is the vertex fixed
             is_kinematic=gs.ti_bool,    # is the vertex kinematic
+            is_collided=gs.ti_bool,
         )
 
         self.vertices_info = struct_vertex_info.field(
@@ -604,6 +605,11 @@ class RodSolver(Solver):
             self.vertices[f + 1, i_v, i_b].vert = self.vertices[f, i_v, i_b].vert
             self.vertices[f + 1, i_v, i_b].vel = self.vertices[f, i_v, i_b].vel
 
+    @ti.kernel 
+    def clear_collision_record(self):
+        for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
+            self.vertices_ng[0, i_v, i_b].is_collided = False
+
     @ti.kernel
     def init_theta_and_omega(self, f: ti.i32):     # Differential
         for i_e, i_b in ti.ndrange(self._n_edges, self._B):
@@ -826,6 +832,8 @@ class RodSolver(Solver):
             self.compute_twisting_energy(f)
             self.update_centerline_velocities(f)
             self.update_angular_velocities(f)
+            if f == 0:
+                self.clear_collision_record()
 
     def substep_pre_coupling_grad(self, f):
         if self.is_active():

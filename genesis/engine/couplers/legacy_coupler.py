@@ -162,6 +162,9 @@ class LegacyCoupler(RBC):
         # bigger coup_softness implies that the coupling influence extends further away from the object.
         influence = ti.min(ti.exp(-signed_dist / max(1e-10, self.rigid_solver.geoms_info.coup_softness[geom_idx])), 1)
 
+        if influence > 0.8:
+            self.rod_solver.vertices_ng[0, i, batch_idx].is_collided = True
+
         if influence > 0.1:
             normal_rigid = sdf_decomp.sdf_func_normal_world(
                 geoms_state=self.rigid_solver.geoms_state,
