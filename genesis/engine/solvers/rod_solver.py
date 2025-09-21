@@ -248,6 +248,12 @@ class RodSolver(Solver):
             layout=ti.Layout.SOA
         )
 
+        # for visualization
+        self.vertices_render = ti.Vector.field(
+            3, dtype=gs.ti_float, needs_grad=False,
+            shape=self._batch_shape(self._n_vertices)
+        )
+
     def init_edge_fields(self):
         # edge information (static)
         struct_edge_info = ti.types.struct(
@@ -423,6 +429,10 @@ class RodSolver(Solver):
         self._n_edges = self.n_edges
         self._n_internal_vertices = self.n_internal_vertices
         self._n_dofs = self.n_dofs
+
+        # rendering
+        self.envs_offset = ti.Vector.field(3, dtype=ti.f32, shape=self._B)
+        self.envs_offset.from_numpy(self._scene.envs_offset.astype(np.float32))
 
         if self.is_active():
             self.init_rod_fields()
@@ -1100,10 +1110,10 @@ class RodSolver(Solver):
 
     def get_state_render(self, f):
         self.get_state_render_kernel(f)
-        vertices = self.surface_render_v.vertices
-        indices = self.surface_render_f.indices
+        vertices = self.vertices_render
+        radii = self.vertices_info.radius
 
-        return vertices, indices
+        return vertices, radii
 
     def get_forces(self):
         """
@@ -1495,7 +1505,10 @@ class RodSolver(Solver):
 
     @ti.kernel
     def get_state_render_kernel(self, f: ti.i32):
-        pass
+        for i_v, i_b in ti.ndrange(self.n_vertices, self._B):
+            for j in ti.static(range(3)):
+                pos_j = ti.cast(self.vertices[f, i_v, i_b].vert[j], ti.f32)
+                self.vertices_render[i_v, i_b][j] = pos_j + self.envs_offset[i_b][j]
 
     @ti.kernel
     def _kernel_set_state(

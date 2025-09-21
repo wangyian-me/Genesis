@@ -163,7 +163,8 @@ def main():
         scene.step()
 
     # move to pre-grasp pose
-    c1 = RobotController(scene, franka1, ef1, args, (x1, 0, z), initial_q_dof=open_gap)
+    c1 = RobotController(scene, franka1, ef1, args, (x1, 0, z), initial_gripper_gap=open_gap)
+    c1.set_initial_position()
 
     c1.control_robot(open_gap, open_gap, dx=x_delta1, dy=y_delta1)
     for i in range(80):

@@ -5,7 +5,7 @@ import numpy as np
 import genesis as gs
 import sys
 sys.path.append('./examples/rod')
-from controller import RobotController
+from controller import RobotController, RobotControllerOptim
 from collections import defaultdict
 
 
@@ -258,16 +258,29 @@ def test_v3(args, scene, cameras, frames):
 
     init_pos = (0.23, 0.0, 0.007)
     n_stages = 5
-    dx_table = gs.tensor([0.0] * n_stages)
     open_gap = 0.04
 
-    # init_pos = gs.tensor([0.12, 0., 0.005], requires_grad=True)
+    # initial grasp pose
+    c1 = RobotControllerOptim(
+        scene, franka1, ef1, args, init_pos,
+        initial_q_dof=open_gap,
+        n_stages=n_stages,
+        n_optim_dofs=6,
+        max_d_pos=0.1,
+        max_d_angle=10.,
+        debug=True
+    )
+
     target_pos = gs.tensor([0.4, 0., 0.005])
 
-    scene.draw_debug_sphere(
-        pos=target_pos,
-        radius=0.01
-    )
+    for env_id in range(args.n_envs):
+        offset = scene.envs_offset[env_id]
+        offset = torch.as_tensor(offset, dtype=target_pos.dtype, device=target_pos.device)
+        scene.draw_debug_sphere(
+            pos=target_pos + offset,
+            radius=0.01,
+            color=(0.8, 0.8, 0., 0.5)
+        )
 
     lr = 0.05
 
@@ -275,8 +288,7 @@ def test_v3(args, scene, cameras, frames):
         total_horizon = 0
         horizon_ids = list()
         scene.reset()
-        # initial grasp pose
-        c1 = RobotController(scene, franka1, ef1, args, init_pos, initial_q_dof=open_gap)
+        c1.set_initial_position()
         loss = 0
 
         c1.control_robot(0, 0)
@@ -296,10 +308,9 @@ def test_v3(args, scene, cameras, frames):
         total_horizon += 100
 
         kids = r1.get_kinematic_indices()
-        print("kinematic indices:", kids)
 
         for j in range(n_stages):
-            c1.control_robot(0, 0, dx=dx_table[j])
+            c1.apply_grad(0, 0, stage_idx=j)
             horizon = 50
             for i in range(horizon):
                 scene.step()
@@ -309,32 +320,34 @@ def test_v3(args, scene, cameras, frames):
                     if i == horizon - 1:
                         frames[cid].extend([img]*15)
 
-                if i == horizon - 1:
-                    state = r1.get_state()
-                    loss += torch.pow(state.pos - target_pos, 2).sum()
-                    # ensure z is above the table, pos is [env, n_vertices, 3]
-                    loss += torch.relu(0.005 - state.pos[:, :, 2]).sum()
-                    # if i == horizon - 1:
-                    # print("final pos z:", state.pos.detach().cpu().numpy())
+            state = r1.get_state()
+            loss += torch.pow(state.pos - target_pos, 2).sum()
+            # ensure z is above the table, pos is [env, n_vertices, 3]
+            loss += torch.relu(0.005 - state.pos[:, :, 2]).sum()
+            # if i == horizon - 1:
+            # print("final pos z:", state.pos.detach().cpu().numpy())
             total_horizon += horizon
             horizon_ids.append(total_horizon)
 
         # print(r1._queried_states.states.keys())
         # print(scene.rod_solver._ckpt.keys())
-
+        print("backprop ...")
         loss.backward()
         # print(f"it: {it}, loss: {loss.item()} grad: {init_pos.grad.detach().cpu().numpy()}")
         print(f"it: {it}, loss: {loss.item()}")
-        for ids, hor_id in enumerate(horizon_ids):
+        for stage_idx, hor_id in enumerate(horizon_ids):
+            final_state = r1._queried_states.states[hor_id][0].pos
             final_state_grad = r1._queried_states.states[hor_id][0].pos.grad
 
-            grad = final_state_grad[:, kids, :].sum(dim=1)  # [env, 3]
-            grad = torch.clip(grad, -0.2, 0.2)
+            # print(final_state_grad[:, kids, :])
 
-            with torch.no_grad():
-                dx_table[ids] -= lr * grad[0, 0]
+            c1.gather_grad(
+                final_state_grad,
+                final_state,
+                kids, stage_idx, lr=lr
+            )
 
-        print(f"new dx table: {dx_table.detach().cpu().numpy()}")
+        print(f"new traj: {c1.traj.detach().cpu().numpy()}")
 
         # print("state 10:\n", r1._queried_states.states[10][0].pos.grad.detach().cpu().numpy())
         # print("state 100:\n", r1._queried_states.states[100][0].pos.grad.detach().cpu().numpy())

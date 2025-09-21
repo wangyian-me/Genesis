@@ -84,7 +84,7 @@ def main():
         )
     )
 
-    c1 = scene.add_entity(
+    cone1 = scene.add_entity(
         material=gs.materials.Rigid(
             needs_coup=True, coup_friction=0.3,
         ),
@@ -149,14 +149,6 @@ def main():
 
     ########################## build ##########################
     scene.build(n_envs=args.n_envs, env_spacing=(1, 1))
-
-    # r1.set_fixed_states(
-    #     fixed_ids=np.arange(30)
-    # )
-
-    # r2.set_fixed_states(
-    #     fixed_ids=np.arange(30)
-    # )
 
     # Optional: set control gains
     for f in [franka1, franka2]:

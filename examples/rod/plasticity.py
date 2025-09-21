@@ -102,6 +102,7 @@ def main():
             pos=(0.28, 0.0, 0.006),
             euler=(-15, 0, 0),
             gap=1,
+            fixed=True,
         ),
         surface=gs.surfaces.Default(
             color=(0.4, 0.4, 0.4),
@@ -123,6 +124,7 @@ def main():
             pos=(0.56, 0.0, 0.006),
             euler=(-15, 0, 0),
             gap=1,
+            fixed=True,
         ),
         surface=gs.surfaces.Default(
             color=(0.4, 0.4, 0.4),
@@ -181,14 +183,6 @@ def main():
     ########################## build ##########################
     scene.build(n_envs=args.n_envs, env_spacing=(1, 1))
 
-    b1.set_fixed_states(
-        fixed_ids=np.arange(16)
-    )
-
-    b2.set_fixed_states(
-        fixed_ids=np.arange(16)
-    )
-
     # Optional: set control gains
     for f in [franka1, franka2]:
         if args.n_envs == 0:
@@ -221,7 +215,9 @@ def main():
 
     # initial grasp pose
     c1 = RobotController(scene, franka1, ef1, args, (x1, 0.0, z))
+    c1.set_initial_position()
     c2 = RobotController(scene, franka2, ef2, args, (x2, 0.0, z))
+    c2.set_initial_position()
 
     frames = defaultdict(list)
 

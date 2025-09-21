@@ -170,7 +170,8 @@ def main():
     green_init_pos = scene.rod_solver.vertices.vert.to_numpy()[0,50:, :].copy()
 
     # move to pre-grasp pose
-    c1 = RobotController(scene, franka1, ef1, args, (x1, 0, z), initial_q_dof=open_gap, debug=debug)
+    c1 = RobotController(scene, franka1, ef1, args, (x1, 0, z), initial_gripper_gap=open_gap, debug=debug)
+    c1.set_initial_position()
     p = c1.robot.get_dofs_position().cpu().numpy()
     positions.append(p)
 

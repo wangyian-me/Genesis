@@ -84,7 +84,7 @@ def main():
         )
     )
 
-    c1 = scene.add_entity(
+    cone1 = scene.add_entity(
         material=gs.materials.Rigid(
             needs_coup=True, coup_friction=0.3,
         ),

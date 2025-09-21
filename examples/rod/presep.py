@@ -160,7 +160,8 @@ def main():
     open_gap = 0.04
 
     # move to pre-grasp pose
-    c1 = RobotController(scene, franka1, ef1, args, (x1, 0, z), initial_q_dof=open_gap)
+    c1 = RobotController(scene, franka1, ef1, args, (x1, 0, z), initial_gripper_gap=open_gap)
+    c1.set_initial_position()
 
     frames = defaultdict(list)
 

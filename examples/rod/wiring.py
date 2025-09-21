@@ -183,14 +183,6 @@ def main():
     ########################## build ##########################
     scene.build(n_envs=args.n_envs, env_spacing=(1, 1))
 
-    # b1.set_fixed_states(
-    #     fixed_ids=np.arange(24),
-    # )
-
-    # b2.set_fixed_states(
-    #     fixed_ids=np.arange(24),
-    # )
-
     # Optional: set control gains
     for f in [franka1, franka2]:
         if args.n_envs == 0:
@@ -229,8 +221,10 @@ def main():
     open_gap = 0.03
 
     # move to pre-grasp pose
-    c1 = RobotController(scene, franka1, ef1, args, (x1, 0.0, z), initial_q_dof=open_gap)
-    c2 = RobotController(scene, franka2, ef2, args, (x2, 0.0, z), initial_q_dof=open_gap)
+    c1 = RobotController(scene, franka1, ef1, args, (x1, 0.0, z), initial_gripper_gap=open_gap)
+    c1.set_initial_position()
+    c2 = RobotController(scene, franka2, ef2, args, (x2, 0.0, z), initial_gripper_gap=open_gap)
+    c2.set_initial_position()
 
     frames = defaultdict(list)
 
