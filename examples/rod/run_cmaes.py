@@ -281,7 +281,7 @@ def optimize_wiring_trajectory(
     print(f"{'iter':>5} | {'pop':>4} | {'chunks':>6} | {'mean':>8} | {'std':>8} | "
           f"{'min':>8} | {'max':>8} | {'best':>8} | {'sigma':>7} | {'t_iter(s)':>8} | {'t_total(s)':>9}")
 
-    while not es.stop() and it < max_iters:
+    while it < max_iters:
         t_iter = time.time()
         X = es.ask()
         pop = len(X)
@@ -403,11 +403,11 @@ if __name__ == "__main__":
         env,
         n_steps=n_steps,
         act_dim=None,           # infer if available
-        popsize=100,
+        popsize=200,
         sigma0=0.005,
         per_comp_bound=0.02,
         l2_bound=0.03,          # use env.l2_bound if present
-        max_iters=15,
+        max_iters=100,
         seed=123,
         log_dir=f"logs/{args.task}",
         # NEW: checkpoint controls
