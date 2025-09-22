@@ -1043,3 +1043,4 @@ def check_exr_compression(exr_path):
         exr_path = new_exr_path
 
     exr_file.close()
+    return exr_path
