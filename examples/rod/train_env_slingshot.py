@@ -125,7 +125,7 @@ class Train_Env_Slingshot(Train_Env):
 
     def reward(self):
         # [n_envs, 3]
-        cube_pos = self.cube.get_pos()
+        cube_pos = self.cube.get_pos().cpu().numpy()
 
         rewards = []
         for i in range(self.n_envs):
@@ -262,6 +262,3 @@ class Train_Env_Slingshot(Train_Env):
             final[env_rewards_nan] = -100.0
 
         return final.astype(np.float32)
-
-
-        

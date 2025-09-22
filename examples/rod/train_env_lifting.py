@@ -47,7 +47,7 @@ class Train_Env_Lifting(Train_Env):
                 needs_coup=True, coup_friction=0.1,
             ),
             morph=gs.morphs.Mesh(
-                file="genesis/assets/meshes/nut_open.glb",
+                file="meshes/nut_open.glb",
                 pos= (0.53, 0, 0.05),
                 euler=(0, 180, 90),
                 scale=(1, 1, 1),
@@ -59,7 +59,7 @@ class Train_Env_Lifting(Train_Env):
                 needs_coup=True, coup_friction=0.1,
             ),
             morph=gs.morphs.Mesh(
-                file="genesis/assets/meshes/nut_open.glb",
+                file="meshes/nut_open.glb",
                 pos= (0.67, 0, 0.05),
                 euler=(0, 180, 90),
                 scale=(1, 1, 1),
@@ -75,8 +75,8 @@ class Train_Env_Lifting(Train_Env):
 
     def reward(self):
         # [n_envs, 3]
-        nut_a_pos_batch = self.b1.get_pos()
-        nut_b_pos_batch = self.b2.get_pos()
+        nut_a_pos_batch = self.b1.get_pos().cpu().numpy()
+        nut_b_pos_batch = self.b2.get_pos().cpu().numpy()
 
         rewards = []
         for i in range(self.n_envs):
@@ -220,6 +220,3 @@ class Train_Env_Lifting(Train_Env):
             final[env_rewards_nan] = -100.0
 
         return final.astype(np.float32)
-
-
-        
