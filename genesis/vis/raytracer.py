@@ -8,6 +8,7 @@ import genesis.utils.geom as gu
 import genesis.utils.mesh as mu
 import genesis.utils.misc as miscu
 import genesis.utils.particle as pu
+import genesis.utils.rod as ru
 from genesis.engine import entities
 import trimesh
 
@@ -324,6 +325,10 @@ class Raytracer:
             for fem_entity in self.sim.fem_solver.entities:
                 if fem_entity.surface.vis_mode == "visual":
                     self.add_deformable(str(fem_entity.id))
+        
+        if self.sim.rod_solver.is_active():
+            for rod_entity in self.sim.rod_solver.entities:
+                self.add_rod(str(rod_entity.uid))
 
         gs.exit_callbacks.append(self.destroy)
 
@@ -589,6 +594,39 @@ class Raytracer:
             )
             self.update_particles(f"{name}_foams", foam_particles, self.shape_foamgens[name]["radius"])
 
+    def add_rod(self, name):
+        if self.shape_reconstructs[name] is not None:
+            self.add_deformable(name)
+        else:
+            self._shapes[name] = LuisaRenderPy.ParticlesShape(
+                name=name,
+                subdivision=0,
+                surface=self.shape_surfaces[name][0],
+                emission=self.shape_surfaces[name][1],
+                subsurface=self.shape_surfaces[name][2],
+            )
+
+    def update_rod(self, name, particles, particles_radii, is_loop):
+        if self.shape_reconstructs[name] is not None:
+            mesh: trimesh.Trimesh = ru.mesh_from_centerline(
+                verts=particles,
+                radii=particles_radii,
+                endcaps=True,
+                is_loop=is_loop,
+                smooth_joints=True,
+            )
+
+            self.update_deformable(
+                name,
+                mesh.vertices,
+                mesh.faces,
+                mesh.vertex_normals,
+                mesh.visual.uv,
+            )
+        else:
+            self._shapes[name].update(centers=particles, radii=particles_radii)
+            self._scene.update_shape(self._shapes[name])
+
     def add_camera(self, camera):
         camera_name = str(camera.uid)
         camera_model = camera.model
@@ -801,6 +839,20 @@ class Raytracer:
                         trimesh.Trimesh(vertices=vertices, faces=triangles, process=False).vertex_normals,
                         np.array([]),
                     )
+
+        # Rod entities
+        if self.sim.rod_solver.is_active():
+            particles_all, radii_all = self.sim.rod_solver.get_state_render(self.sim.cur_substep_local)
+            particles_all = particles_all.to_numpy()[:, self.rendered_envs_idx[0]]
+            radii_all = radii_all.to_numpy()
+
+            for rod_entity in self.sim.rod_solver.entities:
+                n_vertices = rod_entity.n_vertices
+                v_start = rod_entity.v_start
+                is_loop = rod_entity.is_loop
+                particles = particles_all[v_start : v_start + n_vertices]
+                radii = radii_all[v_start : v_start + n_vertices]
+                self.update_rod(str(rod_entity.uid), particles, radii, is_loop)
 
         # Flush the update buffer.
         self._scene.update_scene(time=self._t)

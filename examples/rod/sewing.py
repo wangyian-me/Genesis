@@ -4,6 +4,7 @@ import torch
 import numpy as np
 import genesis as gs
 import sys
+import os
 sys.path.append('./examples/rod')
 from controller import RobotController
 import genesis.utils.geom as gu
@@ -14,6 +15,7 @@ def main():
     parser.add_argument("-v", "--vis", action="store_true", default=False)
     parser.add_argument("-p", "--path", type=str, default=None)
     parser.add_argument("-n", "--n_envs", type=int, default=49)
+    parser.add_argument("-r", "--raytracer", action="store_true", default=False)
     args = parser.parse_args()
 
     ########################## init ##########################
@@ -40,26 +42,57 @@ def main():
             n_pbd_iters=20,
         ),
         show_viewer=args.vis,
+        renderer=gs.renderers.RayTracer(
+            env_surface=gs.surfaces.Emission(
+                emissive_texture=gs.textures.ImageTexture( 
+                    image_path='textures/brown_photostudio_02_4k.exr',
+                    image_color=(0.6, 0.6, 0.6),
+                ),
+            ),
+            env_radius=15.0,
+            env_euler=(0, 0, 180),
+            lights=[],
+        ) if args.raytracer else gs.renderers.Rasterizer(),
     )
 
     cameras = list()
     if args.path is not None:
         cameras.append(scene.add_camera(
-            res=(600, 450), pos=(1.5, 1.7, 1.), up=(0, 0, 1),
+            res=(1024, 1024), pos=(1.5, 1.7, 1.), up=(0, 0, 1),
             lookat=(0.4, 0., 0), fov=24, GUI=False
         ))
         cameras.append(scene.add_camera(
-            res=(600, 450), pos=(0.2, 1.5, 1.), up=(0, 0, 1),
+            res=(1024, 1024), pos=(0.2, 1.5, 1.), up=(0, 0, 1),
             lookat=(0.6, 0., 0), fov=20, GUI=False
         ))
+        save_dir = args.path
+    else:
+        save_dir = None
+
 
     ########################## entities ##########################
     plane = scene.add_entity(
         material=gs.materials.Rigid(
             needs_coup=True, coup_friction=0.01,
         ),
-        morph=gs.morphs.URDF(file="urdf/plane/plane.urdf", fixed=True),
+        morph=gs.morphs.URDF(
+            file="urdf/plane/plane.urdf",
+            fixed=True,
+            visualization=not args.raytracer,
+        ),
     )
+    if args.raytracer:
+        table = scene.add_entity(
+            morph=gs.morphs.Mesh(
+                file="meshes/wooden_table.glb",
+                pos=(-0., 0, -0.799418 * 2),
+                euler=(90, 0, 0),
+                scale=2,
+                collision=False,
+                fixed=True,
+            ),
+            surface=gs.surfaces.Default()
+        )
 
     segment_radius = 0.01
     r1 = scene.add_entity(
@@ -77,9 +110,12 @@ def main():
             pos=(0.3, 0.12, 0.02),
             euler=(0, 0, 0),
         ),
-        surface=gs.surfaces.Default(
-            color=(0.4, 1.0, 0.4),
+        surface=gs.surfaces.Rough(
+            diffuse_texture=gs.textures.ImageTexture(
+                image_path="textures/rope01.png",
+            ),
             vis_mode='recon',
+            normal_diff_clamp=1,
         )
     )
 
@@ -207,6 +243,7 @@ def main():
         for cid, cam in enumerate(cameras):
             img = cam.render()[0]
             frames[cid].append(img)
+            gs.tools.save_img_arr(img, os.path.join(save_dir, f"img_grasp_{i}_{cid}_{args.raytracer}.png"))
     gs.logger.info("grasped")
 
     # lift
@@ -214,9 +251,10 @@ def main():
     c2.control_robot(0, 0, dz=z_delta2)
     for i in range(80):
         scene.step()
-        for cid, cam in enumerate(cameras):
-            img = cam.render()[0]
-            frames[cid].append(img)
+        if not args.raytracer:
+            for cid, cam in enumerate(cameras):
+                img = cam.render()[0]
+                frames[cid].append(img)
     gs.logger.info("lifted")
 
     # move
@@ -224,9 +262,10 @@ def main():
     c2.control_robot(0, 0, dy=y_delta)
     for i in range(80):
         scene.step()
-        for cid, cam in enumerate(cameras):
-            img = cam.render()[0]
-            frames[cid].append(img)
+        if not args.raytracer:
+            for cid, cam in enumerate(cameras):
+                img = cam.render()[0]
+                frames[cid].append(img)
     gs.logger.info("moved")
 
     # lift up
@@ -239,9 +278,10 @@ def main():
             c2.control_robot(0, 0, dx=x_delta2)
         for i in range(30):
             scene.step()
-            for cid, cam in enumerate(cameras):
-                img = cam.render()[0]
-                frames[cid].append(img)
+            if not args.raytracer:
+                for cid, cam in enumerate(cameras):
+                    img = cam.render()[0]
+                    frames[cid].append(img)
         gs.logger.info("lifted up")
 
     c1.control_robot(0, 0)
@@ -251,13 +291,15 @@ def main():
         for cid, cam in enumerate(cameras):
             img = cam.render()[0]
             frames[cid].append(img)
+            gs.tools.save_img_arr(img, os.path.join(save_dir, f"img_release_{i}_{cid}_{args.raytracer}.png"))
     gs.logger.info("finished")
 
     for i in range(30):
         print(i, scene.rod_solver.vertices[0, i, 0].vert)
 
     for cid in frames:
-        mediapy.write_video(args.path.replace(".mp4", f"_c{cid}.mp4"), frames[cid], fps=30, qp=18)
+        video_path = os.path.join(save_dir, f"video_c{cid}.mp4")
+        mediapy.write_video(video_path, frames[cid], fps=30, qp=18)
 
 if __name__ == "__main__":
     main()
