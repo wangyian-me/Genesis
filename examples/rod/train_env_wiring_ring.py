@@ -13,10 +13,14 @@ class Train_Env_Wiring_ring(Train_Env):
     def __init__(self, task='wiring', log_dir="xxx/wiring", n_envs=5):
         super().__init__(task, n_envs=n_envs, log_dir=log_dir)
 
+        # NOTE: assume running from "examples/rod"
+        self.target_pos = np.load("target_pos/wiring_ring_finalpos.npy")
+        print(f'Loaded target pos from "wiring_ring_finalpos.npy", shape = {self.target_pos.shape}')
+
     def construct_scene(self):
         plane = self.scene.add_entity(
             material=gs.materials.Rigid(
-                needs_coup=True, coup_friction=0.01,
+                needs_coup=True, coup_friction=0.1,
             ),
             morph=gs.morphs.URDF(file="urdf/plane/plane.urdf", fixed=True),
         )
@@ -26,10 +30,10 @@ class Train_Env_Wiring_ring(Train_Env):
             material=gs.materials.ROD.Base(
                 segment_radius=segment_radius,
                 segment_mass=0.001,
-                K=1e5,
+                # K=1e5,
                 E=1e3,
                 G=1e3,
-                use_inextensible=False
+                # use_inextensible=False
             ),
             morph=gs.morphs.ParameterizedRod(
                 type="rod",
@@ -100,35 +104,25 @@ class Train_Env_Wiring_ring(Train_Env):
         self.action_dim = len(self.control_idx) * 3
 
     def reward(self):
-        verts_rode_batch = self.rope.get_all_verts()
-        verts_ring1_batch = self.ring1.get_all_verts()
-        verts_ring2_batch = self.ring2.get_all_verts()
+        # [n_envs, n_verts, 3]
+        verts_batch = self.rope.get_all_verts()
+        assert verts_batch.shape[1] == self.target_pos.shape[0]
 
         rewards = []
         for i in range(self.n_envs):
-            verts_rode = verts_rode_batch[i]
-            verts_ring1 = verts_ring1_batch[i]
-            verts_ring2 = verts_ring2_batch[i]
-            c1, hits = ring_crossing_count_axis_aligned(verts_rode, verts_ring1, 1e-6)
-            c2, hits = ring_crossing_count_axis_aligned(verts_rode, verts_ring2, 1e-6)
+            # [n_verts, 3]
+            target = self.target_pos
+            # [n_verts, 3]
+            verts = verts_batch[i]
+            # [n_verts]
+            dists = np.linalg.norm(verts - target, axis=1)
 
-            C1 = ring_center_from_axis_aligned_vertices(verts_ring1)
-            C2 = ring_center_from_axis_aligned_vertices(verts_ring2)
-            min_dist1, seg_idx, t, closest_pt = closest_distance_rope_to_point(verts_rode, C1)
-            min_dist2, seg_idx, t, closest_pt = closest_distance_rope_to_point(verts_rode, C2)
-
-            reward = 0
-            if c1 % 2 == 1:
-                reward += 1
-            if c2 % 2 == 1:
-                reward += 1
-
-            reward -= min_dist1 + min_dist2
+            reward = - np.mean(dists) - 0.1 * np.std(dists)
 
             rewards.append(reward)
 
         return rewards
-    
+
     def step(self, actions):
         raise NotImplementedError()
         # to be done

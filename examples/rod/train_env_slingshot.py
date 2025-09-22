@@ -7,7 +7,6 @@ import os
 import json
 import matplotlib.pyplot as plt
 from train_env import Train_Env
-from ring_crossing_helper import ring_crossing_count_axis_aligned, ring_center_from_axis_aligned_vertices, closest_distance_rope_to_point
 
 class Train_Env_Slingshot(Train_Env):
     def __init__(self, task='wiring', log_dir="xxx/wiring", n_envs=5):
@@ -28,7 +27,7 @@ class Train_Env_Slingshot(Train_Env):
                 segment_mass=0.001,
                 K=8e5,  # 5e5
                 E=1e5,
-                G=1e3,
+                G=0,
                 use_inextensible=False,
             ),
             morph=gs.morphs.ParameterizedRod(
@@ -125,7 +124,17 @@ class Train_Env_Slingshot(Train_Env):
         self.action_dim = len(self.control_idx) * 3
 
     def reward(self):
-        raise NotImplementedError()
+        # [n_envs, 3]
+        cube_pos = self.cube.get_pos()
+
+        rewards = []
+        for i in range(self.n_envs):
+            cube_pos_y = cube_pos[i, 1]
+
+            # we want the cube to be as far as possible in +y direction
+            rewards.append(cube_pos_y)
+
+        return rewards
     
     def step(self, actions):
         raise NotImplementedError()

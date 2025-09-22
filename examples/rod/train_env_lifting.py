@@ -7,9 +7,8 @@ import os
 import json
 import matplotlib.pyplot as plt
 from train_env import Train_Env
-from ring_crossing_helper import ring_crossing_count_axis_aligned, ring_center_from_axis_aligned_vertices, closest_distance_rope_to_point
 
-class Train_Env_Wiring_ring(Train_Env):
+class Train_Env_Lifting(Train_Env):
     def __init__(self, task='wiring', log_dir="xxx/wiring", n_envs=5):
         super().__init__(task, n_envs=n_envs, log_dir=log_dir)
 
@@ -71,12 +70,30 @@ class Train_Env_Wiring_ring(Train_Env):
 
         self.scene.build(n_envs=self.n_envs, env_spacing=(1, 1))
 
-        self.control_idx = [1, 58]
+        self.control_idx = [7, 23]
         self.action_dim = len(self.control_idx) * 3
 
     def reward(self):
-        raise NotImplementedError()
-    
+        # [n_envs, 3]
+        nut_a_pos_batch = self.b1.get_pos()
+        nut_b_pos_batch = self.b2.get_pos()
+
+        rewards = []
+        for i in range(self.n_envs):
+            nut_a_pos = nut_a_pos_batch[i]
+            nut_b_pos = nut_b_pos_batch[i]
+
+            dist = np.linalg.norm(nut_a_pos - nut_b_pos)
+            height = (nut_a_pos[2] + nut_b_pos[2]) / 2.0
+
+            # dist: we want nut a and nut b to be close
+            # height: we want the nuts to be lifted up
+            reward = dist + height
+
+            rewards.append(reward)
+
+        return rewards
+
     def step(self, actions):
         raise NotImplementedError()
         # to be done
