@@ -12,6 +12,7 @@ import numpy as np
 import cma
 
 from train_env_wiring_ring import Train_Env_Wiring_ring  # keep if you still want the example main
+from train_env_wiring_post import Train_Env_Wiring_post
 from train_env_lifting import Train_Env_Lifting
 from train_env_slingshot import Train_Env_Slingshot
 from train_env_wireart import Train_Env_Wireart
@@ -364,6 +365,7 @@ def _build_env(task: str, log_dir: str, n_envs: int):
     task = task.lower()
     task_to_env = {
         "wiring":    Train_Env_Wiring_ring,
+        "wiring_post": Train_Env_Wiring_post,
         "lifting":   Train_Env_Lifting,
         "slingshot": Train_Env_Slingshot,
         "wireart":   Train_Env_Wireart,

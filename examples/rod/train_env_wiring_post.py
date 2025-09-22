@@ -13,6 +13,10 @@ class Train_Env_Wiring_post(Train_Env):
     def __init__(self, task='wiring', log_dir="xxx/wiring", n_envs=5):
         super().__init__(task, n_envs=n_envs, log_dir=log_dir)
 
+        # NOTE: assume running from "examples/rod"
+        self.target_pos = np.load("target_pos/wiring_post_finalpos.npy")
+        print(f'Loaded target pos from "wiring_post_finalpos.npy", shape = {self.target_pos.shape}')
+
     def construct_scene(self):
         plane = self.scene.add_entity(
             material=gs.materials.Rigid(
@@ -54,7 +58,7 @@ class Train_Env_Wiring_post(Train_Env):
                 n_vertices=4,
                 interval=0.02,
                 axis="z",
-                pos=(0.2, 0.1, -0.02),
+                pos=(0.245, 0.14, -0.02),
                 euler=(0, 0, 0),
             ),
             surface=gs.surfaces.Default(
@@ -71,7 +75,7 @@ class Train_Env_Wiring_post(Train_Env):
                 n_vertices=4,
                 interval=0.02,
                 axis="z",
-                pos=(0.1, 0.3, -0.02),
+                pos=(0.1, 0.275, -0.02),
                 euler=(0, 0, 0),
             ),
             surface=gs.surfaces.Default(
@@ -87,8 +91,25 @@ class Train_Env_Wiring_post(Train_Env):
         self.action_dim = len(self.control_idx) * 3
 
     def reward(self):
-        raise NotImplementedError()
-    
+        # [n_envs, n_verts, 3]
+        verts_batch = self.rope.get_all_verts()
+        assert verts_batch.shape[1] == self.target_pos.shape[0]
+
+        rewards = []
+        for i in range(self.n_envs):
+            # [n_verts, 3]
+            target = self.target_pos
+            # [n_verts, 3]
+            verts = verts_batch[i]
+            # [n_verts]
+            dists = np.linalg.norm(verts - target, axis=1)
+
+            reward = - np.mean(dists) - 0.1 * np.std(dists)
+
+            rewards.append(reward)
+
+        return rewards
+
     def step(self, actions):
         raise NotImplementedError()
         # to be done
