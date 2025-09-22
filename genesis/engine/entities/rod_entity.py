@@ -58,6 +58,8 @@ class RodEntity(Entity):
         self._step_global_added = None
         self._visualize_twist = visualize_twist
 
+        self._surface.update_texture()
+
         self.sample()
 
         self.init_tgt_vars()
@@ -232,7 +234,7 @@ class RodEntity(Entity):
         self.init_positions_COM_offset = self.init_positions - gs.tensor(verts_COM)
 
         edges = list()
-        is_loop = self.morph.is_loop
+        is_loop = self.is_loop
         n_edges = n_verts if is_loop else n_verts - 1
         for i in range(n_edges):
             # NOTE: check this
@@ -336,7 +338,7 @@ class RodEntity(Entity):
             gs.logger.info(
                 f"Entity {self.uid}({self._rod_idx}) added. class: {self.__class__.__name__}, "
                 f"morph: {self.morph.__class__.__name__}, #v: {self.n_vertices}, "
-                f"o: {self.morph.is_loop}, fix: {self.morph.fixed}, material: {self.material}."
+                f"o: {self.is_loop}, fix: {self.morph.fixed}, material: {self.material}."
             )
 
         # Convert to appropriate numpy array types
@@ -346,7 +348,7 @@ class RodEntity(Entity):
 
         self._solver._kernel_add_rods(
             rod_idx=self._rod_idx,
-            is_loop=self.morph.is_loop,
+            is_loop=self.is_loop,
             use_inextensible=self.material.use_inextensible,
             stretching_stiffness=self.material.K,
             bending_stiffness=self.material.E,
@@ -1014,9 +1016,14 @@ class RodEntity(Entity):
         return len(self.edges)
 
     @property
+    def is_loop(self):
+        """Whether the rod is loop."""
+        return self.morph.is_loop
+
+    @property
     def n_internal_vertices(self):
         """Number of internal vertices in the Rod entity."""
-        return len(self.init_positions) if self.morph.is_loop else len(self.init_positions) - 2
+        return len(self.init_positions) if self.is_loop else len(self.init_positions) - 2
 
     @property
     def n_dofs(self):
