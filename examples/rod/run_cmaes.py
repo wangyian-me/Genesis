@@ -12,6 +12,10 @@ import numpy as np
 import cma
 
 from train_env_wiring_ring import Train_Env_Wiring_ring  # keep if you still want the example main
+from train_env_lifting import Train_Env_Lifting
+from train_env_slingshot import Train_Env_Slingshot
+from train_env_wireart import Train_Env_Wireart
+
 from train_env_coiling import Train_Env_Coiling
 from train_env_gathering import Train_Env_Gathering
 from train_env_separation import Train_Env_Separation
@@ -360,6 +364,10 @@ def _build_env(task: str, log_dir: str, n_envs: int):
     task = task.lower()
     task_to_env = {
         "wiring":    Train_Env_Wiring_ring,
+        "lifting":   Train_Env_Lifting,
+        "slingshot": Train_Env_Slingshot,
+        "wireart":   Train_Env_Wireart,
+
         "coiling":   Train_Env_Coiling,
         "gathering": Train_Env_Gathering,
         "separation": Train_Env_Separation,
