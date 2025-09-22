@@ -48,7 +48,7 @@ class Train_Env_Coiling(Train_Env):
                 needs_coup=True, coup_friction=0.7,
             ),
             morph=gs.morphs.Mesh(
-                file="genesis/assets/meshes/cone.obj",
+                file="meshes/cone.obj",
                 pos=(0, 0, 0.15),
                 scale=(5, 5, 3),
                 # fixed=True,
@@ -66,7 +66,16 @@ class Train_Env_Coiling(Train_Env):
         self.action_dim = len(self.control_idx) * 3
 
     def reward(self):
-        raise NotImplementedError()
+        verts_batch = self.rope.get_all_verts()   # shape: (n_envs, n_verts, 3), NumPy array
+        point = np.array([0.0, 0.0, 0.15], dtype=verts_batch.dtype)
+
+        # Euclidean distance from each vertex to the point
+        dists = np.linalg.norm(verts_batch - point, axis=-1)  # (n_envs, n_verts)
+
+        # Reward per env: negative sum of distances across all verts
+        rewards = -dists.sum(axis=1)  # (n_envs,)
+
+        return rewards.tolist()
     
     def step(self, actions):
         raise NotImplementedError()
@@ -98,7 +107,7 @@ class Train_Env_Coiling(Train_Env):
         fixed_np[:, self.control_idx] = True
         self.rope.set_fixed(0, fixed_np)
 
-        steps_interval = 250
+        steps_interval = 200
         total_micro_steps = int(n_steps * steps_interval)
         if total_micro_steps <= 0:
             # Degenerate case: no steps → everyone "survives"; defer to env reward (or -100 if NaN)

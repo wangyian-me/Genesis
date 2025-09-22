@@ -30,7 +30,7 @@ class Train_Env_Separation(Train_Env):
                 G=1e3,
             ),
             morph=gs.morphs.Rod(
-                file="genesis/assets/meshes/ropea.npy",
+                file="meshes/ropea.npy",
                 rest_state="straight",
             ),
             surface=gs.surfaces.Default(
@@ -47,7 +47,7 @@ class Train_Env_Separation(Train_Env):
                 G=0,
             ),
             morph=gs.morphs.Rod(
-                file="genesis/assets/meshes/ropeb.npy",
+                file="meshes/ropeb.npy",
                 rest_state="straight",
             ),
             surface=gs.surfaces.Default(
@@ -64,7 +64,23 @@ class Train_Env_Separation(Train_Env):
         self.action_dim = len(self.control_idx) * 3
 
     def reward(self):
-        raise NotImplementedError()
+        A = self.rope.get_all_verts()
+        B = self.rope2.get_all_verts()
+
+        # Pairwise distances between ropes for each env:
+        # D shape: (n_envs, n_verts_A, n_verts_B)
+        diff = A[:, :, None, :] - B[:, None, :, :]
+        D = np.linalg.norm(diff, axis=-1)
+
+        # For each vertex in A, distance to nearest in B; and vice versa
+        a_to_b_min = D.min(axis=2)  # (n_envs, n_verts_A)
+        b_to_a_min = D.min(axis=1)  # (n_envs, n_verts_B)
+
+        # Symmetric NN distance (Chamfer-style), averaged per env
+        rewards = a_to_b_min.mean(axis=1) + b_to_a_min.mean(axis=1)  # (n_envs,)
+
+        # Larger reward -> ropes farther apart
+        return rewards.tolist()
     
     def step(self, actions):
         raise NotImplementedError()
@@ -96,7 +112,7 @@ class Train_Env_Separation(Train_Env):
         fixed_np[:, self.control_idx] = True
         self.rope.set_fixed(0, fixed_np)
 
-        steps_interval = 250
+        steps_interval = 200
         total_micro_steps = int(n_steps * steps_interval)
         if total_micro_steps <= 0:
             # Degenerate case: no steps → everyone "survives"; defer to env reward (or -100 if NaN)

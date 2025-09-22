@@ -96,7 +96,19 @@ class Train_Env_Gathering(Train_Env):
         self.action_dim = len(self.control_idx) * 3
 
     def reward(self):
-        raise NotImplementedError()
+
+
+        pos1 = self.sphere.get_pos()    # shape: (n_envs, 3)
+        pos2 = self.bunny.get_pos()     # shape: (n_envs, 3)
+        pos3 = self.cylinder.get_pos()  # shape: (n_envs, 3)
+
+        d12 = torch.norm(pos1 - pos2, dim=1)  # ||p1 - p2||
+        d23 = torch.norm(pos2 - pos3, dim=1)  # ||p2 - p3||
+        d13 = torch.norm(pos1 - pos3, dim=1)  # ||p1 - p3||
+
+        rewards = -(d12 + d23 + d13)          # negative sum of pairwise distances
+        return rewards.detach().cpu().tolist()                # list[float] of length n_envs
+
     
     def step(self, actions):
         raise NotImplementedError()
@@ -128,7 +140,7 @@ class Train_Env_Gathering(Train_Env):
         fixed_np[:, self.control_idx] = True
         self.rope.set_fixed(0, fixed_np)
 
-        steps_interval = 250
+        steps_interval = 200
         total_micro_steps = int(n_steps * steps_interval)
         if total_micro_steps <= 0:
             # Degenerate case: no steps → everyone "survives"; defer to env reward (or -100 if NaN)

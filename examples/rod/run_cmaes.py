@@ -4,11 +4,18 @@ import csv
 import time
 import pickle
 from typing import Tuple, List, Optional, Sequence
+from argparse import ArgumentParser
+
+
 
 import numpy as np
 import cma
 
 from train_env_wiring_ring import Train_Env_Wiring_ring  # keep if you still want the example main
+from train_env_coiling import Train_Env_Coiling
+from train_env_gathering import Train_Env_Gathering
+from train_env_separation import Train_Env_Separation
+from train_env_wrapping import Train_Env_Wrapping
 
 
 # ----------------------------
@@ -348,8 +355,38 @@ def optimize_wiring_trajectory(
 # ----------------------------
 # Example usage
 # ----------------------------
+
+def _build_env(task: str, log_dir: str, n_envs: int):
+    task = task.lower()
+    task_to_env = {
+        "wiring":    Train_Env_Wiring_ring,
+        "coiling":   Train_Env_Coiling,
+        "gathering": Train_Env_Gathering,
+        "separation": Train_Env_Separation,
+        "wrapping":  Train_Env_Wrapping,
+    }
+    if task not in task_to_env:
+        raise ValueError(f"Unknown task '{task}'. Valid: {sorted(task_to_env.keys())}")
+    EnvCls = task_to_env[task]
+    # Most envs accept (task=..., log_dir=..., n_envs=...), but if yours differ, tweak here.
+    try:
+        return EnvCls(task=task, log_dir=log_dir, n_envs=n_envs)
+    except TypeError:
+        # Fallback if the env ctor only takes (log_dir, n_envs) or similar
+        try:
+            return EnvCls(log_dir=log_dir, n_envs=n_envs)
+        except TypeError:
+            return EnvCls()
+        
+
 if __name__ == "__main__":
-    env = Train_Env_Wiring(task='wiring', log_dir="logs/wiring", n_envs=10)
+    parser = ArgumentParser()
+    parser.add_argument("--task", type=str, default="wiring",
+                   help="Task / environment to optimize.")
+    args = parser.parse_args()
+    trial_name = f"trial_{args.task}"
+    env = _build_env(args.task, f"logs/{args.task}", 10)
+
     n_steps = 10
 
     best_traj, best_reward = optimize_wiring_trajectory(
@@ -357,15 +394,15 @@ if __name__ == "__main__":
         n_steps=n_steps,
         act_dim=None,           # infer if available
         popsize=100,
-        sigma0=0.01,
-        per_comp_bound=0.01,
-        l2_bound=0.01,          # use env.l2_bound if present
+        sigma0=0.005,
+        per_comp_bound=0.02,
+        l2_bound=0.03,          # use env.l2_bound if present
         max_iters=15,
         seed=123,
-        log_dir="logs/wiring",
+        log_dir=f"logs/{args.task}",
         # NEW: checkpoint controls
         work_dir="checkpoints",
-        trial_name="wiring_trial_A",
+        trial_name=trial_name,
         resume=True,            # set True to load if checkpoint exists
         save_every=1,           # save each generation
     )

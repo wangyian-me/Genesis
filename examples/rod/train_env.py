@@ -4,7 +4,6 @@ import torch
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 import os 
-import cma
 import json
 import matplotlib.pyplot as plt
 

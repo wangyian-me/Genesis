@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 from train_env import Train_Env
 from ring_crossing_helper import ring_crossing_count_axis_aligned, ring_center_from_axis_aligned_vertices, closest_distance_rope_to_point
 
-class Train_Env_Wiring_ring(Train_Env):
+class Train_Env_Wiring_post(Train_Env):
     def __init__(self, task='wiring', log_dir="xxx/wiring", n_envs=5):
         super().__init__(task, n_envs=n_envs, log_dir=log_dir)
 

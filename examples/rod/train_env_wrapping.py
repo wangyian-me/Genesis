@@ -67,7 +67,46 @@ class Train_Env_Wrapping(Train_Env):
         self.action_dim = len(self.control_idx) * 3
 
     def reward(self):
-        raise NotImplementedError()
+        """
+        Encourage the rope to lie on a target circle.
+
+        Args:
+            n_samples: number of points to sample on the target circle
+            radius:    target circle radius
+            center:    (cx, cy, cz_guess) center; z can be overridden via `z`
+            z:         plane height for the target circle; defaults to center[2]
+            tau:       temperature for soft-min/soft-max (None => exact min/max).
+                    Smaller tau => sharper; e.g., tau=0.01 for gentle smoothing.
+        Returns:
+            list of rewards (length = n_envs), larger is better.
+        """
+
+        V = self.rope.get_all_verts()  # (E, N, 3) NumPy
+        E, N, _ = V.shape
+
+        cx, cy, z = (0.1, 0, 0)
+
+        S = 20
+        angles = np.linspace(0.0, 2.0 * np.pi, S, endpoint=False)
+        circle_pts = np.stack(
+            [cx + 0.143 * np.cos(angles),
+            cy + 0.143 * np.sin(angles),
+            np.full(S, z, dtype=V.dtype)],
+            axis=1,  # (S, 3)
+        ).astype(V.dtype, copy=False)
+
+        # Distances from each sampled circle point to all rope verts
+        # Shapes: circle (E, S, 1, 3), rope (E, 1, N, 3) -> D: (E, S, N)
+        circle_b = np.broadcast_to(circle_pts[None, :, None, :], (E, S, 1, 3))
+        verts_b  = V[:, None, :, :]
+        D = np.linalg.norm(circle_b - verts_b, axis=-1)  # (E, S, N)
+
+        nearest = D.min(axis=2)          # (E, S)
+        worst_gap = nearest.max(axis=1)  # (E,)
+
+        rewards = -worst_gap  # minimize worst gap -> maximize reward
+        return rewards.tolist()
+
     
     def step(self, actions):
         raise NotImplementedError()
@@ -99,7 +138,7 @@ class Train_Env_Wrapping(Train_Env):
         fixed_np[:, self.control_idx] = True
         self.rope.set_fixed(0, fixed_np)
 
-        steps_interval = 250
+        steps_interval = 200
         total_micro_steps = int(n_steps * steps_interval)
         if total_micro_steps <= 0:
             # Degenerate case: no steps → everyone "survives"; defer to env reward (or -100 if NaN)
