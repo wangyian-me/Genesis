@@ -241,11 +241,11 @@ class Train_Env_Slingshot(Train_Env):
                     ever_nan[newly_nan_after] = True
                     alive[newly_nan_after] = False
 
-            fixed_np = np.zeros((self.n_envs, self.rope.n_vertices), dtype=bool)
-            self.rope.set_fixed(0, fixed_np)    # release all
+        fixed_np = np.zeros((self.n_envs, self.rope.n_vertices), dtype=bool)
+        self.rope.set_fixed(0, fixed_np)    # release all
 
-            for _ in range(500):
-                self.scene.step()
+        for _ in range(500):
+            self.scene.step()
 
         # Compute base rewards
         env_rewards = np.asarray(self.reward(), dtype=np.float32)
