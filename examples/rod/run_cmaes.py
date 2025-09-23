@@ -405,8 +405,8 @@ if __name__ == "__main__":
         act_dim=None,           # infer if available
         popsize=200,
         sigma0=0.005,
-        per_comp_bound=0.02,
-        l2_bound=0.03,          # use env.l2_bound if present
+        per_comp_bound=0.1,
+        l2_bound=0.1,          # use env.l2_bound if present
         max_iters=100,
         seed=123,
         log_dir=f"logs/{args.task}",

@@ -76,9 +76,11 @@ class RodEntity(Entity):
         for i_b in range(self._sim._B):
             i_global = verts_idx + self._v_start
             for j in ti.static(range(3)):
+                # ensure z-axis is above the ground (off by its radius)
+                if j == 2 and pos[i_b, j] < self.material.segment_radius:
+                    pos[i_b, j] = self.material.segment_radius
                 self.solver.vertices[0, i_global, i_b].vert[j] = pos[i_b, j]
 
-    
     def set_position(self, pos):
         """
         Set the target position(s) for the Rod entity.
