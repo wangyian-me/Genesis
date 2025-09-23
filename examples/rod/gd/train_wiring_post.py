@@ -32,7 +32,7 @@ def arg_parser():
                         choices=[None, 'linear', 'exp', 'custom'])
     parser.add_argument('--show_gui', action='store_true')
     parser.add_argument('--vis_path', type=str, default=None)
-    parser.add_argument('--log_dir', type=str, default='logs/wiring_post')
+    parser.add_argument('--log_dir', type=str, default='logs/wiring_post_gd')
     parser.add_argument('--debug', action='store_true')
     return parser.parse_args()
 

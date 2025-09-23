@@ -32,12 +32,12 @@ def arg_parser():
                         choices=[None, 'linear', 'exp', 'custom'])
     parser.add_argument('--show_gui', action='store_true')
     parser.add_argument('--vis_path', type=str, default=None)
-    parser.add_argument('--log_dir', type=str, default='logs/wiring_ring_gd')
+    parser.add_argument('--log_dir', type=str, default='logs/wrapping_gd')
     parser.add_argument('--debug', action='store_true')
     return parser.parse_args()
 
 
-class Train_GD_Wiring_Ring:
+class Train_GD_Wrapping:
     def __init__(self, args):
         self.args = args
 
@@ -71,7 +71,7 @@ class Train_GD_Wiring_Ring:
         self.construct_scene()
         self.construct_cameras()
 
-        self.control_idx = [11, 30]
+        self.control_idx = [12, 38]
 
         self.c = TrajOptim(
             self.scene, self.rope,
@@ -142,23 +142,34 @@ class Train_GD_Wiring_Ring:
         print(f'Iter from {self.iter_start} to {self.args.n_iters-1}, each iter has {self.args.n_steps}x{self.args.steps_interval}={self.args.n_steps * self.args.steps_interval} steps')
         print(f'Max moving distance {self.args.max_ddist}x{self.args.n_steps}={self.args.max_ddist * self.args.n_steps} m for each control point')
 
-        # NOTE: assume running from "examples/rod"
-        self.target_pos = np.load("target_pos/wiring_ring_finalpos.npy")
-        print(f'Loaded target pos from "wiring_ring_finalpos.npy", shape = {self.target_pos.shape}')
-
     def loss_criterion(self, state):
         # (n_envs, n_verts, 3), torch tensor
         verts_batch = state.pos
-        target = torch.tensor(self.target_pos, dtype=verts_batch.dtype, device=verts_batch.device)
+        E, N, _ = verts_batch.shape
 
-        # Euclidean distance from each vertex to the target point
-        # (n_envs, n_verts)
-        dists = torch.norm(verts_batch - target[None, :, :], dim=2)
+        cx, cy, z = (0.1, 0, 0)
 
-        # Loss per env
-        loss_dist = torch.mean(dists, dim=1) + 0.1 * torch.std(dists, dim=1)   # (n_envs,)
+        S = 20
+        angles = np.linspace(0.0, 2.0 * np.pi, S, endpoint=False)
+        angles = torch.tensor(angles, dtype=verts_batch.dtype, device=verts_batch.device)
+        circle_pts = torch.stack(
+            [cx + 0.143 * torch.cos(angles),
+            cy + 0.143 * torch.sin(angles),
+            torch.full((S,), z, dtype=verts_batch.dtype, device=verts_batch.device)],
+            dim=1,  # (S, 3)
+        )  # (S, 3)
 
-        return loss_dist
+        # Distances from each sampled circle point to all rope verts
+        # Shapes: circle (E, S, 1, 3), rope (E, 1, N, 3) -> D: (E, S, N)
+        circle_b = circle_pts[None, :, None, :].expand(E, S, 1, 3)
+        verts_b  = verts_batch[:, None, :, :].expand(E, S, N, 3)
+        D = torch.linalg.norm(circle_b - verts_b, dim=-1)  # (E, S, N)
+
+        nearest = D.min(dim=2).values          # (E, S)
+        worst_gap = nearest.max(dim=1).values  # (E,)
+        loss = worst_gap
+
+        return loss
 
     def loss_above_plane(self, state):
         # Required loss to make sure the vertices above the plane
@@ -170,24 +181,45 @@ class Train_GD_Wiring_Ring:
         return loss_abv_plane
 
     def reward(self):
-        # [n_envs, n_verts, 3]
-        verts_batch = self.rope.get_all_verts()
-        assert verts_batch.shape[1] == self.target_pos.shape[0]
+        """
+        Encourage the rope to lie on a target circle.
 
-        rewards = []
-        for i in range(self.args.n_envs):
-            # [n_verts, 3]
-            target = self.target_pos
-            # [n_verts, 3]
-            verts = verts_batch[i]
-            # [n_verts]
-            dists = np.linalg.norm(verts - target, axis=1)
+        Args:
+            n_samples: number of points to sample on the target circle
+            radius:    target circle radius
+            center:    (cx, cy, cz_guess) center; z can be overridden via `z`
+            z:         plane height for the target circle; defaults to center[2]
+            tau:       temperature for soft-min/soft-max (None => exact min/max).
+                    Smaller tau => sharper; e.g., tau=0.01 for gentle smoothing.
+        Returns:
+            list of rewards (length = n_envs), larger is better.
+        """
 
-            reward = - np.mean(dists) - 0.1 * np.std(dists)
+        V = self.rope.get_all_verts()  # (E, N, 3) NumPy
+        E, N, _ = V.shape
 
-            rewards.append(reward)
+        cx, cy, z = (0.1, 0, 0)
 
-        return rewards
+        S = 20
+        angles = np.linspace(0.0, 2.0 * np.pi, S, endpoint=False)
+        circle_pts = np.stack(
+            [cx + 0.143 * np.cos(angles),
+            cy + 0.143 * np.sin(angles),
+            np.full(S, z, dtype=V.dtype)],
+            axis=1,  # (S, 3)
+        ).astype(V.dtype, copy=False)
+
+        # Distances from each sampled circle point to all rope verts
+        # Shapes: circle (E, S, 1, 3), rope (E, 1, N, 3) -> D: (E, S, N)
+        circle_b = np.broadcast_to(circle_pts[None, :, None, :], (E, S, 1, 3))
+        verts_b  = V[:, None, :, :]
+        D = np.linalg.norm(circle_b - verts_b, axis=-1)  # (E, S, N)
+
+        nearest = D.min(axis=2)          # (E, S)
+        worst_gap = nearest.max(axis=1)  # (E,)
+
+        rewards = -worst_gap  # minimize worst gap -> maximize reward
+        return rewards.tolist()
 
     def train_one_iter(self):
         total_horizon = 0
@@ -197,11 +229,6 @@ class Train_GD_Wiring_Ring:
         fixed_np = np.zeros((self.args.n_envs, self.rope.n_vertices), dtype=bool)
         fixed_np[:, self.control_idx] = True
         self.rope.set_fixed(0, fixed_np)
-
-        fixed_ring1_np = np.ones((self.args.n_envs, self.ring1.n_vertices), dtype=bool)
-        self.ring1.set_fixed(0, fixed_ring1_np)
-        fixed_ring2_np = np.ones((self.args.n_envs, self.ring2.n_vertices), dtype=bool)
-        self.ring2.set_fixed(0, fixed_ring2_np)
 
         loss = 0.
 
@@ -273,7 +300,6 @@ class Train_GD_Wiring_Ring:
                     f.write('iter,loss,reward\n')
                 f.write(f'{it},{info[it]["loss"]:.6f},{max(info[it]["reward"]):.6f}\n')
 
-
         if self.args.vis_path is not None:
             for cid in self.frames:
                 mediapy.write_video(
@@ -296,68 +322,37 @@ class Train_GD_Wiring_Ring:
             material=gs.materials.ROD.Base(
                 segment_radius=segment_radius,
                 segment_mass=0.001,
-                # K=1e5,
-                E=1e3,
-                G=1e3,
-                # use_inextensible=False
+                K=5e5,
+                E=1e4,
+                G=0,
+                use_inextensible=False,
             ),
             morph=gs.morphs.ParameterizedRod(
-                type="rod",
-                n_vertices=60,
-                interval=0.01,
+                type="circle",
+                n_vertices=50,
+                radius=0.14,
                 axis="x",
-                pos=(0.3, 0.0, 0.02),
-                euler=(0, 0, 0),
+                pos=(0.65, 0, 0.01),
+                euler=(0.0, 0.0, 0.0),
             ),
             surface=gs.surfaces.Default(
-                # color=(0.4, 1.0, 0.4),
-                diffuse_texture=gs.textures.ImageTexture(
-                    image_path="textures/rope01.png",
-                ),
+                color=(0.4, 1.0, 0.4),
                 vis_mode='recon',
-            )
+            ),
         )
 
-        self.ring1 = self.scene.add_entity(
-            material=gs.materials.ROD.Base(
-                segment_radius=0.008,
-                static_friction=0.1,
-                kinetic_friction=0.08,
-            ),
-            morph=gs.morphs.ParameterizedRod(
-                type="circle",
-                n_vertices=24,
-                radius=0.04,
-                axis="y",
-                pos=(0.27, 0.0, 0.008),
-                euler=(-30, 0, 0),
-                gap=1,
-            ),
-            surface=gs.surfaces.Default(
-                color=(0.4, 0.4, 0.4),
-                vis_mode='recon',
-            )
+        friction_rigid = gs.materials.Rigid(
+            needs_coup=True, coup_friction=1.0
         )
 
-        self.ring2 = self.scene.add_entity(
-            material=gs.materials.ROD.Base(
-                segment_radius=0.008,
-                static_friction=0.1,
-                kinetic_friction=0.08,
+        self.c1 = self.scene.add_entity(
+            material=friction_rigid,
+            morph=gs.morphs.Cylinder(
+                radius=0.143,
+                height=0.2,
+                pos=(0.1, 0., 0.1),
+                fixed=True,
             ),
-            morph=gs.morphs.ParameterizedRod(
-                type="circle",
-                n_vertices=24,
-                radius=0.04,
-                axis="y",
-                pos=(0.09, -0.27, 0.008),
-                euler=(-30, 0, 90),
-                gap=1,
-            ),
-            surface=gs.surfaces.Default(
-                color=(0.4, 0.4, 0.4),
-                vis_mode='recon',
-            )
         )
 
         self.scene.rod_solver.register_gripper_geom_indices([])
@@ -368,12 +363,12 @@ class Train_GD_Wiring_Ring:
         cameras = list()
         if self.args.vis_path is not None:
             cameras.append(self.scene.add_camera(
-                res=(1200, 900), pos=(-1.6, 1.0, 1.4), up=(0, 0, 1),
-                lookat=(0.3, 0., 0), fov=24, GUI=False
+                res=(600, 450), pos=(3, -1, 1.5), up=(0, 0, 1),
+                lookat=(0.65, 0., 0), fov=24, GUI=False
             ))
             cameras.append(self.scene.add_camera(
-                res=(1200, 900), pos=(-1, -0.8, 1.4), up=(0, 0, 1),
-                lookat=(0.2, 0., 0), fov=20, GUI=False
+                res=(600, 450), pos=(-1, -0.8, 1.4), up=(0, 0, 1),
+                lookat=(0.2, 0., 0), fov=30, GUI=False
             ))
 
         self.cameras = cameras
@@ -382,7 +377,7 @@ class Train_GD_Wiring_Ring:
 def main():
     args = arg_parser()
 
-    trainer = Train_GD_Wiring_Ring(args)
+    trainer = Train_GD_Wrapping(args)
     trainer.train()
 
 

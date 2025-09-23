@@ -32,12 +32,12 @@ def arg_parser():
                         choices=[None, 'linear', 'exp', 'custom'])
     parser.add_argument('--show_gui', action='store_true')
     parser.add_argument('--vis_path', type=str, default=None)
-    parser.add_argument('--log_dir', type=str, default='logs/wiring_ring_gd')
+    parser.add_argument('--log_dir', type=str, default='logs/separation_gd')
     parser.add_argument('--debug', action='store_true')
     return parser.parse_args()
 
 
-class Train_GD_Wiring_Ring:
+class Train_GD_Separation:
     def __init__(self, args):
         self.args = args
 
@@ -71,7 +71,7 @@ class Train_GD_Wiring_Ring:
         self.construct_scene()
         self.construct_cameras()
 
-        self.control_idx = [11, 30]
+        self.control_idx = [27]
 
         self.c = TrajOptim(
             self.scene, self.rope,
@@ -142,23 +142,21 @@ class Train_GD_Wiring_Ring:
         print(f'Iter from {self.iter_start} to {self.args.n_iters-1}, each iter has {self.args.n_steps}x{self.args.steps_interval}={self.args.n_steps * self.args.steps_interval} steps')
         print(f'Max moving distance {self.args.max_ddist}x{self.args.n_steps}={self.args.max_ddist * self.args.n_steps} m for each control point')
 
-        # NOTE: assume running from "examples/rod"
-        self.target_pos = np.load("target_pos/wiring_ring_finalpos.npy")
-        print(f'Loaded target pos from "wiring_ring_finalpos.npy", shape = {self.target_pos.shape}')
-
     def loss_criterion(self, state):
         # (n_envs, n_verts, 3), torch tensor
         verts_batch = state.pos
-        target = torch.tensor(self.target_pos, dtype=verts_batch.dtype, device=verts_batch.device)
+        verts_batch_2 = self.rope2.get_all_verts_tc()
 
-        # Euclidean distance from each vertex to the target point
-        # (n_envs, n_verts)
-        dists = torch.norm(verts_batch - target[None, :, :], dim=2)
+        diff = verts_batch[:, :, None, :] - verts_batch_2[:, None, :, :]   # (n_envs, n_verts_A, n_verts_B, 3)
+        D = torch.norm(diff, dim=-1)                                       # (n_envs, n
 
-        # Loss per env
-        loss_dist = torch.mean(dists, dim=1) + 0.1 * torch.std(dists, dim=1)   # (n_envs,)
+        a_to_b_min = D.min(dim=2).values  # (n_envs, n_verts_A)
+        b_to_a_min = D.min(dim=1).values  # (n_envs, n_verts_B)
 
-        return loss_dist
+        loss_chamfer = a_to_b_min.mean(dim=1) + b_to_a_min.mean(dim=1)  # (n_envs,)
+        loss_chamfer = - loss_chamfer      # want to maximize chamfer distance
+
+        return loss_chamfer
 
     def loss_above_plane(self, state):
         # Required loss to make sure the vertices above the plane
@@ -170,24 +168,23 @@ class Train_GD_Wiring_Ring:
         return loss_abv_plane
 
     def reward(self):
-        # [n_envs, n_verts, 3]
-        verts_batch = self.rope.get_all_verts()
-        assert verts_batch.shape[1] == self.target_pos.shape[0]
+        A = self.rope.get_all_verts()
+        B = self.rope2.get_all_verts()
 
-        rewards = []
-        for i in range(self.args.n_envs):
-            # [n_verts, 3]
-            target = self.target_pos
-            # [n_verts, 3]
-            verts = verts_batch[i]
-            # [n_verts]
-            dists = np.linalg.norm(verts - target, axis=1)
+        # Pairwise distances between ropes for each env:
+        # D shape: (n_envs, n_verts_A, n_verts_B)
+        diff = A[:, :, None, :] - B[:, None, :, :]
+        D = np.linalg.norm(diff, axis=-1)
 
-            reward = - np.mean(dists) - 0.1 * np.std(dists)
+        # For each vertex in A, distance to nearest in B; and vice versa
+        a_to_b_min = D.min(axis=2)  # (n_envs, n_verts_A)
+        b_to_a_min = D.min(axis=1)  # (n_envs, n_verts_B)
 
-            rewards.append(reward)
+        # Symmetric NN distance (Chamfer-style), averaged per env
+        rewards = a_to_b_min.mean(axis=1) + b_to_a_min.mean(axis=1)  # (n_envs,)
 
-        return rewards
+        # Larger reward -> ropes farther apart
+        return rewards.tolist()
 
     def train_one_iter(self):
         total_horizon = 0
@@ -197,11 +194,6 @@ class Train_GD_Wiring_Ring:
         fixed_np = np.zeros((self.args.n_envs, self.rope.n_vertices), dtype=bool)
         fixed_np[:, self.control_idx] = True
         self.rope.set_fixed(0, fixed_np)
-
-        fixed_ring1_np = np.ones((self.args.n_envs, self.ring1.n_vertices), dtype=bool)
-        self.ring1.set_fixed(0, fixed_ring1_np)
-        fixed_ring2_np = np.ones((self.args.n_envs, self.ring2.n_vertices), dtype=bool)
-        self.ring2.set_fixed(0, fixed_ring2_np)
 
         loss = 0.
 
@@ -273,7 +265,6 @@ class Train_GD_Wiring_Ring:
                     f.write('iter,loss,reward\n')
                 f.write(f'{it},{info[it]["loss"]:.6f},{max(info[it]["reward"]):.6f}\n')
 
-
         if self.args.vis_path is not None:
             for cid in self.frames:
                 mediapy.write_video(
@@ -296,66 +287,32 @@ class Train_GD_Wiring_Ring:
             material=gs.materials.ROD.Base(
                 segment_radius=segment_radius,
                 segment_mass=0.001,
-                # K=1e5,
-                E=1e3,
+                E=5e3,
                 G=1e3,
-                # use_inextensible=False
             ),
-            morph=gs.morphs.ParameterizedRod(
-                type="rod",
-                n_vertices=60,
-                interval=0.01,
-                axis="x",
-                pos=(0.3, 0.0, 0.02),
-                euler=(0, 0, 0),
+            morph=gs.morphs.Rod(
+                file="meshes/ropea.npy",
+                rest_state="straight",
             ),
             surface=gs.surfaces.Default(
-                # color=(0.4, 1.0, 0.4),
-                diffuse_texture=gs.textures.ImageTexture(
-                    image_path="textures/rope01.png",
-                ),
+                color=(1.0, 0.4, 0.4),
                 vis_mode='recon',
             )
         )
 
-        self.ring1 = self.scene.add_entity(
+        self.rope2 = self.scene.add_entity(
             material=gs.materials.ROD.Base(
-                segment_radius=0.008,
-                static_friction=0.1,
-                kinetic_friction=0.08,
+                segment_radius=segment_radius,
+                segment_mass=0.001,
+                E=5e3,
+                G=0,
             ),
-            morph=gs.morphs.ParameterizedRod(
-                type="circle",
-                n_vertices=24,
-                radius=0.04,
-                axis="y",
-                pos=(0.27, 0.0, 0.008),
-                euler=(-30, 0, 0),
-                gap=1,
+            morph=gs.morphs.Rod(
+                file="meshes/ropeb.npy",
+                rest_state="straight",
             ),
             surface=gs.surfaces.Default(
-                color=(0.4, 0.4, 0.4),
-                vis_mode='recon',
-            )
-        )
-
-        self.ring2 = self.scene.add_entity(
-            material=gs.materials.ROD.Base(
-                segment_radius=0.008,
-                static_friction=0.1,
-                kinetic_friction=0.08,
-            ),
-            morph=gs.morphs.ParameterizedRod(
-                type="circle",
-                n_vertices=24,
-                radius=0.04,
-                axis="y",
-                pos=(0.09, -0.27, 0.008),
-                euler=(-30, 0, 90),
-                gap=1,
-            ),
-            surface=gs.surfaces.Default(
-                color=(0.4, 0.4, 0.4),
+                color=(0.4, 1.0, 0.4),
                 vis_mode='recon',
             )
         )
@@ -368,12 +325,12 @@ class Train_GD_Wiring_Ring:
         cameras = list()
         if self.args.vis_path is not None:
             cameras.append(self.scene.add_camera(
-                res=(1200, 900), pos=(-1.6, 1.0, 1.4), up=(0, 0, 1),
-                lookat=(0.3, 0., 0), fov=24, GUI=False
+                res=(600, 450), pos=(0.5, 1.5, 1.), up=(0, 0, 1),
+                lookat=(0.3, 0., 0), fov=30, GUI=False
             ))
             cameras.append(self.scene.add_camera(
-                res=(1200, 900), pos=(-1, -0.8, 1.4), up=(0, 0, 1),
-                lookat=(0.2, 0., 0), fov=20, GUI=False
+                res=(600, 450), pos=(0.5, -1.5, 1.), up=(0, 0, 1),
+                lookat=(0.3, 0., 0), fov=30, GUI=False
             ))
 
         self.cameras = cameras
@@ -382,7 +339,7 @@ class Train_GD_Wiring_Ring:
 def main():
     args = arg_parser()
 
-    trainer = Train_GD_Wiring_Ring(args)
+    trainer = Train_GD_Separation(args)
     trainer.train()
 
 

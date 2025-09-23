@@ -32,12 +32,12 @@ def arg_parser():
                         choices=[None, 'linear', 'exp', 'custom'])
     parser.add_argument('--show_gui', action='store_true')
     parser.add_argument('--vis_path', type=str, default=None)
-    parser.add_argument('--log_dir', type=str, default='logs/wiring_ring_gd')
+    parser.add_argument('--log_dir', type=str, default='logs/wireart_gd')
     parser.add_argument('--debug', action='store_true')
     return parser.parse_args()
 
 
-class Train_GD_Wiring_Ring:
+class Train_GD_Wire_Art:
     def __init__(self, args):
         self.args = args
 
@@ -71,7 +71,7 @@ class Train_GD_Wiring_Ring:
         self.construct_scene()
         self.construct_cameras()
 
-        self.control_idx = [11, 30]
+        self.control_idx = [1, 43]
 
         self.c = TrajOptim(
             self.scene, self.rope,
@@ -143,8 +143,8 @@ class Train_GD_Wiring_Ring:
         print(f'Max moving distance {self.args.max_ddist}x{self.args.n_steps}={self.args.max_ddist * self.args.n_steps} m for each control point')
 
         # NOTE: assume running from "examples/rod"
-        self.target_pos = np.load("target_pos/wiring_ring_finalpos.npy")
-        print(f'Loaded target pos from "wiring_ring_finalpos.npy", shape = {self.target_pos.shape}')
+        self.target_pos = np.load("target_pos/plasticity_finalpos.npy")
+        print(f'Loaded target pos from "plasticity_finalpos.npy", shape = {self.target_pos.shape}')
 
     def loss_criterion(self, state):
         # (n_envs, n_verts, 3), torch tensor
@@ -198,10 +198,11 @@ class Train_GD_Wiring_Ring:
         fixed_np[:, self.control_idx] = True
         self.rope.set_fixed(0, fixed_np)
 
-        fixed_ring1_np = np.ones((self.args.n_envs, self.ring1.n_vertices), dtype=bool)
-        self.ring1.set_fixed(0, fixed_ring1_np)
-        fixed_ring2_np = np.ones((self.args.n_envs, self.ring2.n_vertices), dtype=bool)
-        self.ring2.set_fixed(0, fixed_ring2_np)
+        # Also fix all vertices of the rings
+        fixed_b1_np = np.ones((self.args.n_envs, self.b1.n_vertices), dtype=bool)
+        self.b1.set_fixed(0, fixed_b1_np)
+        fixed_b2_np = np.ones((self.args.n_envs, self.b2.n_vertices), dtype=bool)
+        self.b2.set_fixed(0, fixed_b2_np)
 
         loss = 0.
 
@@ -273,7 +274,6 @@ class Train_GD_Wiring_Ring:
                     f.write('iter,loss,reward\n')
                 f.write(f'{it},{info[it]["loss"]:.6f},{max(info[it]["reward"]):.6f}\n')
 
-
         if self.args.vis_path is not None:
             for cid in self.frames:
                 mediapy.write_video(
@@ -296,42 +296,40 @@ class Train_GD_Wiring_Ring:
             material=gs.materials.ROD.Base(
                 segment_radius=segment_radius,
                 segment_mass=0.001,
-                # K=1e5,
-                E=1e3,
-                G=1e3,
-                # use_inextensible=False
+                E=1e4,
+                G=0,
+                plastic_yield=0.2,
+                plastic_creep=0.9,
             ),
             morph=gs.morphs.ParameterizedRod(
                 type="rod",
-                n_vertices=60,
-                interval=0.01,
+                n_vertices=45,
+                interval=0.02,
                 axis="x",
-                pos=(0.3, 0.0, 0.02),
+                pos=(-0.04, 0.0, 0.02),
                 euler=(0, 0, 0),
             ),
             surface=gs.surfaces.Default(
-                # color=(0.4, 1.0, 0.4),
-                diffuse_texture=gs.textures.ImageTexture(
-                    image_path="textures/rope01.png",
-                ),
+                color=(0.4, 1.0, 0.4),
                 vis_mode='recon',
             )
         )
 
-        self.ring1 = self.scene.add_entity(
+        self.b1 = self.scene.add_entity(
             material=gs.materials.ROD.Base(
-                segment_radius=0.008,
+                segment_radius=0.006,
                 static_friction=0.1,
                 kinetic_friction=0.08,
             ),
             morph=gs.morphs.ParameterizedRod(
                 type="circle",
-                n_vertices=24,
-                radius=0.04,
+                n_vertices=16,
+                radius=0.032,
                 axis="y",
-                pos=(0.27, 0.0, 0.008),
-                euler=(-30, 0, 0),
+                pos=(0.28, 0.0, 0.006),
+                euler=(-15, 0, 0),
                 gap=1,
+                fixed=True,
             ),
             surface=gs.surfaces.Default(
                 color=(0.4, 0.4, 0.4),
@@ -339,20 +337,21 @@ class Train_GD_Wiring_Ring:
             )
         )
 
-        self.ring2 = self.scene.add_entity(
+        self.b2 = self.scene.add_entity(
             material=gs.materials.ROD.Base(
-                segment_radius=0.008,
+                segment_radius=0.006,
                 static_friction=0.1,
                 kinetic_friction=0.08,
             ),
             morph=gs.morphs.ParameterizedRod(
                 type="circle",
-                n_vertices=24,
-                radius=0.04,
+                n_vertices=16,
+                radius=0.032,
                 axis="y",
-                pos=(0.09, -0.27, 0.008),
-                euler=(-30, 0, 90),
+                pos=(0.56, 0.0, 0.006),
+                euler=(-15, 0, 0),
                 gap=1,
+                fixed=True,
             ),
             surface=gs.surfaces.Default(
                 color=(0.4, 0.4, 0.4),
@@ -368,12 +367,12 @@ class Train_GD_Wiring_Ring:
         cameras = list()
         if self.args.vis_path is not None:
             cameras.append(self.scene.add_camera(
-                res=(1200, 900), pos=(-1.6, 1.0, 1.4), up=(0, 0, 1),
-                lookat=(0.3, 0., 0), fov=24, GUI=False
+                res=(600, 450), pos=(-1.2, 0.8, 1.0), up=(0, 0, 1),
+                lookat=(0.6, 0.3, 0), fov=30, GUI=False
             ))
             cameras.append(self.scene.add_camera(
-                res=(1200, 900), pos=(-1, -0.8, 1.4), up=(0, 0, 1),
-                lookat=(0.2, 0., 0), fov=20, GUI=False
+                res=(600, 450), pos=(-0.2, -1.5, 0.6), up=(0, 0, 1),
+                lookat=(0.45, 0.3, 0), fov=30, GUI=False
             ))
 
         self.cameras = cameras
@@ -382,7 +381,7 @@ class Train_GD_Wiring_Ring:
 def main():
     args = arg_parser()
 
-    trainer = Train_GD_Wiring_Ring(args)
+    trainer = Train_GD_Wire_Art(args)
     trainer.train()
 
 

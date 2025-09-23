@@ -32,7 +32,7 @@ def arg_parser():
                         choices=[None, 'linear', 'exp', 'custom'])
     parser.add_argument('--show_gui', action='store_true')
     parser.add_argument('--vis_path', type=str, default=None)
-    parser.add_argument('--log_dir', type=str, default='logs/coiling')
+    parser.add_argument('--log_dir', type=str, default='logs/coiling_gd')
     parser.add_argument('--debug', action='store_true')
     return parser.parse_args()
 
@@ -125,8 +125,11 @@ class Train_GD_Coiling:
                         print(f'Loaded existing Adam state from {adam_path}, iter={self.c.iter}')
                     else:
                         print(f'No existing Adam state found at {adam_path}. Starting Adam fresh.')
-
-            print(f'Resumed from existing log dir: {self.log_dir}, will start from iter {self.iter_start}')
+                
+                print(f'Resumed from existing log dir: {self.log_dir}, will start from iter {self.iter_start}')
+            else:
+                self.iter_start = 0
+                print(f'No existing traj found in {self.log_dir}. Starting from scratch.')
 
         else:
             os.makedirs(self.log_dir, exist_ok=True)
