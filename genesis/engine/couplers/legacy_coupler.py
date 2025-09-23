@@ -297,10 +297,8 @@ class LegacyCoupler(RBC):
             # tangential component
             rvel_tan = rvel - rvel_normal_magnitude * normal_rigid
             # make the vertex kinematic during rod-rigid contact
-            if self.rod_solver._func_is_geom_idx_registered(geom_idx):
-                self.rod_solver.vertices_ng[f, i, batch_idx].is_kinematic = True
-                rvel_tan = rvel_tan * (1 - influence * self.rigid_solver.geoms_info.coup_friction[geom_idx])
-            else:
+            if self.sim.requires_grad:
+                # TODO: temporarily workaround for differentiability
                 rvel_tan_norm = rvel_tan.norm(gs.EPS)
                 rvel_tan = (
                     rvel_tan
@@ -309,6 +307,19 @@ class LegacyCoupler(RBC):
                         0, rvel_tan_norm + rvel_normal_magnitude * self.rigid_solver.geoms_info.coup_friction[geom_idx]
                     )
                 )
+            else:
+                if self.rod_solver._func_is_geom_idx_registered(geom_idx):
+                    self.rod_solver.vertices_ng[f, i, batch_idx].is_kinematic = True
+                    rvel_tan = rvel_tan * (1 - influence * self.rigid_solver.geoms_info.coup_friction[geom_idx])
+                else:
+                    rvel_tan_norm = rvel_tan.norm(gs.EPS)
+                    rvel_tan = (
+                        rvel_tan
+                        / rvel_tan_norm
+                        * ti.max(
+                            0, rvel_tan_norm + rvel_normal_magnitude * self.rigid_solver.geoms_info.coup_friction[geom_idx]
+                        )
+                    )
 
             # normal component after collision
             rvel_normal = (
@@ -929,6 +940,9 @@ class LegacyCoupler(RBC):
 
         if self.fem_solver.is_active():
             self.fem_surface_force.grad(f)
+
+        if self.rod_solver.is_active():
+            self.rod_vertex_force.grad(f)
 
     @property
     def active_solvers(self):

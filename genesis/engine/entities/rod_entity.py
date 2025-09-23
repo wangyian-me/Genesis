@@ -1,6 +1,7 @@
 import numpy as np
 import gstaichi as ti
 
+import torch
 import genesis as gs
 import genesis.utils.geom as gu
 from genesis.engine.states.cache import QueriedStates
@@ -924,6 +925,17 @@ class RodEntity(Entity):
             # "scene": self.scene,
         }
         pos = np.zeros(base_v_shape, **args)
+        self.get_all_verts_kernel(pos)
+        return pos
+
+    def get_all_verts_tc(self, requires_grad=False):
+        base_v_shape = (self.sim._B, self.n_vertices, 3)
+        args = {
+            "dtype": gs.tc_float,
+            "requires_grad": requires_grad,
+            # "scene": self.scene,
+        }
+        pos = torch.zeros(base_v_shape, **args)
         self.get_all_verts_kernel(pos)
         return pos
 

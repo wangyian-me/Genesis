@@ -4,6 +4,7 @@ import gstaichi as ti
 import genesis.utils.geom as gu
 
 from genesis.engine.entities import RodEntity
+from genesis.utils.misc import to_gs_tensor
 
 class RobotController:
     def __init__(
@@ -223,7 +224,9 @@ class DLOControllerOptim:
         grasp_point_ids,
         n_stages=10,
         n_optim_dofs=3,
-        max_d_pos=0.05,
+        max_ddist=0.05,
+        use_adam=False,
+        adam_config=None,
         debug=False
     ):
         self.scene = scene
@@ -234,19 +237,135 @@ class DLOControllerOptim:
         self.traj = torch.zeros(
             size=(self.scene.n_envs, n_stages, self.n_grasp_points, n_optim_dofs), dtype=gs.tc_float
         )
+
+        # for Adam optimizer
+        self.use_adam = use_adam
+        if self.use_adam:
+            self.m_buffer = torch.zeros_like(self.traj)
+            self.v_buffer = torch.zeros_like(self.traj)
+            self.iter = 0
+            if adam_config is None:
+                adam_config = {
+                    "beta1": 0.9,
+                    "beta2": 0.99,
+                    "eps": 1e-8,
+                }
+            else:
+                if "beta1" not in adam_config:
+                    adam_config["beta1"] = 0.9
+                if "beta2" not in adam_config:
+                    adam_config["beta2"] = 0.99
+                if "eps" not in adam_config:
+                    adam_config["eps"] = 1e-8
+            self.adam_config = adam_config
+
         self.n_stages = n_stages
         self.n_optim_dofs = n_optim_dofs
-        self.max_d_pos = max_d_pos
+        self.max_ddist = max_ddist
 
         self.debug = debug
         self.debug_point_nodes = list()
 
-    def gather_grad(self, grad, stage_idx, lr=0.01):
+    def apply_grad(self, stage_idx):
+        expected_pos = self.rod.get_all_verts()
+        expected_pos = torch.tensor(expected_pos, dtype=self.traj.dtype, device=self.traj.device)
+        dpos = self.traj[:, stage_idx, :, :]
+        ddist = torch.linalg.norm(dpos, dim=-1)
+        weight = self.max_ddist / (ddist + gs.EPS)
+        dpos_ = dpos * torch.minimum(weight, torch.ones_like(weight))[:, :, None]
+        # dpos_ = torch.clamp(dpos, -self.max_ddist, self.max_ddist)
+        expected_pos[:, self.grasp_point_ids, :] = expected_pos[:, self.grasp_point_ids, :] + dpos_
+
+        for batch_idx in range(self.scene.n_envs):
+            offset = self.scene.envs_offset[batch_idx]
+            offset = torch.as_tensor(offset, dtype=self.traj.dtype, device=self.traj.device)
+            if self.debug:
+                for i in self.debug_point_nodes:
+                    self.scene.clear_debug_object(i)
+                self.debug_point_nodes = list()
+                for i in self.grasp_point_ids:
+                    self.debug_point_nodes.append(self.scene.draw_debug_sphere(
+                        pos=expected_pos[batch_idx, i] + offset,
+                        radius=0.01
+                    ))
+
+        # if stage_idx == self.n_stages - 1:
+        #     print(f'stage_idx: {stage_idx}, expected_pos {expected_pos.shape}')
+        #     print('original pos')
+        #     print(self.rod.get_all_verts()[0, self.grasp_point_ids, :])
+        #     print(f'expected pos after adding dpos:')
+        #     print(expected_pos[batch_idx, self.grasp_point_ids, :])
+        #     print('dpos before clamp:')
+        #     print(dpos)
+        #     print('dpos after clamp:')
+        #     print(dpos_)
+        self.rod.set_position(expected_pos)
+
+    def pre_apply_grad(self, stage_idx, num_horizons=1):
+        # compute delta pos for this stage, and then distribute to each horizon step within this stage
+        dpos = self.traj[:, stage_idx, :, :]
+        ddist = torch.linalg.norm(dpos, dim=-1)
+        weight = self.max_ddist / (ddist + gs.EPS)
+        dpos_ = dpos * torch.minimum(weight, torch.ones_like(weight))[:, :, None]
+        # print(f'dpos before clamp: {dpos}')
+        # print(f'dpos after clamp: {dpos_}')
+
+        expected_pos = self.rod.get_all_verts_tc()
+
+        if self.debug:
+            debug_pos = expected_pos[:, self.grasp_point_ids, :] + dpos_
+            debug_pos = debug_pos.clone().detach().cpu().numpy()
+            for batch_idx in range(self.scene.n_envs):
+                offset = self.scene.envs_offset[batch_idx]
+                for i in self.debug_point_nodes:
+                    self.scene.clear_debug_object(i)
+                self.debug_point_nodes = list()
+                for i in range(self.n_grasp_points):
+                    self.debug_point_nodes.append(self.scene.draw_debug_sphere(
+                        pos=debug_pos[batch_idx, i] + offset,
+                        radius=0.016,
+                        color=(1.0, 0.0, 0.0, 0.6)
+                    ))
+
+        target_pos_list = list()
+        current_pos = expected_pos.clone()
+        for i in range(num_horizons):
+            alpha = (i + 1) / num_horizons
+            expected_pos[:, self.grasp_point_ids, :] = current_pos[:, self.grasp_point_ids, :] + alpha * dpos_
+            target_pos_list.append(expected_pos)
+
+        return target_pos_list, dpos_
+
+    def on_apply_grad(self, target_pos):
+        self.rod.set_position(target_pos)
+
+    def gather_grad(self, stage_idx, horizon_idx, lr=0.01):
+        grad = self.rod._queried_states[horizon_idx][0].pos.grad
+
         # [n_envs, n_grasp_points, 3]
         contact_grad = grad[:, self.grasp_point_ids, :]
+        # replace NaN or Inf with 0
+        contact_grad = torch.where(torch.isnan(contact_grad), torch.zeros_like(contact_grad), contact_grad)
+        contact_grad = torch.where(torch.isinf(contact_grad), torch.zeros_like(contact_grad), contact_grad)
 
-        d_pos = -lr * contact_grad
-        d_pos = torch.clamp(d_pos, -self.max_d_pos, self.max_d_pos)
-        # print(f'stage_idx: {stage_idx}, dpos x: {d_pos[0,0]}')
+        if self.use_adam:
+            # Adam
+            beta1 = self.adam_config["beta1"]
+            beta2 = self.adam_config["beta2"]
+            eps = self.adam_config["eps"]
+
+            m_t = beta1 * self.m_buffer[:, stage_idx, :, :] + (1 - beta1) * contact_grad
+            v_t = beta2 * self.v_buffer[:, stage_idx, :, :] + (1 - beta2) * (contact_grad ** 2)
+            self.m_buffer[:, stage_idx, :, :] = m_t
+            self.v_buffer[:, stage_idx, :, :] = v_t
+
+            m_cap = m_t / (1 - beta1 ** (self.iter + 1))
+            v_cap = v_t / (1 - beta2 ** (self.iter + 1))
+            
+            d_pos = -lr * m_cap / (torch.sqrt(v_cap) + eps)
+            self.iter += 1
+        else:
+            # SGD
+            d_pos = -lr * contact_grad
 
         self.traj[:, stage_idx, :, :] += d_pos
