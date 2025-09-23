@@ -165,11 +165,10 @@ class Train_GD_Wrapping:
         verts_b  = verts_batch[:, None, :, :].expand(E, S, N, 3)
         D = torch.linalg.norm(circle_b - verts_b, dim=-1)  # (E, S, N)
 
-        nearest = D.min(dim=2).values          # (E, S)
-        worst_gap = nearest.max(dim=1).values  # (E,)
-        loss = worst_gap
+        nearest = D.min(dim=1).values          # (E, N)
+        gap = nearest.mean(dim=1)              # (E,)
 
-        return loss
+        return gap
 
     def loss_above_plane(self, state):
         # Required loss to make sure the vertices above the plane
