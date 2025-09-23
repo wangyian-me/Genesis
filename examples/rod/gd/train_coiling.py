@@ -188,6 +188,8 @@ class Train_GD_Coiling:
         self.rope.set_fixed(0, fixed_np)
 
         loss = 0.
+        local_best_reward = -float('inf')
+        local_best_step = -1
 
         for i in range(self.args.n_steps):
             local_loss = 0.
@@ -211,6 +213,11 @@ class Train_GD_Coiling:
 
             loss += scale * local_loss
 
+            r_ = self.reward()
+            if max(r_) > local_best_reward:
+                local_best_reward = max(r_)
+                local_best_step = i
+
         loss.backward()
 
         for stage_idx, horizon_idx in enumerate(horizon_ids):
@@ -223,6 +230,8 @@ class Train_GD_Coiling:
         out = dict()
         out['loss'] = loss.item()
         out['reward'] = self.reward()
+        out['local_best_reward'] = local_best_reward
+        out['local_best_step'] = local_best_step
         out['iter_time'] = time.time() - start_time
 
         return out
@@ -255,8 +264,8 @@ class Train_GD_Coiling:
             # write csv
             with open(os.path.join(self.log_dir, 'train_log.csv'), 'a') as f:
                 if it == 0 and self.iter_start == 0:
-                    f.write('iter,loss,reward,iter_time\n')
-                f.write(f'{it},{info[it]["loss"]:.6f},{max(info[it]["reward"]):.6f},{info[it]["iter_time"]:.1f}\n')
+                    f.write('iter,loss,reward,best_reward_could_achieve,best_step,iter_time\n')
+                f.write(f'{it},{info[it]["loss"]:.6f},{max(info[it]["reward"]):.6f},{info[it]["local_best_reward"]:.6f},{info[it]["local_best_step"]},{info[it]["iter_time"]:.1f}\n')
 
         if self.args.vis_path is not None:
             for cid in self.frames:
