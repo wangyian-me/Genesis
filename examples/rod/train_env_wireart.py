@@ -150,6 +150,12 @@ class Train_Env_Wireart(Train_Env):
         fixed_np[:, self.control_idx] = True
         self.rope.set_fixed(0, fixed_np)
 
+        # Also fix all vertices of the rings
+        fixed_b1_np = np.ones((self.n_envs, self.b1.n_vertices), dtype=bool)
+        self.b1.set_fixed(0, fixed_b1_np)
+        fixed_b2_np = np.ones((self.n_envs, self.b2.n_vertices), dtype=bool)
+        self.b2.set_fixed(0, fixed_b2_np)
+
         steps_interval = 250
         total_micro_steps = int(n_steps * steps_interval)
         if total_micro_steps <= 0:

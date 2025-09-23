@@ -51,7 +51,7 @@ class Train_Env_Coiling(Train_Env):
                 file="meshes/cone.obj",
                 pos=(0, 0, 0.15),
                 scale=(5, 5, 3),
-                # fixed=True,
+                fixed=True,
             ),
             surface=gs.surfaces.Default(
                 color=(1.0, 1.0, 1.0),

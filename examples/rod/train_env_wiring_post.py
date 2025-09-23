@@ -60,6 +60,7 @@ class Train_Env_Wiring_post(Train_Env):
                 axis="z",
                 pos=(0.245, 0.14, -0.02),
                 euler=(0, 0, 0),
+                fixed=True,
             ),
             surface=gs.surfaces.Default(
                 color=(0.4, 0.4, 0.4)
@@ -77,6 +78,7 @@ class Train_Env_Wiring_post(Train_Env):
                 axis="z",
                 pos=(0.1, 0.275, -0.02),
                 euler=(0, 0, 0),
+                fixed=True,
             ),
             surface=gs.surfaces.Default(
                 color=(0.4, 0.4, 0.4)
@@ -139,6 +141,11 @@ class Train_Env_Wiring_post(Train_Env):
         fixed_np = np.zeros((self.n_envs, self.rope.n_vertices), dtype=bool)
         fixed_np[:, self.control_idx] = True
         self.rope.set_fixed(0, fixed_np)
+
+        fixed_stick1_np = np.ones((self.n_envs, self.stick1.n_vertices), dtype=bool)
+        self.stick1.set_fixed(0, fixed_stick1_np)
+        fixed_stick2_np = np.ones((self.n_envs, self.stick2.n_vertices), dtype=bool)
+        self.stick2.set_fixed(0, fixed_stick2_np)
 
         steps_interval = 250
         total_micro_steps = int(n_steps * steps_interval)

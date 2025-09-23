@@ -164,6 +164,7 @@ class Train_Env_Slingshot(Train_Env):
         self.scene.reset()
         fixed_np = np.zeros((self.n_envs, self.rope.n_vertices), dtype=bool)
         fixed_np[:, self.control_idx] = True
+        fixed_np[:, [0, 1, 10, 11]] = True  # also fix the two ends
         self.rope.set_fixed(0, fixed_np)
 
         steps_interval = 250
@@ -242,7 +243,10 @@ class Train_Env_Slingshot(Train_Env):
                     alive[newly_nan_after] = False
 
         fixed_np = np.zeros((self.n_envs, self.rope.n_vertices), dtype=bool)
-        self.rope.set_fixed(0, fixed_np)    # release all
+        # now we only fix the two ends
+        self.rope.set_fixed_states(
+            fixed_ids=[0, 1, 10, 11]
+        )
 
         for _ in range(500):
             self.scene.step()

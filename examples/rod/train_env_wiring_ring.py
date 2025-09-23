@@ -66,7 +66,6 @@ class Train_Env_Wiring_ring(Train_Env):
                 pos=(0.27, 0.0, 0.008),
                 euler=(-30, 0, 0),
                 gap=1,
-                fixed=True,
             ),
             surface=gs.surfaces.Default(
                 color=(0.4, 0.4, 0.4),
@@ -88,7 +87,6 @@ class Train_Env_Wiring_ring(Train_Env):
                 pos=(0.09, -0.27, 0.008),
                 euler=(-30, 0, 90),
                 gap=1,
-                fixed=True,
             ),
             surface=gs.surfaces.Default(
                 color=(0.4, 0.4, 0.4),
@@ -152,6 +150,11 @@ class Train_Env_Wiring_ring(Train_Env):
         fixed_np = np.zeros((self.n_envs, self.rope.n_vertices), dtype=bool)
         fixed_np[:, self.control_idx] = True
         self.rope.set_fixed(0, fixed_np)
+
+        fixed_ring1_np = np.ones((self.n_envs, self.ring1.n_vertices), dtype=bool)
+        self.ring1.set_fixed(0, fixed_ring1_np)
+        fixed_ring2_np = np.ones((self.n_envs, self.ring2.n_vertices), dtype=bool)
+        self.ring2.set_fixed(0, fixed_ring2_np)
 
         steps_interval = 250
         total_micro_steps = int(n_steps * steps_interval)
