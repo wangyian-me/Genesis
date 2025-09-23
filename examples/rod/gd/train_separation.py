@@ -3,7 +3,7 @@
 import argparse
 import mediapy
 import os
-import json
+import time
 import torch
 import numpy as np
 import genesis as gs
@@ -187,6 +187,7 @@ class Train_GD_Separation:
         return rewards.tolist()
 
     def train_one_iter(self):
+        start_time = time.time()
         total_horizon = 0
         horizon_ids = list()
         self.scene.reset()
@@ -231,6 +232,7 @@ class Train_GD_Separation:
         out = dict()
         out['loss'] = loss.item()
         out['reward'] = self.reward()
+        out['iter_time'] = time.time() - start_time
 
         return out
 
@@ -240,7 +242,7 @@ class Train_GD_Separation:
 
         for it in range(self.iter_start, self.args.n_iters):
             out = self.train_one_iter()
-            print(f'Iter {it}: loss={out["loss"]:.6f}')
+            print(f'Iter {it}: loss={out["loss"]:.6f} elapsed={out["iter_time"]:.1f}s reward={max(out["reward"]):.6f}')
             info[it] = out
 
             iter_max_reward = max(out['reward'])
@@ -262,8 +264,8 @@ class Train_GD_Separation:
             # write csv
             with open(os.path.join(self.log_dir, 'train_log.csv'), 'a') as f:
                 if it == 0 and self.iter_start == 0:
-                    f.write('iter,loss,reward\n')
-                f.write(f'{it},{info[it]["loss"]:.6f},{max(info[it]["reward"]):.6f}\n')
+                    f.write('iter,loss,reward,iter_time\n')
+                f.write(f'{it},{info[it]["loss"]:.6f},{max(info[it]["reward"]):.6f},{info[it]["iter_time"]:.1f}\n')
 
         if self.args.vis_path is not None:
             for cid in self.frames:

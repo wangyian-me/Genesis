@@ -31,6 +31,7 @@ class TrajOptim:
         n_stages=10,
         n_optim_dofs=3,
         max_ddist=0.05,
+        max_grad_norm=1000.,
         use_adam=False,
         adam_config=None,
         debug=False
@@ -68,6 +69,7 @@ class TrajOptim:
         self.n_stages = n_stages
         self.n_optim_dofs = n_optim_dofs
         self.max_ddist = max_ddist
+        self.max_grad_norm = max_grad_norm
 
         self.debug = debug
         self.debug_point_nodes = list()
@@ -119,6 +121,11 @@ class TrajOptim:
         # replace NaN or Inf with 0
         contact_grad = torch.where(torch.isnan(contact_grad), torch.zeros_like(contact_grad), contact_grad)
         contact_grad = torch.where(torch.isinf(contact_grad), torch.zeros_like(contact_grad), contact_grad)
+
+        # clip gradient
+        grad_norm = torch.linalg.norm(contact_grad, dim=-1)
+        weight = self.max_grad_norm / (grad_norm + gs.EPS)
+        contact_grad = contact_grad * torch.minimum(weight, torch.ones_like(weight))[:, :, None]
 
         if self.use_adam:
             # Adam
