@@ -87,8 +87,7 @@ def mesh_from_centerline(
     rings_out = []
 
     for i in range(len(tangents)):
-        p_start = verts[i]
-        p_end = verts[(i + 1) % N]
+        p_start, p_end = verts[i], verts[(i + 1) % N]
         r_start, r_end = radii[i], radii[(i + 1) % N]
         normal, binormal = basis_list[i]
 
@@ -135,52 +134,57 @@ def mesh_from_centerline(
         ring_v_indices_in = rings_out[idx_in]
         ring_v_indices_out = rings_in[idx_out]
         
-        if smooth_joints and joint_segs > 0:
+        # if smooth_joints and joint_segs > 0:
+        if smooth_joints:
             center, radius = verts[i], radii[i]
             
             p_in_vectors = V_array[ring_v_indices_in] - center
             p_in_vectors /= np.linalg.norm(p_in_vectors, axis=1, keepdims=True)
             p_out_vectors = V_array[ring_v_indices_out] - center
             p_out_vectors /= np.linalg.norm(p_out_vectors, axis=1, keepdims=True)
+            p_aver_vectors = (p_in_vectors + p_out_vectors) / 2
 
-            V_array[ring_v_indices_in] = center + radius * p_in_vectors
-            V_array[ring_v_indices_out] = center + radius * p_out_vectors
+            V_array[ring_v_indices_in] = center + radius * p_aver_vectors
+            V_array[ring_v_indices_out] = center + radius * p_aver_vectors
             
-            omega = np.arccos(np.clip(np.dot(p_in_vectors[0], p_out_vectors[0]), -1, 1))
-
-            if omega < 1e-6 or np.isnan(omega) or abs(omega-np.pi) < 1e-6:
-                for j in range(radial_segs): # Fallback: connect rings directly
-                    a,b,c,d = ring_v_indices_in[j], ring_v_indices_in[(j+1)%radial_segs], ring_v_indices_out[j], ring_v_indices_out[(j+1)%radial_segs]
-                    new_faces_for_joins.extend([[a, b, c], [d, c, b]])
-                continue
+            # omega = np.arccos(np.clip(np.dot(p_in_vectors[0], p_out_vectors[0]), -1, 1))
+            # omegas.append(omega)
+            # if omega < 1e-6 or np.isnan(omega) or abs(omega-np.pi) < 1e-6:
+            #     for j in range(radial_segs): # Fallback: connect rings directly
+            #         a = ring_v_indices_in[j]
+            #         b = ring_v_indices_in[(j + 1) % radial_segs]
+            #         c = ring_v_indices_out[j]
+            #         d = ring_v_indices_out[(j + 1) % radial_segs]
+            #         new_faces_for_joins.extend([[a, b, c], [d, c, b]])
+            #     continue
             
-            sin_omega = np.sin(omega)
-            all_rings_indices = [ring_v_indices_in]
-            base_v_idx = len(V_array) + len(new_verts_for_joins)
+            # sin_omega = np.sin(omega)
+            # all_rings_indices = [ring_v_indices_in]
+            # base_v_idx = len(V_array) + len(new_verts_for_joins)
 
-            for k in range(1, joint_segs):
-                t = float(k) / joint_segs
-                current_ring_indices = []
-                for j in range(radial_segs):
-                    slerp_vec = (np.sin((1-t)*omega)/sin_omega) * p_in_vectors[j] + (np.sin(t*omega)/sin_omega) * p_out_vectors[j]
-                    new_verts_for_joins.append(center + radius * slerp_vec)
-                    current_ring_indices.append(base_v_idx)
-                    base_v_idx += 1
+            # for k in range(1, joint_segs):
+            #     t = float(k) / joint_segs
+            #     current_ring_indices = []
+            #     for j in range(radial_segs):
+            #         slerp_vec = (np.sin((1-t)*omega)/sin_omega) * p_in_vectors[j] + (np.sin(t*omega)/sin_omega) * p_out_vectors[j]
+            #         new_verts_for_joins.append(center + radius * slerp_vec)
+            #         current_ring_indices.append(base_v_idx)
+            #         base_v_idx += 1
                     
-                    u = j / (radial_segs // 2)
-                    u = 2 - u if u > 1 else u
-                    # v = i / max(1, len(tangents) - 1) if not is_loop else i / len(tangents)
-                    v = i
-                    new_uvs_for_joins.append([u, v])
+            #         u = j / (radial_segs // 2)
+            #         u = 2 - u if u > 1 else u
+            #         # v = i / max(1, len(tangents) - 1) if not is_loop else i / len(tangents)
+            #         v = i
+            #         new_uvs_for_joins.append([u, v])
                     
-                all_rings_indices.append(current_ring_indices)
-            all_rings_indices.append(ring_v_indices_out)
+            #     all_rings_indices.append(current_ring_indices)
+            # all_rings_indices.append(ring_v_indices_out)
 
-            for k in range(len(all_rings_indices) - 1):
-                ring_A, ring_B = all_rings_indices[k], all_rings_indices[k+1]
-                for j in range(radial_segs):
-                    a,b,c,d = ring_A[j], ring_A[(j+1)%radial_segs], ring_B[j], ring_B[(j+1)%radial_segs]
-                    new_faces_for_joins.extend([[a, b, c], [d, c, b]])
+            # for k in range(len(all_rings_indices) - 1):
+            #     ring_A, ring_B = all_rings_indices[k], all_rings_indices[k+1]
+            #     for j in range(radial_segs):
+            #         a,b,c,d = ring_A[j], ring_A[(j+1)%radial_segs], ring_B[j], ring_B[(j+1)%radial_segs]
+            #         new_faces_for_joins.extend([[a, b, c], [d, c, b]])
         else: # Miter join
             t_in, t_out = -tangents[idx_in], tangents[idx_out]
             miter_normal = t_in + t_out
@@ -191,7 +195,7 @@ def mesh_from_centerline(
                 dist = np.dot(p - verts[i], miter_normal)
                 V_array[v_idx] = p - dist * miter_normal
             for j in range(radial_segs): V_array[ring_v_indices_out[j]] = V_array[ring_v_indices_in[j]]
-    
+
     if new_verts_for_joins:
         V_array = np.vstack([V_array, np.array(new_verts_for_joins)])
     V_list = V_array.tolist()

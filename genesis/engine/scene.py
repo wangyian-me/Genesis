@@ -407,7 +407,8 @@ class Scene(RBC):
                 )
 
         elif isinstance(material, (gs.materials.ROD.Base)):
-            surface.vis_mode = "recon"
+            if surface.vis_mode is None:
+                surface.vis_mode = "recon"
 
         else:
             gs.raise_exception()
