@@ -510,11 +510,6 @@ class RodEntity(Entity):
             self._tgt["omega"].assert_sceneless()
             self.set_omega(self._sim.cur_substep_local, self._tgt["omega"])
 
-        # clear kinematic states
-        self._solver._kernel_clear_kinematic_states_all_substeps()
-        # clear contact states
-        self._solver._kernel_clear_contact_states_all_substeps()
-
         for key in self._tgt_keys:
             self._tgt[key] = None
 

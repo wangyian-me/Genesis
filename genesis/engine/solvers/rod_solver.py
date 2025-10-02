@@ -224,7 +224,6 @@ class RodSolver(Solver):
         struct_vertex_state_ng = ti.types.struct(
             fixed=gs.ti_bool,           # is the vertex fixed
             is_kinematic=gs.ti_bool,    # is the vertex kinematic
-            is_collided=gs.ti_bool,
         )
 
         self.vertices_info = struct_vertex_info.field(
@@ -247,6 +246,12 @@ class RodSolver(Solver):
             shape=self._batch_shape((self.sim.substeps_local + 1, self._n_vertices)),
             needs_grad=False,
             layout=ti.Layout.SOA
+        )
+
+        # for RL training
+        self.vertices_collided = ti.field(
+            dtype=gs.ti_bool, needs_grad=False,
+            shape=self._batch_shape(self._n_vertices)
         )
 
         # for visualization
@@ -605,11 +610,6 @@ class RodSolver(Solver):
             self.vertices[f + 1, i_v, i_b].vert = self.vertices[f, i_v, i_b].vert
             self.vertices[f + 1, i_v, i_b].vel = self.vertices[f, i_v, i_b].vel
 
-    @ti.kernel 
-    def clear_collision_record(self):
-        for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
-            self.vertices_ng[0, i_v, i_b].is_collided = False
-
     @ti.kernel
     def init_theta_and_omega(self, f: ti.i32):     # Differential
         for i_e, i_b in ti.ndrange(self._n_edges, self._B):
@@ -815,6 +815,13 @@ class RodSolver(Solver):
     # ------------------------------------------------------------------------------------
 
     def process_input(self, in_backward=False):
+        # clear kinematic states
+        self._kernel_clear_kinematic_states_all_substeps()
+        # clear contact states
+        self._kernel_clear_contact_states_all_substeps()
+        # clear collision states
+        self._kernel_clear_collision_states()
+
         for entity in self._entities:
             entity.process_input(in_backward=in_backward)
 
@@ -832,8 +839,6 @@ class RodSolver(Solver):
             self.compute_twisting_energy(f)
             self.update_centerline_velocities(f)
             self.update_angular_velocities(f)
-            if f == 0:
-                self.clear_collision_record()
 
     def substep_pre_coupling_grad(self, f):
         if self.is_active():
@@ -1726,6 +1731,11 @@ class RodSolver(Solver):
     def _kernel_clear_kinematic_states_all_substeps(self):
         for i_f, i_v, i_b in ti.ndrange(self._sim.substeps_local, self._n_vertices, self._B):
             self.vertices_ng[i_f, i_v, i_b].is_kinematic = False
+
+    @ti.kernel
+    def _kernel_clear_collision_states(self):
+        for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
+            self.vertices_collided[i_v, i_b] = False
 
     @ti.kernel
     def _kernel_apply_inextensibility_constraints(self, f: ti.i32):
