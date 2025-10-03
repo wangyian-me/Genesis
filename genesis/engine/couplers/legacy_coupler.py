@@ -50,6 +50,7 @@ class LegacyCoupler(RBC):
         self._mpm_pbd = self.mpm_solver.is_active() and self.pbd_solver.is_active() and self.options.mpm_pbd
         self._fem_mpm = self.fem_solver.is_active() and self.mpm_solver.is_active() and self.options.fem_mpm
         self._fem_sph = self.fem_solver.is_active() and self.sph_solver.is_active() and self.options.fem_sph
+        self._rod_mpm = self.rod_solver.is_active() and self.mpm_solver.is_active() and self.options.rod_mpm
 
         if self._rigid_mpm and self.mpm_solver.enable_CPIC:
             # this field stores the geom index of the thin shell rigid object (if any) that separates particle and its surrounding grid cell
@@ -684,19 +685,72 @@ class LegacyCoupler(RBC):
     def rod_vertex_force(self, f: ti.i32):
         for i_v, i_b in ti.ndrange(self.rod_solver._n_vertices, self.rod_solver._B):
             if not self.rod_solver.vertices_ng[f, i_v, i_b].fixed:
-                for i_g in range(self.rigid_solver.n_geoms):
-                    if self.rigid_solver.geoms_info.needs_coup[i_g]:
-                        vel_rod = self._func_collide_with_rigid_geom_rod(
-                            f,
-                            i_v,
-                            self.rod_solver.vertices[f, i_v, i_b].vert,
-                            self.rod_solver.vertices[f + 1, i_v, i_b].vel,
-                            self.rod_solver.vertices_info[i_v].mass,
-                            self.rod_solver.vertices_info[i_v].radius,
-                            i_g,
-                            i_b,
-                        )
-                        self.rod_solver.vertices[f + 1, i_v, i_b].vel = vel_rod
+
+                # ROD <-> Rigid
+                if ti.static(self._rigid_rod):
+                    for i_g in range(self.rigid_solver.n_geoms):
+                        if self.rigid_solver.geoms_info.needs_coup[i_g]:
+                            vel_rod = self._func_collide_with_rigid_geom_rod(
+                                f,
+                                i_v,
+                                self.rod_solver.vertices[f, i_v, i_b].vert,
+                                self.rod_solver.vertices[f + 1, i_v, i_b].vel,
+                                self.rod_solver.vertices_info[i_v].mass,
+                                self.rod_solver.vertices_info[i_v].radius,
+                                i_g,
+                                i_b,
+                            )
+                            self.rod_solver.vertices[f + 1, i_v, i_b].vel = vel_rod
+
+                # ROD <-> MPM
+                if ti.static(self._rod_mpm):
+                    vel_rod = self.rod_solver.vertices[f + 1, i_v, i_b].vel
+                    pos = self.rod_solver.vertices[f, i_v, i_b].vert
+                    mass_rod = self.rod_solver.vertices_info[i_v].mass
+
+                    # follow MPM p2g scheme
+                    vel_mpm = ti.Vector([0.0, 0.0, 0.0])
+                    mass_mpm = 0.0
+                    mpm_base = ti.floor(pos * self.mpm_solver.inv_dx - 0.5).cast(gs.ti_int)
+                    mpm_fx = pos * self.mpm_solver.inv_dx - mpm_base.cast(gs.ti_float)
+                    mpm_w = [0.5 * (1.5 - mpm_fx) ** 2, 0.75 - (mpm_fx - 1.0) ** 2, 0.5 * (mpm_fx - 0.5) ** 2]
+                    new_vel_rod = vel_rod
+                    for mpm_offset in ti.static(ti.grouped(self.mpm_solver.stencil_range())):
+                        mpm_grid_I = mpm_base - self.mpm_solver.grid_offset + mpm_offset
+                        mpm_grid_mass = self.mpm_solver.grid[f, mpm_grid_I, i_b].mass / self.mpm_solver.p_vol_scale
+
+                        mpm_weight = gs.ti_float(1.0)
+                        for d in ti.static(range(3)):
+                            mpm_weight *= mpm_w[mpm_offset[d]][d]
+
+                        # ROD -> MPM
+                        mpm_grid_pos = (mpm_grid_I + self.mpm_solver.grid_offset) * self.mpm_solver.dx
+                        signed_dist = (mpm_grid_pos - pos).norm()
+                        if signed_dist <= self.mpm_solver.dx:  # NOTE: use dx as minimal unit for collision
+                            vel_mpm_at_cell = mpm_weight * self.mpm_solver.grid[f, mpm_grid_I, i_b].vel_out
+                            mass_mpm_at_cell = mpm_weight * mpm_grid_mass
+
+                            vel_mpm += vel_mpm_at_cell
+                            mass_mpm += mass_mpm_at_cell
+
+                            if mass_mpm_at_cell > gs.EPS:
+                                delta_mpm_vel_at_cell_unmul = (
+                                    vel_rod * mpm_weight - self.mpm_solver.grid[f, mpm_grid_I, i_b].vel_out
+                                )
+                                mass_mul_at_cell = (
+                                    mpm_grid_mass / mass_rod
+                                )  # NOTE: use un-reweighted mass instead of mass_mpm_at_cell
+                                delta_mpm_vel_at_cell = delta_mpm_vel_at_cell_unmul * mass_mul_at_cell
+                                self.mpm_solver.grid[f, mpm_grid_I, i_b].vel_out += delta_mpm_vel_at_cell
+
+                                new_vel_rod -= delta_mpm_vel_at_cell * mass_mpm_at_cell / mass_rod
+
+                    # MPM -> ROD
+                    if mass_mpm > gs.EPS:
+                        # delta_mv = (vel_mpm - vel_rod) * mass_mpm
+                        # delta_vel_rod = delta_mv / mass_rod
+                        # self.rod_solver.vertices[f + 1, i_v, i_b].vel += delta_vel_rod
+                        self.rod_solver.vertices[f + 1, i_v, i_b].vel = new_vel_rod
 
                 # vel_rod_prime = self.rod_solver.boundary.impose_vel(
                 #     self.rod_solver.vertices[f, i_v, i_b].vert,
