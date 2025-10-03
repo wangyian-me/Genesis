@@ -221,7 +221,8 @@ class Train_Env_Slingshot(Train_Env):
                 self.scene.step()
 
                 # Post-step: detect collisions
-                collided = self.rope._solver.vertices_ng.is_collided.to_numpy()  # (n_envs, n_vertices)
+                collided = self.rope._solver.vertices_collided.to_numpy()  # (n_verts, n_envs)
+                collided = collided.T  # (n_envs, n_vertices)
                 verts_to_check = np.array(self.control_idx) + self.rope._v_start
                 collided_ctrl = collided[:, verts_to_check].any(axis=1)          # (n_envs,)
 
