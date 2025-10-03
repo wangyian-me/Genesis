@@ -111,6 +111,7 @@ class LegacyCouplerOptions(BaseCouplerOptions):
     mpm_pbd: bool = True
     fem_mpm: bool = True
     fem_sph: bool = True
+    rod_mpm: bool = True
 
 
 class SAPCouplerOptions(BaseCouplerOptions):
