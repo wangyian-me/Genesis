@@ -360,6 +360,204 @@ class LegacyCoupler(RBC):
                 vel = entity.collide(f, pos_world, vel, i_b)
         return vel
 
+    @ti.func
+    def _func_mpm_surface_normal(self, f, pos, i_b):
+        # find the base grid node for the given position
+        mpm_base = ti.floor(pos * self.mpm_solver.inv_dx - 0.5).cast(gs.ti_int)
+
+        # calculate the mass gradient using central differences
+        mass_grad = ti.Vector.zero(gs.ti_float, 3)
+        for d in ti.static(range(3)):
+            p_node = mpm_base - self.mpm_solver.grid_offset
+            n_node = mpm_base - self.mpm_solver.grid_offset
+
+            p_node[d] += 1
+            n_node[d] -= 1
+
+            mass_p = 0.0
+            # check if the positive-side node is within grid bounds
+            if p_node[d] >= 0 and p_node[d] < self.mpm_solver.grid_res[d]:
+                mass_p = self.mpm_solver.grid[f, p_node, i_b].mass
+
+            mass_n = 0.0
+            # check if the negative-side node is within grid bounds
+            if n_node[d] >= 0 and n_node[d] < self.mpm_solver.grid_res[d]:
+                mass_n = self.mpm_solver.grid[f, n_node, i_b].mass
+
+            # gradient component = (mass_positive - mass_negative) / (2 * grid_spacing)
+            mass_grad[d] = (mass_p - mass_n) / (2 * self.mpm_solver.dx)
+
+        # calculate the final normal from the gradient
+        mass_grad_norm = mass_grad.norm()
+        normal = ti.Vector([0.0, 0.0, 1.0]) # Default upward normal
+        if mass_grad_norm > gs.EPS:
+            # The normal points opposite to the direction of steepest mass increase
+            normal = -mass_grad / mass_grad_norm
+
+        return normal, mass_grad_norm
+
+    @ti.func
+    def _func_rod_mpm(self, f):
+        for i_v, i_b in ti.ndrange(self.rod_solver._n_vertices, self.rod_solver._B):
+            vel_rod = self.rod_solver.vertices[f + 1, i_v, i_b].vel
+            pos = self.rod_solver.vertices[f, i_v, i_b].vert
+            mass_rod = self.rod_solver.vertices_info[i_v].mass
+
+            # follow MPM p2g scheme
+            vel_mpm = ti.Vector([0.0, 0.0, 0.0])
+            mass_mpm = 0.0
+            mpm_base = ti.floor(pos * self.mpm_solver.inv_dx - 0.5).cast(gs.ti_int)
+            mpm_fx = pos * self.mpm_solver.inv_dx - mpm_base.cast(gs.ti_float)
+            mpm_w = [0.5 * (1.5 - mpm_fx) ** 2, 0.75 - (mpm_fx - 1.0) ** 2, 0.5 * (mpm_fx - 0.5) ** 2]
+            new_vel_rod = vel_rod
+            for mpm_offset in ti.static(ti.grouped(self.mpm_solver.stencil_range())):
+                mpm_grid_I = mpm_base - self.mpm_solver.grid_offset + mpm_offset
+                mpm_grid_mass = self.mpm_solver.grid[f, mpm_grid_I, i_b].mass / self.mpm_solver.p_vol_scale
+
+                mpm_weight = gs.ti_float(1.0)
+                for d in ti.static(range(3)):
+                    mpm_weight *= mpm_w[mpm_offset[d]][d]
+
+                # ROD -> MPM
+                mpm_grid_pos = (mpm_grid_I + self.mpm_solver.grid_offset) * self.mpm_solver.dx
+                signed_dist = (mpm_grid_pos - pos).norm()
+                if signed_dist <= self.mpm_solver.dx:  # NOTE: use dx as minimal unit for collision
+                    vel_mpm_at_cell = mpm_weight * self.mpm_solver.grid[f, mpm_grid_I, i_b].vel_out
+                    mass_mpm_at_cell = mpm_weight * mpm_grid_mass
+
+                    vel_mpm += vel_mpm_at_cell
+                    mass_mpm += mass_mpm_at_cell
+
+                    if mass_mpm_at_cell > gs.EPS:
+                        delta_mpm_vel_at_cell_unmul = (
+                            vel_rod * mpm_weight - self.mpm_solver.grid[f, mpm_grid_I, i_b].vel_out
+                        )
+                        mass_mul_at_cell = (
+                            mpm_grid_mass / mass_rod
+                        )  # NOTE: use un-reweighted mass instead of mass_mpm_at_cell
+                        delta_mpm_vel_at_cell = delta_mpm_vel_at_cell_unmul * mass_mul_at_cell
+                        self.mpm_solver.grid[f, mpm_grid_I, i_b].vel_out += ti.math.clamp(delta_mpm_vel_at_cell, -1, 1)
+
+                        new_vel_rod -= delta_mpm_vel_at_cell * mass_mpm_at_cell / mass_rod
+
+            # MPM -> ROD
+            if mass_mpm > gs.EPS:
+                # delta_mv = (vel_mpm - vel_rod) * mass_mpm
+                # delta_vel_rod = delta_mv / mass_rod
+                # self.rod_solver.vertices[f + 1, i_v, i_b].vel += delta_vel_rod
+                self.rod_solver.vertices[f + 1, i_v, i_b].vel = new_vel_rod
+
+    @ti.func
+    def _func_rod_mpm_v2(self, f):
+        #################### MPM -> Rod ####################
+        for i_v, i_b in ti.ndrange(self.rod_solver._n_vertices, self.rod_solver._B):
+            if not self.rod_solver.vertices_ng[f, i_v, i_b].fixed:
+                pos = self.rod_solver.vertices[f, i_v, i_b].vert
+                inv_mass = self.rod_solver._func_get_inverse_mass(f, i_v, i_b)
+                v_rod_pre = self.rod_solver.vertices[f + 1, i_v, i_b].vel
+
+                normal, mass_grad_norm = self._func_mpm_surface_normal(f, pos, i_b)
+                if mass_grad_norm > 0.1 / self.mpm_solver.dx:
+                    v_grid_final = ti.Vector.zero(gs.ti_float, 3)
+                    interpolated_mass = gs.ti_float(0.0)
+                    mpm_base = ti.floor(pos * self.mpm_solver.inv_dx - 0.5).cast(gs.ti_int)
+                    mpm_fx = pos * self.mpm_solver.inv_dx - mpm_base.cast(gs.ti_float)
+                    mpm_w = [0.5 * (1.5 - mpm_fx)**2, 0.75 - (mpm_fx - 1.0)**2, 0.5 * (mpm_fx - 0.5)**2]
+
+                    for mpm_offset in ti.static(ti.grouped(self.mpm_solver.stencil_range())):
+                        mpm_grid_I = mpm_base - self.mpm_solver.grid_offset + mpm_offset
+                        grid_mass_node = self.mpm_solver.grid[f, mpm_grid_I, i_b].mass
+                        mpm_grid_mass = grid_mass_node / self.mpm_solver._p_vol_scale
+
+                        mpm_weight = gs.ti_float(1.0)
+                        mass_mpm_at_cell = mpm_weight * mpm_grid_mass
+                        for d in ti.static(range(3)):
+                            mpm_weight *= mpm_w[mpm_offset[d]][d]
+
+                        if mass_mpm_at_cell > gs.EPS:
+                            v_grid_final += mpm_weight * self.mpm_solver.grid[f, mpm_grid_I, i_b].vel_out
+                            interpolated_mass += mass_mpm_at_cell
+
+                    v_rel_normal_mag = (v_rod_pre - v_grid_final).dot(normal)
+
+                    if v_rel_normal_mag < 0.0:
+                        restitution = self.rod_solver.vertices_info[i_v].restitution
+                        impulse_mag = -(1 + restitution) * v_rel_normal_mag / (inv_mass + 1 / max(interpolated_mass, gs.EPS) + gs.EPS)
+                        self.rod_solver.vertices[f + 1, i_v, i_b].vel += impulse_mag * normal * inv_mass
+
+    @ti.func
+    def _func_mpm_collide_with_rod(self, f, pos_grid, vel_grid, mass_grid, i_b):
+        #################### MPM <- Rod ####################
+        for i_v in range(self.rod_solver.n_vertices):
+            pos_rod = self.rod_solver.vertices[f, i_v, i_b].vert
+            vel_rod = self.rod_solver.vertices[f, i_v, i_b].vel
+            radius_rod = self.rod_solver.vertices_info[i_v].radius
+            inv_mass_rod = self.rod_solver._func_get_inverse_mass(f, i_v, i_b)
+            rest_rod = self.rod_solver.vertices_info[i_v].restitution
+            inv_mass_grid = 1 / (mass_grid + gs.EPS)
+
+            collision_dist = self.mpm_solver.dx + radius_rod
+
+            dist_vec = pos_grid - pos_rod
+            if dist_vec.norm() < collision_dist:
+                # handle collision with the vertex, treated as a sphere
+                normal = dist_vec.normalized()
+                v_rel = vel_grid - vel_rod
+                v_rel_normal_mag = v_rel.dot(normal)
+
+                if v_rel_normal_mag < 0:
+                    impulse_mag = -(1 + rest_rod) * v_rel_normal_mag / (inv_mass_rod + inv_mass_grid + gs.EPS)
+                    vel_grid += impulse_mag * normal * inv_mass_grid
+
+        for i_e in range(self.rod_solver.n_edges):
+            v_idx_1 = self.rod_solver.edges_info[i_e].vert_idx
+            v_idx_2 = self.rod_solver.get_next_vertex_of_edge(v_idx_1)
+            inv_mass_rod = (
+                self.rod_solver._func_get_inverse_mass(f, v_idx_1, i_b) +
+                self.rod_solver._func_get_inverse_mass(f, v_idx_2, i_b)
+            ) * 0.5
+            rest_rod = (
+                self.rod_solver.vertices_info[v_idx_1].restitution +
+                self.rod_solver.vertices_info[v_idx_2].restitution
+            ) * 0.5
+            inv_mass_grid = 1 / (mass_grid + gs.EPS)
+
+            pos_1 = self.rod_solver.vertices[f, v_idx_1, i_b].vert
+            pos_2 = self.rod_solver.vertices[f, v_idx_2, i_b].vert
+
+            vel_1 = self.rod_solver.vertices[f, v_idx_1, i_b].vel
+            vel_2 = self.rod_solver.vertices[f, v_idx_2, i_b].vel
+
+            radius_rod = (
+                self.rod_solver.vertices_info[v_idx_1].radius +
+                self.rod_solver.vertices_info[v_idx_2].radius
+            ) * 0.5
+
+            # increase collision thickness
+            collision_dist = self.mpm_solver.dx + radius_rod
+
+            # find closest point on the rod segment
+            seg_dir = pos_2 - pos_1
+            # avoid division by zero for very short segments
+            t = (pos_grid - pos_1).dot(seg_dir) / (seg_dir.dot(seg_dir) + 1e-9)
+            t = ti.max(0.0, ti.min(1.0, t))
+
+            closest_pos_on_rope = pos_1 + t * seg_dir
+
+            dist_vec = pos_grid - closest_pos_on_rope
+            if dist_vec.norm() < collision_dist:
+                vel_rod = (1.0 - t) * vel_1 + t * vel_2
+
+                normal = dist_vec.normalized()
+                v_rel = vel_grid - vel_rod
+                v_rel_normal_mag = v_rel.dot(normal)
+
+                if v_rel_normal_mag < 0:
+                    impulse_mag = -(1 + rest_rod) * v_rel_normal_mag / (inv_mass_rod + inv_mass_grid + gs.EPS)
+                    vel_grid += impulse_mag * normal * inv_mass_grid
+
+        return vel_grid
+
     @ti.kernel
     def mpm_grid_op(self, f: ti.i32, t: ti.f32):
         """
@@ -390,6 +588,10 @@ class LegacyCoupler(RBC):
                 #################### MPM <-> Rigid ####################
                 if ti.static(self._rigid_mpm and self.rigid_solver.is_active()):
                     vel_mpm = self._func_collide_with_rigid(f, pos, vel_mpm, mass_mpm, i_b)
+
+                #################### MPM <- Rod ####################
+                if ti.static(self._rod_mpm):
+                    vel_mpm = self._func_mpm_collide_with_rod(f, pos, vel_mpm, mass_mpm, i_b)
 
                 #################### MPM <-> SPH ####################
                 if ti.static(self._mpm_sph):
@@ -684,7 +886,6 @@ class LegacyCoupler(RBC):
     @ti.kernel
     def rod_vertex_force(self, f: ti.i32):
         for i_v, i_b in ti.ndrange(self.rod_solver._n_vertices, self.rod_solver._B):
-            if not self.rod_solver.vertices_ng[f, i_v, i_b].fixed:
 
                 # ROD <-> Rigid
                 if ti.static(self._rigid_rod):
@@ -704,53 +905,10 @@ class LegacyCoupler(RBC):
 
                 # ROD <-> MPM
                 if ti.static(self._rod_mpm):
-                    vel_rod = self.rod_solver.vertices[f + 1, i_v, i_b].vel
-                    pos = self.rod_solver.vertices[f, i_v, i_b].vert
-                    mass_rod = self.rod_solver.vertices_info[i_v].mass
-
-                    # follow MPM p2g scheme
-                    vel_mpm = ti.Vector([0.0, 0.0, 0.0])
-                    mass_mpm = 0.0
-                    mpm_base = ti.floor(pos * self.mpm_solver.inv_dx - 0.5).cast(gs.ti_int)
-                    mpm_fx = pos * self.mpm_solver.inv_dx - mpm_base.cast(gs.ti_float)
-                    mpm_w = [0.5 * (1.5 - mpm_fx) ** 2, 0.75 - (mpm_fx - 1.0) ** 2, 0.5 * (mpm_fx - 0.5) ** 2]
-                    new_vel_rod = vel_rod
-                    for mpm_offset in ti.static(ti.grouped(self.mpm_solver.stencil_range())):
-                        mpm_grid_I = mpm_base - self.mpm_solver.grid_offset + mpm_offset
-                        mpm_grid_mass = self.mpm_solver.grid[f, mpm_grid_I, i_b].mass / self.mpm_solver.p_vol_scale
-
-                        mpm_weight = gs.ti_float(1.0)
-                        for d in ti.static(range(3)):
-                            mpm_weight *= mpm_w[mpm_offset[d]][d]
-
-                        # ROD -> MPM
-                        mpm_grid_pos = (mpm_grid_I + self.mpm_solver.grid_offset) * self.mpm_solver.dx
-                        signed_dist = (mpm_grid_pos - pos).norm()
-                        if signed_dist <= self.mpm_solver.dx:  # NOTE: use dx as minimal unit for collision
-                            vel_mpm_at_cell = mpm_weight * self.mpm_solver.grid[f, mpm_grid_I, i_b].vel_out
-                            mass_mpm_at_cell = mpm_weight * mpm_grid_mass
-
-                            vel_mpm += vel_mpm_at_cell
-                            mass_mpm += mass_mpm_at_cell
-
-                            if mass_mpm_at_cell > gs.EPS:
-                                delta_mpm_vel_at_cell_unmul = (
-                                    vel_rod * mpm_weight - self.mpm_solver.grid[f, mpm_grid_I, i_b].vel_out
-                                )
-                                mass_mul_at_cell = (
-                                    mpm_grid_mass / mass_rod
-                                )  # NOTE: use un-reweighted mass instead of mass_mpm_at_cell
-                                delta_mpm_vel_at_cell = delta_mpm_vel_at_cell_unmul * mass_mul_at_cell
-                                self.mpm_solver.grid[f, mpm_grid_I, i_b].vel_out += delta_mpm_vel_at_cell
-
-                                new_vel_rod -= delta_mpm_vel_at_cell * mass_mpm_at_cell / mass_rod
-
-                    # MPM -> ROD
-                    if mass_mpm > gs.EPS:
-                        # delta_mv = (vel_mpm - vel_rod) * mass_mpm
-                        # delta_vel_rod = delta_mv / mass_rod
-                        # self.rod_solver.vertices[f + 1, i_v, i_b].vel += delta_vel_rod
-                        self.rod_solver.vertices[f + 1, i_v, i_b].vel = new_vel_rod
+                    # ROD <-> MPM, should disable _func_mpm_collide_with_rod
+                    # self._func_rod_mpm(f)
+                    # ROD <- MPM
+                    self._func_rod_mpm_v2(f)
 
                 # vel_rod_prime = self.rod_solver.boundary.impose_vel(
                 #     self.rod_solver.vertices[f, i_v, i_b].vert,
