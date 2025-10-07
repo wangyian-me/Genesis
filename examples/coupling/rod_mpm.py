@@ -1,4 +1,5 @@
 import os
+import torch
 import argparse
 import mediapy
 import numpy as np
@@ -463,6 +464,142 @@ def test_v4(args):
 
     return scene, cams
 
+def test_v5(args):
+    scene = gs.Scene(
+        sim_options=gs.options.SimOptions(
+            dt=args.dt,
+            substeps=args.substeps,
+        ),
+        mpm_options=gs.options.MPMOptions(
+            lower_bound=(-0.5, -0.5, -0.1),
+            upper_bound=(0.5, 0.5, 0.9),
+            grid_density=100,
+        ),
+        rod_options=gs.options.RodOptions(
+            damping=10.0,
+            angular_damping=5.0,
+            adjacent_gap=2,
+            n_pbd_iters=20
+        ),
+        vis_options=gs.options.VisOptions(
+            visualize_mpm_boundary=True,
+        ),
+        show_viewer=args.vis,
+    )
+
+    cams = list()
+    if args.path is not None:
+        cams.append(scene.add_camera(
+            res=(1024, 1024), pos=(3.0, -1.2, 1.2), up=(0, 0, 1),
+            lookat=(0., 0., 0), fov=args.fov, GUI = False
+        ))
+        cams.append(scene.add_camera(
+            res=(1024, 1024), pos=(-2.4, 1.6, 1.5), up=(0, 0, 1),
+            lookat=(0., 0., 0), fov=args.fov, GUI = False
+        ))
+
+    ########################## entities ##########################
+    friction_rigid = gs.materials.Rigid(
+        needs_coup=True, coup_friction=0.1
+    )
+
+    plane = scene.add_entity(
+        material=friction_rigid,
+        morph=gs.morphs.Plane(),
+    )
+
+    K = 1e5
+    E = 1e4
+    G = 0
+    v1 = scene.add_entity(
+        material=gs.materials.ROD.Base(
+            segment_radius=0.01,
+            segment_mass=0.002,
+            K=K,
+            E=E,
+            G=G,
+            use_inextensible=False,
+        ),
+        morph=gs.morphs.ParameterizedRod(
+            type="circle",
+            n_vertices=16,
+            radius=0.05,
+            axis="x",
+            pos=(0.0, -0.05, 0.1),
+            euler=(90.0, 0.0, 0.0),
+        ),
+        surface=gs.surfaces.Default(
+            diffuse_texture=gs.textures.ImageTexture(
+                image_path="textures/rope01.png",
+            ),
+            vis_mode='recon',
+        ),
+    )
+
+    v2 = scene.add_entity(
+        material=gs.materials.ROD.Base(
+            segment_radius=0.01,
+            segment_mass=0.002,
+            K=K,
+            E=E,
+            G=G,
+            use_inextensible=False,
+        ),
+        morph=gs.morphs.ParameterizedRod(
+            type="circle",
+            n_vertices=16,
+            radius=0.05,
+            axis="x",
+            pos=(0.0, 0.05, 0.1),
+            euler=(90.0, 0.0, 0.0),
+        ),
+        surface=gs.surfaces.Default(
+            diffuse_texture=gs.textures.ImageTexture(
+                image_path="textures/rope02.png",
+            ),
+            vis_mode='recon',
+        ),
+    )
+
+    b1 = scene.add_entity(
+        material=gs.materials.ROD.Base(
+            segment_radius=0.01,
+        ),
+        morph=gs.morphs.ParameterizedRod(
+            type="rod",
+            n_vertices=4,
+            interval=0.04,
+            axis="y",
+            pos=(0.0, -0.06, 0.11),
+            euler=(0.0, 0.0, 0.0),
+            fixed=True,
+        ),
+        surface=gs.surfaces.Default(
+            color=(0.4, 0.4, 0.4),
+            vis_mode='recon',
+        ),
+    )
+
+    obj_sand = scene.add_entity(
+        material=gs.materials.MPM.Sand(),
+        morph=gs.morphs.Box(
+            pos=(0.0, 0.16, 0.08),
+            size=(0.125, 0.125, 0.1),
+        ),
+        surface=gs.surfaces.Default(
+            color=(0.8, 0.8, 0.3),
+            vis_mode="particle",
+        ),
+    )
+
+    scene.rod_solver.register_gripper_geom_indices()
+
+    ########################## build ##########################
+    scene.build(n_envs=1)
+    obj_sand.set_velocity(torch.tensor([0.0, -0.8, 0.0]))
+
+    return scene, cams
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-p", "--path", type=str, default=None)
@@ -484,7 +621,8 @@ def main():
     # scene, cams = test_v1(args)
     # scene, cams = test_v2(args)
     # scene, cams = test_v3(args)
-    scene, cams = test_v4(args)
+    # scene, cams = test_v4(args)
+    scene, cams = test_v5(args)
 
     frames = defaultdict(list)
     for i in range(args.steps):

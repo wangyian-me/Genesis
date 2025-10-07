@@ -542,9 +542,9 @@ class LegacyCoupler(RBC):
             t = (pos_grid - pos_1).dot(seg_dir) / (seg_dir.dot(seg_dir) + 1e-9)
             t = ti.max(0.0, ti.min(1.0, t))
 
-            closest_pos_on_rope = pos_1 + t * seg_dir
+            closest_pos_on_rod = pos_1 + t * seg_dir
 
-            dist_vec = pos_grid - closest_pos_on_rope
+            dist_vec = pos_grid - closest_pos_on_rod
             if dist_vec.norm() < collision_dist:
                 vel_rod = (1.0 - t) * vel_1 + t * vel_2
 
