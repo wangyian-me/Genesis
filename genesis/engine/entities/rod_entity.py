@@ -240,8 +240,9 @@ class RodEntity(Entity):
         is_loop = self.is_loop
         n_edges = n_verts if is_loop else n_verts - 1
         for i in range(n_edges):
-            # NOTE: check this
-            edges.append(verts[(i + 1) % n_verts] - verts[i])
+            pos_a = init_positions[i]
+            pos_b = init_positions[(i + 1) % n_verts]
+            edges.append(pos_b - pos_a)
         edges = np.array(edges, dtype=gs.np_float)
 
         self.edges = gs.tensor(edges)
