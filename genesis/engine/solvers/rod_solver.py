@@ -12,6 +12,7 @@ from genesis.engine.boundaries import FloorBoundaryForRods as FloorBoundary
 from genesis.engine.entities.rod_entity import RodEntity
 from genesis.engine.states.solvers import RODSolverState
 from genesis.utils.misc import ti_field_to_torch
+from genesis.utils.geom import ti_transform_by_trans_quat
 
 from .base_solver import Solver
 
@@ -132,10 +133,13 @@ class RodSolver(Solver):
         self._n_pbd_iters = options.n_pbd_iters
         self._max_collision_grad_norm = 0.1
 
+        # properties
+        self._geom_indices = np.array([], dtype=gs.np_int)
+
         # boundary
         self.setup_boundary()
 
-        # lazy initialization
+        # lazy initialization of vertex constraints (attachment)
         self._constraints_initialized = False
 
     def _batch_shape(self, shape=None, first_dim=False, B=None):
@@ -223,7 +227,7 @@ class RodSolver(Solver):
 
         struct_vertex_state_ng = ti.types.struct(
             fixed=gs.ti_bool,           # is the vertex fixed
-            is_kinematic=gs.ti_bool,    # is the vertex kinematic
+            kinematic=gs.ti_bool,       # is the vertex kinematic
         )
 
         self.vertices_info = struct_vertex_info.field(
@@ -259,6 +263,23 @@ class RodSolver(Solver):
             3, dtype=gs.ti_float, needs_grad=False,
             shape=self._batch_shape(self._n_vertices)
         )
+
+    def init_vertex_constraints(self):
+
+        vertex_constraint_info = ti.types.struct(
+            constrained=gs.ti_bool,
+            link_idx=gs.ti_int,
+            target_pos=gs.ti_vec3,
+            local_pos=gs.ti_vec3,
+        )
+
+        self.vertex_constraints = vertex_constraint_info.field(
+            shape=self._batch_shape(self._n_vertices),
+            needs_grad=False,
+            layout=ti.Layout.AOS
+        )
+
+        self._constraints_initialized = True
 
     def init_edge_fields(self):
         # edge information (static)
@@ -386,35 +407,13 @@ class RodSolver(Solver):
 
         self.rr_constraint_info.valid_pair.from_numpy(valid_edge_pairs)
 
-        self._constraints_initialized = True
-
     def register_gripper_geom_indices(self, geom_indices: Iterable[int]=()):
         """
         Register the geometry indices of the gripper for collision handling.
         Needs to be called before building the scene.
         """
         geom_indices = np.asarray(geom_indices, dtype=gs.np_int)
-        field_shape = max(geom_indices.shape[0], 1)
-        self.geom_indices = ti.field(
-            dtype=gs.ti_int, needs_grad=False, shape=field_shape
-        )
-        if geom_indices.shape[0] > 0:
-            self.geom_indices.from_numpy(geom_indices)
-        else:
-            self.geom_indices[0] = -1
-        self._n_geom_indices = geom_indices.shape[0]
-        gs.logger.info(f"Registered {geom_indices.shape[0]} gripper geometries for rod collision handling.")
-        gs.logger.info(f"Geom indices: {geom_indices}")
-
-    @ti.func
-    def _func_is_geom_idx_registered(self, i_g: ti.i32):
-        registered = False
-        ti.loop_config(serialize=True)
-        for i in range(self._n_geom_indices):
-            if self.geom_indices[i] == i_g:
-                registered = True
-                break
-        return registered
+        self._geom_indices = geom_indices
 
     def init_ckpt(self):
         self._ckpt = dict()
@@ -443,6 +442,7 @@ class RodSolver(Solver):
         if self.is_active():
             self.init_rod_fields()
             self.init_vertex_fields()
+            self.init_vertex_constraints()
             self.init_edge_fields()
             self.init_internal_vertex_fields()
             self.init_ckpt()
@@ -510,9 +510,12 @@ class RodSolver(Solver):
         self.gradients.fill(0.0)
 
     @ti.kernel
-    def update_centerline_positions(self, f: ti.i32):      # Differential    # FIXME: check if correct
+    def update_centerline_positions(self, f: ti.i32):      # Differential
         for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
-            if not self.vertices_ng[f, i_v, i_b].fixed:
+            if (
+                not self.vertices_ng[f, i_v, i_b].fixed and 
+                not self.vertex_constraints[i_v, i_b].constrained
+            ):
                 # self.vertices[f + 1, i_v, i_b].vert += self.vertices[f + 1, i_v, i_b].vel * self.substep_dt
                 self.vertices[f + 1, i_v, i_b].vert = (
                     self.vertices[f + 1, i_v, i_b].vel * self.substep_dt + self.vertices[f, i_v, i_b].vert
@@ -522,7 +525,10 @@ class RodSolver(Solver):
     def update_centerline_velocities(self, f: ti.i32):       # Differential
         for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
             mass = self.vertices_info[i_v].mass
-            if not self.vertices_ng[f, i_v, i_b].fixed:
+            if (
+                not self.vertices_ng[f, i_v, i_b].fixed and
+                not self.vertex_constraints[i_v, i_b].constrained
+            ):
                 gradient = ti.Vector([
                     self.gradients[3 * i_v + 0, i_b],
                     self.gradients[3 * i_v + 1, i_b],
@@ -540,7 +546,8 @@ class RodSolver(Solver):
     def update_angular_velocities(self, f: ti.i32):      # Differential
         for i_e, i_b in ti.ndrange(self._n_edges, self._B):
             v_s, v_e = self.get_edge_vertices(i_e)
-            if not self.vertices_ng[f, v_s, i_b].fixed or not self.vertices_ng[f, v_e, i_b].fixed:
+            if (not self.vertices_ng[f, v_s, i_b].fixed and not self.vertex_constraints[v_s, i_b].constrained) or \
+               (not self.vertices_ng[f, v_e, i_b].fixed and not self.vertex_constraints[v_e, i_b].constrained):
                 theta_dof_idx = 3 * self._n_vertices + i_e
                 gradient = self.gradients[theta_dof_idx, i_b]
                 inertia = 1.0
@@ -558,7 +565,8 @@ class RodSolver(Solver):
     def update_frame_thetas(self, f: ti.i32):      # Differential
         for i_e, i_b in ti.ndrange(self._n_edges, self._B):
             v_s, v_e = self.get_edge_vertices(i_e)
-            if not self.vertices_ng[f, v_s, i_b].fixed or not self.vertices_ng[f, v_e, i_b].fixed:
+            if (not self.vertices_ng[f, v_s, i_b].fixed and not self.vertex_constraints[v_s, i_b].constrained) or \
+               (not self.vertices_ng[f, v_e, i_b].fixed and not self.vertex_constraints[v_e, i_b].constrained):
                 # self.edges[f + 1, i_e, i_b].theta -= self.gradients[3 * self._n_vertices + i_e, i_b] * self.substep_dt
                 self.edges[f + 1, i_e, i_b].theta = (
                     self.edges[f + 1, i_e, i_b].omega * self.substep_dt + self.edges[f, i_e, i_b].theta
@@ -596,11 +604,11 @@ class RodSolver(Solver):
     @ti.kernel
     def update_velocities_after_projection(self, f: ti.i32):   # Differential
         for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
-            if not self.vertices_ng[f, i_v, i_b].fixed:
+            if (not self.vertices_ng[f, i_v, i_b].fixed and not self.vertex_constraints[i_v, i_b].constrained):
                 self.vertices[f + 1, i_v, i_b].vel = (self.vertices[f + 1, i_v, i_b].vert - self.vertices[f, i_v, i_b].vert) / self.substep_dt
 
     @ti.kernel
-    def transfer_fixed_states(self, f: ti.i32):
+    def transfer_vertex_states(self, f: ti.i32):
         for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
             self.vertices_ng[f + 1, i_v, i_b].fixed = self.vertices_ng[f, i_v, i_b].fixed
 
@@ -866,7 +874,11 @@ class RodSolver(Solver):
             # self._kernel_apply_rod_friction(f)
             self.friction_forward(f)
 
-            self.transfer_fixed_states(f)   # f -> f+1
+            self.transfer_vertex_states(f)   # f -> f+1
+
+            # no grad
+            if self._constraints_initialized:
+                self.apply_hard_constraints(f)
 
             # if f % 20 == 0:
             #     vert = self.vertices.vert.to_numpy()[f, :, 0]
@@ -879,7 +891,7 @@ class RodSolver(Solver):
 
     def substep_post_coupling_grad(self, f):
         if self.is_active():
-            self.transfer_fixed_states.grad(f)
+            self.transfer_vertex_states.grad(f)
 
             self.friction_forward.grad(self, f)
             # self._kernel_apply_rod_friction.grad(f)
@@ -887,8 +899,8 @@ class RodSolver(Solver):
             self.update_material_states.grad(f)
             self.update_centerline_edges.grad(f)
             for i in range(self._n_pbd_iters)[::-1]:
-                # self._kernel_apply_rod_collision_constraints.grad(f, i)
                 self.collision_forward.grad(self, f, i)
+                # self._kernel_apply_rod_collision_constraints.grad(f, i)
                 self._kernel_apply_inextensibility_constraints.grad(f)
 
             self.update_frame_thetas.grad(f)
@@ -1319,7 +1331,13 @@ class RodSolver(Solver):
 
             # state (dynamic w/o grad)
             self.vertices_ng[f, i_global, i_b].fixed = fixed
-            self.vertices_ng[f, i_global, i_b].is_kinematic = False
+            self.vertices_ng[f, i_global, i_b].kinematic = False
+
+            # vertex constraints
+            self.vertex_constraints[i_global, i_b].constrained = False
+            self.vertex_constraints[i_global, i_b].link_idx = -1
+            self.vertex_constraints[i_global, i_b].target_pos = ti.Vector.zero(gs.ti_float, 3)
+            self.vertex_constraints[i_global, i_b].local_pos = ti.Vector.zero(gs.ti_float, 3)
 
         is_loop = self.rods_info[rod_idx].is_loop
         n_edges_local = n_verts_local if is_loop else n_verts_local - 1
@@ -1474,6 +1492,82 @@ class RodSolver(Solver):
         for i_v, i_b in ti.ndrange(n_vertices, self._B):
             i_global = i_v + v_start
             self.vertices_ng[f, i_global, i_b].fixed = fixed[i_b, i_v]
+
+    @ti.kernel
+    def _kernel_set_attached_states(
+        self,
+        i_v: ti.i32,
+        link_idx: ti.i32,
+        local_pos: ti.types.ndarray(),  # shape [B, 3]
+    ):
+        for i_b in range(self._B):
+            self.vertex_constraints[i_v, i_b].constrained = True
+            self.vertex_constraints[i_v, i_b].link_idx = link_idx
+            for j in ti.static(range(3)):
+                self.vertex_constraints[i_v, i_b].local_pos[j] = local_pos[i_b, j]
+
+    @ti.kernel
+    def _kernel_set_attached_states_with_envs_idx(
+        self,
+        i_v: ti.i32,
+        link_idx: ti.i32,
+        local_pos: ti.types.ndarray(),  # shape [3]
+        envs_idx: ti.i32,
+    ):
+        self.vertex_constraints[i_v, envs_idx].constrained = True
+        self.vertex_constraints[i_v, envs_idx].link_idx = link_idx
+        for j in ti.static(range(3)):
+            self.vertex_constraints[i_v, envs_idx].local_pos[j] = local_pos[j]
+
+    @ti.kernel
+    def _kernel_detach_vertex(
+        self,
+        i_v: ti.i32,
+    ):
+        for i_b in range(self._B):
+            self.vertex_constraints[i_v, i_b].constrained = False
+            self.vertex_constraints[i_v, i_b].link_idx = -1
+            self.vertex_constraints[i_v, i_b].target_pos = ti.Vector.zero(gs.ti_float, 3)
+            self.vertex_constraints[i_v, i_b].local_pos = ti.Vector.zero(gs.ti_float, 3)
+
+    @ti.kernel
+    def _kernel_detach_vertex_with_envs_idx(
+        self,
+        i_v: ti.i32,
+        envs_idx: ti.i32,
+    ):
+        self.vertex_constraints[i_v, envs_idx].constrained = False
+        self.vertex_constraints[i_v, envs_idx].link_idx = -1
+        self.vertex_constraints[i_v, envs_idx].target_pos = ti.Vector.zero(gs.ti_float, 3)
+        self.vertex_constraints[i_v, envs_idx].local_pos = ti.Vector.zero(gs.ti_float, 3)
+
+    @ti.kernel
+    def _kernel_update_attached_verts(
+        self,
+        links_pos: ti.template(),  # matrix field
+        links_quat: ti.template(),  # matrix field
+    ):
+        for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
+            vc = self.vertex_constraints[i_v, i_b]
+            if vc.constrained and vc.link_idx >= 0:
+                i_l = vc.link_idx
+                l_pos = links_pos[i_l, i_b]
+                l_quat = links_quat[i_l, i_b]
+
+                # transform the stored local position to world space
+                v_pos_local = vc.local_pos
+                v_pos_world = ti_transform_by_trans_quat(v_pos_local, l_pos, l_quat)
+                for j in ti.static(range(3)):
+                    self.vertex_constraints[i_v, i_b].target_pos[j] = v_pos_world[j]
+
+    @ti.kernel
+    def apply_hard_constraints(self, f: ti.i32):
+        """Apply hard constraints by directly overriding positions and velocities."""
+        for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
+            vc = self.vertex_constraints[i_v, i_b]
+            if vc.constrained and vc.link_idx >= 0:
+                self.vertices[f + 1, i_v, i_b].vert = vc.target_pos
+                self.vertices[f + 1, i_v, i_b].vel.fill(0.0)
 
     @ti.kernel
     def _kernel_get_state(
@@ -1689,6 +1783,10 @@ class RodSolver(Solver):
     def n_internal_vertices(self):
         return sum([entity.n_internal_vertices for entity in self._entities])
 
+    @property
+    def geom_indices(self):
+        return self._geom_indices
+
     # ------------------------------------------------------------------------------------
     # -------------------------------- pbd constraints --------------------------------
     # ------------------------------------------------------------------------------------
@@ -1699,7 +1797,7 @@ class RodSolver(Solver):
         inv_mass = 0.0
         if (
             self.vertices_ng[f, i_v, i_b].fixed or 
-            self.vertices_ng[f, i_v, i_b].is_kinematic or 
+            self.vertices_ng[f, i_v, i_b].kinematic or 
             mass <= 0.
         ):
             inv_mass = 0.0
@@ -1725,12 +1823,12 @@ class RodSolver(Solver):
     def _kernel_clear_kinematic_states(self, f: ti.i32):
         # TODO: do we need to clear kinematic states?
         for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
-            self.vertices_ng[f, i_v, i_b].is_kinematic = False
+            self.vertices_ng[f, i_v, i_b].kinematic = False
 
     @ti.kernel
     def _kernel_clear_kinematic_states_all_substeps(self):
         for i_f, i_v, i_b in ti.ndrange(self._sim.substeps_local, self._n_vertices, self._B):
-            self.vertices_ng[i_f, i_v, i_b].is_kinematic = False
+            self.vertices_ng[i_f, i_v, i_b].kinematic = False
 
     @ti.kernel
     def _kernel_clear_collision_states(self):

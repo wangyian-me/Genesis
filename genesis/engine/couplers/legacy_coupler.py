@@ -78,6 +78,18 @@ class LegacyCoupler(RBC):
                 3, dtype=gs.ti_float, shape=(self.pbd_solver.n_particles, self.pbd_solver._B, self.rigid_solver.n_geoms)
             )
 
+        if self._rigid_rod:
+            self.rod_rigid_gripper_geom_indices = ti.field(
+                dtype=gs.ti_int, needs_grad=False, shape=(self.rigid_solver.n_geoms, self.rod_solver._B)
+            )
+            # -2: uninitialized; -1: gripper not contact; >=0: gripper contact with rod vertex index
+            self.rod_rigid_gripper_geom_indices.fill(-2)
+            gripper_n_geoms = self.rod_solver.geom_indices.shape[0]
+            if gripper_n_geoms > 0:
+                self.init_rod_rigid_gripper_geom_indices(gripper_n_geoms, self.rod_solver.geom_indices)
+            gs.logger.info(f"Registered {self.rod_solver.geom_indices.shape[0]} gripper geometries for rod collision handling.")
+            gs.logger.info(f"Geom indices: {self.rod_solver.geom_indices}")
+
         if self._mpm_sph:
             self.mpm_sph_stencil_size = int(np.floor(self.mpm_solver.dx / self.sph_solver.hash_grid_cell_size) + 2)
 
@@ -295,8 +307,12 @@ class LegacyCoupler(RBC):
             # tangential component
             rvel_tan = rvel - rvel_normal_magnitude * normal_rigid
             # make the vertex kinematic during rod-rigid contact
-            if self.sim.requires_grad:
-                # TODO: temporarily workaround for differentiability
+            if self.rod_rigid_gripper_geom_indices[geom_idx, batch_idx] >= -1:
+                # mark contact with rod vertex i
+                self.rod_rigid_gripper_geom_indices[geom_idx, batch_idx] = i
+                self.rod_solver.vertices_ng[f, i, batch_idx].kinematic = True
+                rvel_tan = rvel_tan * (1 - influence * self.rigid_solver.geoms_info.coup_friction[geom_idx])
+            else:
                 rvel_tan_norm = rvel_tan.norm(gs.EPS)
                 rvel_tan = (
                     rvel_tan
@@ -305,22 +321,9 @@ class LegacyCoupler(RBC):
                         0, rvel_tan_norm + rvel_normal_magnitude * self.rigid_solver.geoms_info.coup_friction[geom_idx]
                     )
                 )
-            else:
-                if self.rod_solver._func_is_geom_idx_registered(geom_idx):
-                    self.rod_solver.vertices_ng[f, i, batch_idx].is_kinematic = True
-                    rvel_tan = rvel_tan * (1 - influence * self.rigid_solver.geoms_info.coup_friction[geom_idx])
-                else:
-                    rvel_tan_norm = rvel_tan.norm(gs.EPS)
-                    rvel_tan = (
-                        rvel_tan
-                        / rvel_tan_norm
-                        * ti.max(
-                            0, rvel_tan_norm + rvel_normal_magnitude * self.rigid_solver.geoms_info.coup_friction[geom_idx]
-                        )
-                    )
-                # for RL training
-                if influence > 0.8:
-                    self.rod_solver.vertices_collided[i, batch_idx] = True
+            # for RL training
+            if influence > 0.8:
+                self.rod_solver.vertices_collided[i, batch_idx] = True
 
             # normal component after collision
             rvel_normal = (
@@ -917,6 +920,33 @@ class LegacyCoupler(RBC):
                 # )
                 # self.rod_solver.vertices[f + 1, i_v, i_b].vel = vel_rod_prime
 
+    def rod_rigid_link_constraints(self):
+        if self.rigid_solver.is_active():
+            links_pos = self.rigid_solver.links_state.pos
+            links_quat = self.rigid_solver.links_state.quat
+            self.rod_solver._kernel_update_attached_verts(links_pos, links_quat)
+
+    @ti.kernel
+    def init_rod_rigid_gripper_geom_indices(self, n_geoms: ti.i32, geom_indices: ti.types.ndarray()):
+        for i, i_b in ti.ndrange(n_geoms, self.rod_solver._B):
+            i_g = geom_indices[i]
+            self.rod_rigid_gripper_geom_indices[i_g, i_b] = -1
+
+    @ti.kernel
+    def clear_rod_rigid_gripper_geom_indices(self):
+        for i_g, i_b in ti.ndrange(self.rigid_solver.n_geoms, self.rod_solver._B):
+            # clear previous gripper geom indices
+            if self.rod_rigid_gripper_geom_indices[i_g, i_b] >= -1:
+                self.rod_rigid_gripper_geom_indices[i_g, i_b] = -1
+
+    def get_rod_rigid_gripper_contact_info(self, envs_idx):
+        # vertex idx -> geom idx
+        out = dict()
+        for i in range(self.rigid_solver.n_geoms):
+            if self.rod_rigid_gripper_geom_indices[i, envs_idx] >= 0:
+                out[self.rod_rigid_gripper_geom_indices[i, envs_idx]] = i
+        return out
+
     @ti.kernel
     def sph_rigid(self, f: ti.i32):
         for i_p, i_b in ti.ndrange(self.sph_solver._n_particles, self.sph_solver._B):
@@ -1143,8 +1173,9 @@ class LegacyCoupler(RBC):
 
         # Rod <-> Rigid
         if self._rigid_rod and self.rigid_solver.is_active():
-            # self.rod_rigid(f)             # not used
+            self.clear_rod_rigid_gripper_geom_indices()
             self.rod_vertex_force(f)
+            self.rod_rigid_link_constraints()
 
     def couple_grad(self, f):
         if self.mpm_solver.is_active():

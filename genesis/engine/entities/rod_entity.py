@@ -184,13 +184,12 @@ class RodEntity(Entity):
 
         return state
 
-    def get_kinematic_indices(self):
-        # TODO: env idx
+    def get_kinematic_indices(self, envs_idx=0):
         kinematic_indices = list()
         f = self._sim.cur_substep_local
         for i_v in range(self.n_vertices):
             i_global = self._v_start + i_v
-            if self.solver.vertices_ng[f, i_v, 0].is_kinematic:
+            if self.solver.vertices_ng[f, i_v, envs_idx].kinematic:
                 kinematic_indices.append(i_global)
         return kinematic_indices
 
@@ -847,6 +846,77 @@ class RodEntity(Entity):
             v_start=self._v_start,
             n_vertices=self.n_vertices,
             fixed=is_fixed,
+        )
+
+    @gs.assert_built
+    def attach_to_rigid_link(self, rigid_link, verts_ids):
+        """
+        Attaches specific vertices of the rod to a rigid link.
+
+        Parameters
+        ----------
+        rigid_link : genesis.RigidLink
+            The rigid link to attach to.
+        verts_indices : list or np.ndarray
+            A list of local vertex indices on the rod to attach.
+        """
+
+        verts_ids = np.asarray(verts_ids).copy().reshape(-1).astype(np.int32)
+        if len(verts_ids) == 0:
+            return
+
+        # (B, len(verts_ids), 3)
+        v_pos_world = self.get_all_verts_tc(False)[:, verts_ids, :]
+        # (B, 3)
+        l_pos = rigid_link.get_pos()
+        # (B, 4)
+        l_quat = rigid_link.get_quat()
+        # (B, 4, 4)
+        l_T_inv = gu.trans_quat_to_T(l_pos, l_quat).inverse()
+        v_hpos_world = torch.nn.functional.pad(
+            v_pos_world, (0, 1), "constant", 1.0
+        )
+
+        v_hpos_local = torch.einsum("bij,bkj->bki", l_T_inv, v_hpos_world)
+
+        for i in range(len(verts_ids)):
+            vert_id = verts_ids[i]
+            assert 0 <= vert_id < self.n_vertices, \
+                f"Vertex index {vert_id} out of range for rod with {self.n_vertices} vertices."
+            global_vert_id = self._v_start + vert_id
+            self._solver._kernel_set_attached_states(
+                i_v=global_vert_id,
+                link_idx=rigid_link.idx,
+                local_pos=v_hpos_local[:, i, :3].contiguous()
+            )
+        gs.logger.info(
+            f"Rod {self.uid}({self._rod_idx}) vertices {verts_ids} attached to {rigid_link.idx}"
+        )
+
+    @gs.assert_built
+    def detach_from_rigid_link(self, verts_ids):
+        """
+        Detaches specific vertices of the rod from any rigid link.
+
+        Parameters
+        ----------
+        verts_indices : list or np.ndarray
+            A list of local vertex indices on the rod to detach.
+        """
+
+        verts_ids = np.asarray(verts_ids).copy().reshape(-1).astype(np.int32)
+        if len(verts_ids) == 0:
+            return
+
+        for i in range(len(verts_ids)):
+            vert_id = verts_ids[i]
+            assert 0 <= vert_id < self.n_vertices, \
+                f"Vertex index {vert_id} out of range for rod with {self.n_vertices} vertices."
+            global_vert_id = self._v_start + vert_id
+            self._solver._kernel_detach_vertex(i_v=global_vert_id)
+
+        gs.logger.info(
+            f"Rod {self.uid}({self._rod_idx}) vertices {verts_ids} detached from rigid link."
         )
 
     @ti.kernel
