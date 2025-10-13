@@ -889,9 +889,9 @@ class LegacyCoupler(RBC):
     @ti.kernel
     def rod_vertex_force(self, f: ti.i32):
         for i_v, i_b in ti.ndrange(self.rod_solver._n_vertices, self.rod_solver._B):
-
-                # ROD <-> Rigid
-                if ti.static(self._rigid_rod):
+            # ROD <-> Rigid
+            if ti.static(self._rigid_rod):
+                if not self.rod_solver.vertex_constraints[i_v, i_b].constrained:
                     for i_g in range(self.rigid_solver.n_geoms):
                         if self.rigid_solver.geoms_info.needs_coup[i_g]:
                             vel_rod = self._func_collide_with_rigid_geom_rod(
@@ -906,19 +906,19 @@ class LegacyCoupler(RBC):
                             )
                             self.rod_solver.vertices[f + 1, i_v, i_b].vel = vel_rod
 
-                # ROD <-> MPM
-                if ti.static(self._rod_mpm):
-                    # ROD <-> MPM, should disable _func_mpm_collide_with_rod
-                    # self._func_rod_mpm(f)
-                    # ROD <- MPM
-                    self._func_rod_mpm_v2(f)
+            # ROD <-> MPM
+            if ti.static(self._rod_mpm):
+                # ROD <-> MPM, should disable _func_mpm_collide_with_rod
+                # self._func_rod_mpm(f)
+                # ROD <- MPM
+                self._func_rod_mpm_v2(f)
 
-                # vel_rod_prime = self.rod_solver.boundary.impose_vel(
-                #     self.rod_solver.vertices[f, i_v, i_b].vert,
-                #     self.rod_solver.vertices[f + 1, i_v, i_b].vel,
-                #     self.rod_solver.vertices_info[i_v].radius,
-                # )
-                # self.rod_solver.vertices[f + 1, i_v, i_b].vel = vel_rod_prime
+            # vel_rod_prime = self.rod_solver.boundary.impose_vel(
+            #     self.rod_solver.vertices[f, i_v, i_b].vert,
+            #     self.rod_solver.vertices[f + 1, i_v, i_b].vel,
+            #     self.rod_solver.vertices_info[i_v].radius,
+            # )
+            # self.rod_solver.vertices[f + 1, i_v, i_b].vel = vel_rod_prime
 
     def rod_rigid_link_constraints(self):
         if self.rigid_solver.is_active():
