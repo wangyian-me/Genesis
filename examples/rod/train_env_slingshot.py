@@ -131,11 +131,14 @@ class Train_Env_Slingshot(Train_Env):
         for i in range(self.n_envs):
             cube_pos_y = cube_pos[i, 1]
 
+            # NOTE: New: max y position is 5, min y position is 0
+            cube_pos_y = min(max(cube_pos_y, 0), 5)
+
             # we want the cube to be as far as possible in +y direction
             rewards.append(cube_pos_y)
 
         return rewards
-    
+
     def step(self, actions):
         raise NotImplementedError()
         # to be done
