@@ -21,7 +21,7 @@ class Train_Env():
         self.n_envs = n_envs
         self.requires_grad = requires_grad
         print(f"GUI: {self.GUI}, n_envs: {self.n_envs}, requires_grad: {self.requires_grad}")
-        gs.init(seed=0, precision="64", logging_level="error", backend=gs.gpu, performance_mode=True)
+        gs.init(seed=0, precision="64", logging_level="error", backend=gs.gpu, debug=True, performance_mode=True)
         if scene is None:
             viewer_options = gs.options.ViewerOptions(
                 camera_pos=(3, -1, 1.5),
@@ -131,7 +131,18 @@ class Train_Env():
 
         return loss_abv_plane
 
-    def gd_one_step(self, trajs, lr):
+    def adaptive_scale(self, trajs, deltas, ratio=0.1):
+        norm_trajs = np.linalg.norm(trajs, axis=-1, keepdims=True)
+        norm_deltas = np.linalg.norm(deltas, axis=-1, keepdims=True)
+
+        norm_deltas = np.clip(norm_deltas, a_min=gs.EPS, a_max=None)
+        scaling_factor = (ratio * norm_trajs) / norm_deltas
+
+        deltas_scaled = deltas * scaling_factor
+
+        return deltas_scaled
+
+    def gd_one_step(self, trajs, ratio):
         assert trajs.ndim == 3, f"trajs must be (n_envs, n_steps, dof), got {trajs.shape}"
         n_envs, n_steps, dof = trajs.shape
         trajs_origin = trajs.copy()
@@ -176,13 +187,16 @@ class Train_Env():
 
         deltas = list()
         for horizon_idx in horizon_ids:
-            delta = self.c.gather_grad(horizon_idx=horizon_idx, lr=lr)
+            delta = self.c.gather_grad(horizon_idx=horizon_idx)
             deltas.append(delta)
 
         # (n_envs, n_steps, n_ctrl, 3)
         deltas = torch.stack(deltas, dim=1)
         deltas = deltas.reshape(self.n_envs, n_steps, -1)
         deltas = deltas.detach().cpu().numpy()
+
+        # ensure each delta is within 0.1 x trajs_origin
+        deltas = self.adaptive_scale(trajs_origin, deltas, ratio=ratio)
 
         print(f'traj: {np.abs(trajs_origin).mean(0).mean(0)}')
         print(f'delta: {np.abs(deltas).mean(0).mean(0)}')

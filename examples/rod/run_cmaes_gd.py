@@ -59,7 +59,7 @@ def project_deltas(traj: np.ndarray,
 # ----------------------------
 # Parallel evaluation (batch)
 # ----------------------------
-def evaluate_batch(env: Train_Env, traj_list: List[np.ndarray], lr: float) -> np.ndarray:
+def evaluate_batch(env: Train_Env, traj_list: List[np.ndarray], ratio: float) -> np.ndarray:
     n_envs = env.n_envs
     n_steps = traj_list[0].shape[0]
     act_dim = traj_list[0].shape[1]
@@ -67,7 +67,7 @@ def evaluate_batch(env: Train_Env, traj_list: List[np.ndarray], lr: float) -> np
     for i, tr in enumerate(traj_list):
         trajs[i] = tr
     # before evaluation, we take a gradient step
-    trajs_gd = env.gd_one_step(trajs, lr=lr)
+    trajs_gd = env.gd_one_step(trajs, ratio=ratio)
     rewards = env.eval_traj(trajs_gd)
     return np.asarray(rewards, dtype=np.float32)
 
@@ -197,7 +197,7 @@ def optimize_trajectory(
     # NEW
     scale_method: Optional[str] = None,
     exp_base: float = 1.1,
-    lr: float = 0.001,
+    ratio: float = 0.1,
 ) -> Tuple[np.ndarray, float]:
     """
     Adds CMA-ES checkpointing via (work_dir/trial_name)/cmaes_ckpt.pkl.
@@ -310,7 +310,7 @@ def optimize_trajectory(
                 tr = reshape_to_traj(x_arr, n_steps, act_dim)
                 tr = project_deltas(tr, per_comp_bound, l2_bound)
                 trajs.append(tr)
-            rewards = evaluate_batch(env, trajs, lr)
+            rewards = evaluate_batch(env, trajs, ratio)
             all_rewards.extend(rewards.tolist())
             print(f"  └─ chunk {ci:>2}/{n_chunks}: {len(chunk):>3} evals | t={time.time() - t_chunk:.3f}s")
 
@@ -412,7 +412,7 @@ if __name__ == "__main__":
         '--scale_method', type=str, default=None,
         choices=[None, 'linear', 'exp', 'custom']
     )
-    parser.add_argument('--lr', type=float, default=0.1)
+    parser.add_argument('--ratio', type=float, default=0.1)
     args = parser.parse_args()
     trial_name = f"trial_{args.task}_cmaes_gd"
     log_dir = f"logs/{args.task}_cmaes_gd"
@@ -439,5 +439,5 @@ if __name__ == "__main__":
         save_every=1,                           # save each generation
         scale_method=args.scale_method,         # None, 'linear', 'exp', 'custom'
         exp_base=1.1,                           # only used if scale_method=='exp'
-        lr=args.lr,                             # learning rate for GD step
+        ratio=args.ratio,                       # ratio between traj over delta
     )

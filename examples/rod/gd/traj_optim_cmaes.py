@@ -87,7 +87,7 @@ class TrajOptimCMAES:
         target_pos[:, :, 2] = torch.maximum(target_pos[:, :, 2], rod_radius)
         self.rod.set_position(target_pos)
 
-    def gather_grad(self, horizon_idx, lr=0.01):
+    def gather_grad(self, horizon_idx):
         grad = self.rod._queried_states[horizon_idx][0].pos.grad
 
         # (n_envs, n_grasp_points, 3)
@@ -101,6 +101,6 @@ class TrajOptimCMAES:
         weight = self.max_grad_norm / (grad_norm + gs.EPS)
         contact_grad = contact_grad * torch.minimum(weight, torch.ones_like(weight))[:, :, None]
 
-        delta = -lr * contact_grad
+        delta = -contact_grad # assume lr=1.0 here
 
         return delta
