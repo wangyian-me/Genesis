@@ -11,6 +11,7 @@ from argparse import ArgumentParser
 import numpy as np
 import cma
 
+from train_env import Train_Env
 from train_env_wiring_ring import Train_Env_Wiring_ring  # keep if you still want the example main
 from train_env_wiring_post import Train_Env_Wiring_post
 from train_env_lifting import Train_Env_Lifting
@@ -58,14 +59,16 @@ def project_deltas(traj: np.ndarray,
 # ----------------------------
 # Parallel evaluation (batch)
 # ----------------------------
-def evaluate_batch(env, traj_list: List[np.ndarray]) -> np.ndarray:
+def evaluate_batch(env: Train_Env, traj_list: List[np.ndarray], lr: float) -> np.ndarray:
     n_envs = env.n_envs
     n_steps = traj_list[0].shape[0]
     act_dim = traj_list[0].shape[1]
     trajs = np.zeros((n_envs, n_steps, act_dim), dtype=np.float32)
     for i, tr in enumerate(traj_list):
         trajs[i] = tr
-    rewards = env.eval_traj(trajs)
+    # before evaluation, we take a gradient step
+    trajs_gd = env.gd_one_step(trajs, lr=lr)
+    rewards = env.eval_traj(trajs_gd)
     return np.asarray(rewards, dtype=np.float32)
 
 
@@ -176,7 +179,7 @@ def _infer_n_steps(env) -> Optional[int]:
 
 
 def optimize_trajectory(
-    env,
+    env: Train_Env,
     n_steps: Optional[int] = None,
     act_dim: Optional[int] = None,
     popsize: Optional[int] = None,
@@ -191,6 +194,10 @@ def optimize_trajectory(
     trial_name: Optional[str] = None,
     resume: bool = False,
     save_every: int = 1,
+    # NEW
+    scale_method: Optional[str] = None,
+    exp_base: float = 1.1,
+    lr: float = 0.001,
 ) -> Tuple[np.ndarray, float]:
     """
     Adds CMA-ES checkpointing via (work_dir/trial_name)/cmaes_ckpt.pkl.
@@ -231,6 +238,11 @@ def optimize_trajectory(
             "work_dir": work_dir,
             "trial_name": trial_name,
         })
+
+    # Construct traj_optim if needed
+    if env.requires_grad:
+        env.construct_traj_optim(max_ddist=l2_bound)
+        env.construct_scale_array(scale_method=scale_method, n_steps=n_steps, exp_base=exp_base)
 
     dim = n_steps * act_dim
     pcb = _as_per_comp_array(per_comp_bound, act_dim)
@@ -294,10 +306,11 @@ def optimize_trajectory(
             trajs = []
             for x in chunk:
                 x_arr = np.asarray(x, dtype=np.float32)
+                # (batch_size, n_steps, act_dim)
                 tr = reshape_to_traj(x_arr, n_steps, act_dim)
                 tr = project_deltas(tr, per_comp_bound, l2_bound)
                 trajs.append(tr)
-            rewards = evaluate_batch(env, trajs)
+            rewards = evaluate_batch(env, trajs, lr)
             all_rewards.extend(rewards.tolist())
             print(f"  └─ chunk {ci:>2}/{n_chunks}: {len(chunk):>3} evals | t={time.time() - t_chunk:.3f}s")
 
@@ -380,22 +393,31 @@ def _build_env(task: str, log_dir: str, n_envs: int):
     EnvCls = task_to_env[task]
     # Most envs accept (task=..., log_dir=..., n_envs=...), but if yours differ, tweak here.
     try:
-        return EnvCls(task=task, log_dir=log_dir, n_envs=n_envs)
+        return EnvCls(task=task, log_dir=log_dir, n_envs=n_envs, requires_grad=True)
     except TypeError:
         # Fallback if the env ctor only takes (log_dir, n_envs) or similar
         try:
-            return EnvCls(log_dir=log_dir, n_envs=n_envs)
+            return EnvCls(log_dir=log_dir, n_envs=n_envs, requires_grad=True)
         except TypeError:
             return EnvCls()
-        
+
 
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser.add_argument("--task", type=str, default="wiring",
-                   help="Task / environment to optimize.")
+    parser.add_argument(
+        '--task', type=str, default='wiring',
+        help="Task / environment to optimize."
+    )
+    parser.add_argument(
+        '--scale_method', type=str, default=None,
+        choices=[None, 'linear', 'exp', 'custom']
+    )
+    parser.add_argument('--lr', type=float, default=0.1)
     args = parser.parse_args()
-    trial_name = f"trial_{args.task}"
-    env = _build_env(args.task, f"logs/{args.task}", 10)
+    trial_name = f"trial_{args.task}_cmaes_gd"
+    log_dir = f"logs/{args.task}_cmaes_gd"
+    env = _build_env(args.task, log_dir, 10)
+    assert env.requires_grad, "Env must be created with requires_grad=True for traj optim."
 
     n_steps = 10
 
@@ -409,10 +431,13 @@ if __name__ == "__main__":
         l2_bound=0.1,          # use env.l2_bound if present
         max_iters=100,
         seed=123,
-        log_dir=f"logs/{args.task}",
+        log_dir=log_dir,
         # NEW: checkpoint controls
         work_dir="checkpoints",
         trial_name=trial_name,
-        resume=True,            # set True to load if checkpoint exists
-        save_every=1,           # save each generation
+        resume=True,                            # set True to load if checkpoint exists
+        save_every=1,                           # save each generation
+        scale_method=args.scale_method,         # None, 'linear', 'exp', 'custom'
+        exp_base=1.1,                           # only used if scale_method=='exp'
+        lr=args.lr,                             # learning rate for GD step
     )
