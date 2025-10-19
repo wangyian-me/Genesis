@@ -1,6 +1,6 @@
 import argparse
 import mediapy
-import torch
+import os
 import numpy as np
 import genesis as gs
 import sys
@@ -13,7 +13,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-v", "--vis", action="store_true", default=False)
     parser.add_argument("-p", "--path", type=str, default=None)
+    parser.add_argument("--version", type=str, default=None)
     parser.add_argument("-n", "--n_envs", type=int, default=49)
+    parser.add_argument("-r", "--raytracer", action="store_true", default=False)
     args = parser.parse_args()
 
     ########################## init ##########################
@@ -40,33 +42,64 @@ def main():
             n_pbd_iters=20,
         ),
         show_viewer=args.vis,
+        renderer=gs.renderers.RayTracer(
+            env_surface=gs.surfaces.Emission(
+                emissive_texture=gs.textures.ImageTexture( 
+                    image_path='textures/brown_photostudio_02_4k.exr',
+                    image_color=(0.6, 0.6, 0.6),
+                ),
+            ),
+            env_radius=15.0,
+            env_euler=(0, 0, 180),
+            lights=[],
+        ) if args.raytracer else gs.renderers.Rasterizer(),
     )
 
     cameras = list()
     if args.path is not None:
         cameras.append(scene.add_camera(
-            res=(600, 450), pos=(2, -1.4, 1.5), up=(0, 0, 1),
+            res=(1024, 1024), pos=(2, -1.4, 1.5), up=(0, 0, 1),
             lookat=(0.12, 0.2, 0.18), fov=24, GUI=False
         ))
         cameras.append(scene.add_camera(
-            res=(600, 450), pos=(-1.5, -1.4, 1.4), up=(0, 0, 1),
-            lookat=(0.12, 0.25, 0.18), fov=24, GUI=False
+            res=(1024, 1024), pos=(-0.15, 1.4, 1.2), up=(0, 0, 1),
+            lookat=(0.12, 0.25, 0.35), fov=33, GUI=False
         ))
+        save_dir = args.path
+        os.makedirs(save_dir, exist_ok=True)
+    else:
+        save_dir = None
 
     ########################## entities ##########################
     plane = scene.add_entity(
         material=gs.materials.Rigid(
             needs_coup=True, coup_friction=0.01,
         ),
-        morph=gs.morphs.URDF(file="urdf/plane/plane.urdf", fixed=True),
+        morph=gs.morphs.URDF(
+            file="urdf/plane/plane.urdf",
+            fixed=True,
+            visualization=not args.raytracer,
+        ),
     )
+    if args.raytracer:
+        table = scene.add_entity(
+            morph=gs.morphs.Mesh(
+                file="meshes/wooden_table.glb",
+                pos=(-0., 0, -0.799418 * 4),
+                euler=(90, 0, 90),
+                scale=4,
+                collision=False,
+                fixed=True,
+            ),
+            surface=gs.surfaces.Default()
+        )
 
     segment_radius = 0.005
     r1 = scene.add_entity(
         material=gs.materials.ROD.Base(
             segment_radius=segment_radius,
             segment_mass=0.0005,
-            K=9e5,  # 5e5
+            K=6e5,  # 5e5
             E=4e5,
             G=0,
             plastic_yield=np.inf,
@@ -80,9 +113,12 @@ def main():
             pos=(0.0, 0.0, 0.21),
             euler=(0, 0, 0),
         ),
-        surface=gs.surfaces.Default(
-            color=(0.4, 1.0, 0.4),
+        surface=gs.surfaces.Rough(
+            diffuse_texture=gs.textures.ImageTexture(
+                image_path="textures/rope02.png",
+            ),
             vis_mode='recon',
+            normal_diff_clamp=1,
         )
     )
 
@@ -293,11 +329,13 @@ def main():
     gs.logger.info("released")
 
     for cid in frames:
-        mediapy.write_video(args.path.replace(".mp4", f"_c{cid}.mp4"), frames[cid], fps=30, qp=18)
+        ver = f"_{args.version}" if args.version is not None else ""
+        video_path = os.path.join(save_dir, f"video{ver}_c{cid}.mp4")
+        mediapy.write_video(video_path, frames[cid], fps=30, qp=18)
 
     positions = np.array(positions).squeeze(1)
     print(positions.shape)
-    np.savez(args.path.replace(".mp4", "_pos.npz"),
+    np.savez(os.path.join(save_dir, f"xarm_position{ver}.npz"),
              positions=positions,
              init_pos=r1_init_pos)
 

@@ -1,6 +1,5 @@
 import argparse
 import mediapy
-import torch
 import numpy as np
 import genesis as gs
 import sys
@@ -14,6 +13,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-v", "--vis", action="store_true", default=False)
     parser.add_argument("-p", "--path", type=str, default=None)
+    parser.add_argument("--version", type=str, default=None)
     parser.add_argument("-n", "--n_envs", type=int, default=49)
     parser.add_argument("-r", "--raytracer", action="store_true", default=False)
     args = parser.parse_args()
@@ -62,10 +62,11 @@ def main():
             lookat=(0.12, 0.2, 0.18), fov=24, GUI=False
         ))
         cameras.append(scene.add_camera(
-            res=(1024, 1024), pos=(-1.5, -1.4, 1.4), up=(0, 0, 1),
-            lookat=(0.12, 0.25, 0.18), fov=24, GUI=False
+            res=(1024, 1024), pos=(-0.15, 1.4, 1.2), up=(0, 0, 1),
+            lookat=(0.12, 0.25, 0.35), fov=26, GUI=False
         ))
         save_dir = args.path
+        os.makedirs(save_dir, exist_ok=True)
     else:
         save_dir = None
 
@@ -273,35 +274,32 @@ def main():
         for cid, cam in enumerate(cameras):
             img = cam.render()[0]
             frames[cid].append(img)
-            gs.tools.save_img_arr(img, os.path.join(save_dir, f"img_grasp_{i}_{cid}_{args.raytracer}.png"))
     gs.logger.info("grasped")
 
     c1.control_robot(open_gap, open_gap, dy=y_delta)
     for i in range(120):
         scene.step()
-        if not args.raytracer:
-            for cid, cam in enumerate(cameras):
-                img = cam.render()[0]
-                frames[cid].append(img)
+        for cid, cam in enumerate(cameras):
+            img = cam.render()[0]
+            frames[cid].append(img)
     gs.logger.info("fetch")
 
     c1.control_robot(force1, force1, g_dof_use_force=True)
     for i in range(120):
         scene.step()
-        if not args.raytracer:
-            for cid, cam in enumerate(cameras):
-                img = cam.render()[0]
-                frames[cid].append(img)
+        for cid, cam in enumerate(cameras):
+            img = cam.render()[0]
+            frames[cid].append(img)
+        
     gs.logger.info("grasped")
 
     # stretch slingshot
     c1.control_robot(force2, force2, g_dof_use_force=True, dy=y_back)
     for i in range(120):
         scene.step()
-        if not args.raytracer:
-            for cid, cam in enumerate(cameras):
-                img = cam.render()[0]
-                frames[cid].append(img)
+        for cid, cam in enumerate(cameras):
+            img = cam.render()[0]
+            frames[cid].append(img)
     gs.logger.info("stretched")
 
     # release slingshot
@@ -311,11 +309,11 @@ def main():
         for cid, cam in enumerate(cameras):
             img = cam.render()[0]
             frames[cid].append(img)
-            gs.tools.save_img_arr(img, os.path.join(save_dir, f"img_release_{i}_{cid}_{args.raytracer}.png"))
     gs.logger.info("released")
 
     for cid in frames:
-        video_path = os.path.join(save_dir, f"video_c{cid}.mp4")
+        ver = f"_{args.version}" if args.version is not None else ""
+        video_path = os.path.join(save_dir, f"video{ver}_c{cid}.mp4")
         mediapy.write_video(video_path, frames[cid], fps=30, qp=18)
 
 if __name__ == "__main__":
