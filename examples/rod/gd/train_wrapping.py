@@ -332,7 +332,7 @@ class Train_GD_Wrapping:
             material=gs.materials.ROD.Base(
                 segment_radius=segment_radius,
                 segment_mass=0.001,
-                K=5e5,
+                K=1e5,
                 E=1e4,
                 G=0,
                 use_inextensible=False,
@@ -342,7 +342,7 @@ class Train_GD_Wrapping:
                 n_vertices=50,
                 radius=0.14,
                 axis="x",
-                pos=(0.65, 0, 0.01),
+                pos=(0.65, 0, 0.012),
                 euler=(0.0, 0.0, 0.0),
             ),
             surface=gs.surfaces.Default(
