@@ -230,6 +230,12 @@ class RodSolver(Solver):
             kinematic=gs.ti_bool,       # is the vertex kinematic
         )
 
+        struct_vertex_state_collision = ti.types.struct(
+            collided=gs.ti_bool,        # has the vertex collided in this step
+            normal=gs.ti_vec3,          # collision normal
+            penetration=gs.ti_float,    # penetration depth
+        )
+
         self.vertices_info = struct_vertex_info.field(
             shape=self._n_vertices, layout=ti.Layout.SOA
         )
@@ -252,10 +258,11 @@ class RodSolver(Solver):
             layout=ti.Layout.SOA
         )
 
-        # for RL training
-        self.vertices_collided = ti.field(
-            dtype=gs.ti_bool, needs_grad=False,
-            shape=self._batch_shape(self._n_vertices)
+        # for policy learning
+        self.vertices_collision = struct_vertex_state_collision.field(
+            shape=self._batch_shape(self._n_vertices),
+            needs_grad=False,
+            layout=ti.Layout.SOA
         )
 
         # for visualization
@@ -1833,7 +1840,10 @@ class RodSolver(Solver):
     @ti.kernel
     def _kernel_clear_collision_states(self):
         for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
-            self.vertices_collided[i_v, i_b] = False
+            self.vertices_collision[i_v, i_b].collided = False
+            self.vertices_collision[i_v, i_b].penetration = 0.0
+            for j in ti.static(range(3)):
+                self.vertices_collision[i_v, i_b].normal[j] = 0.0
 
     @ti.kernel
     def _kernel_apply_inextensibility_constraints(self, f: ti.i32):

@@ -187,9 +187,11 @@ class LegacyCoupler(RBC):
             )
             vel = self._func_collide_in_rigid_geom_rod(f, i, pos_world, vel, mass, normal_rigid, influence, geom_idx, batch_idx)
 
-        # for RL training
-        if influence > 0.8:
-            self.rod_solver.vertices_collided[i, batch_idx] = True
+            # for RL training
+            if signed_dist < -1e-6 and geom_idx != 0:
+                self.rod_solver.vertices_collision[i, batch_idx].collided = True
+                self.rod_solver.vertices_collision[i, batch_idx].normal = normal_rigid
+                self.rod_solver.vertices_collision[i, batch_idx].penetration = -signed_dist
 
         return vel
 
