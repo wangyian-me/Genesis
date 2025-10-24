@@ -6,8 +6,6 @@ import pickle
 from typing import Tuple, List, Optional, Sequence
 from argparse import ArgumentParser
 
-
-
 import numpy as np
 import cma
 
@@ -66,11 +64,17 @@ def evaluate_batch(env: Train_Env, traj_list: List[np.ndarray], ratio: float) ->
     trajs = np.zeros((n_envs, n_steps, act_dim), dtype=np.float32)
     for i, tr in enumerate(traj_list):
         trajs[i] = tr
-    # before evaluation, we take a gradient step
-    trajs_gd = env.gd_one_step(trajs, ratio=ratio)
+    if env.requires_grad:
+        # before evaluation, we take a gradient step
+        trajs_gd = env.gd_one_step(trajs, ratio=ratio)
     rewards = env.eval_traj(trajs_gd)
     return np.asarray(rewards, dtype=np.float32)
 
+def evaluate_single(env: Train_Env, traj: np.ndarray, log_dir: str) -> float:
+    rewards = env.eval_traj(traj[None, ...], debug=True)
+    print(f'Single traj reward: {rewards[0]:.4f}')
+    env.save_animation(save_dir=log_dir)
+    return rewards[0]
 
 # ----------------------------
 # Logging helpers
@@ -374,7 +378,7 @@ def optimize_trajectory(
 # Example usage
 # ----------------------------
 
-def _build_env(task: str, log_dir: str, n_envs: int):
+def _build_env(task: str, log_dir: str, n_envs: int, vis_traj: Optional[str] = None, gui: bool = False) -> Train_Env:
     task = task.lower()
     task_to_env = {
         "wiring":    Train_Env_Wiring_ring,
@@ -382,7 +386,6 @@ def _build_env(task: str, log_dir: str, n_envs: int):
         "lifting":   Train_Env_Lifting,
         "slingshot": Train_Env_Slingshot,
         "wireart":   Train_Env_Wireart,
-
         "coiling":   Train_Env_Coiling,
         "gathering": Train_Env_Gathering,
         "separation": Train_Env_Separation,
@@ -391,15 +394,15 @@ def _build_env(task: str, log_dir: str, n_envs: int):
     if task not in task_to_env:
         raise ValueError(f"Unknown task '{task}'. Valid: {sorted(task_to_env.keys())}")
     EnvCls = task_to_env[task]
-    # Most envs accept (task=..., log_dir=..., n_envs=...), but if yours differ, tweak here.
-    try:
-        return EnvCls(task=task, log_dir=log_dir, n_envs=n_envs, requires_grad=True)
-    except TypeError:
-        # Fallback if the env ctor only takes (log_dir, n_envs) or similar
-        try:
-            return EnvCls(log_dir=log_dir, n_envs=n_envs, requires_grad=True)
-        except TypeError:
-            return EnvCls()
+    if vis_traj is None:
+        require_grad = True
+        camera = False          # do not build cameras
+    else:
+        n_envs = 1
+        require_grad = False
+        camera = True           # build cameras for visualization
+
+    return EnvCls(task=task, log_dir=log_dir, n_envs=n_envs, GUI=gui, camera=camera, requires_grad=require_grad)
 
 
 if __name__ == "__main__":
@@ -409,35 +412,56 @@ if __name__ == "__main__":
         help="Task / environment to optimize."
     )
     parser.add_argument(
+        '--n_steps', type=int, default=10,
+    )
+    parser.add_argument(
         '--scale_method', type=str, default=None,
         choices=[None, 'linear', 'exp', 'custom']
     )
     parser.add_argument('--ratio', type=float, default=0.1)
-    args = parser.parse_args()
-    trial_name = f"trial_{args.task}_cmaes_gd"
-    log_dir = f"logs/{args.task}_cmaes_gd"
-    env = _build_env(args.task, log_dir, 10)
-    assert env.requires_grad, "Env must be created with requires_grad=True for traj optim."
-
-    n_steps = 10
-
-    best_traj, best_reward = optimize_trajectory(
-        env,
-        n_steps=n_steps,
-        act_dim=None,           # infer if available
-        popsize=200,
-        sigma0=0.005,
-        per_comp_bound=0.1,
-        l2_bound=0.1,          # use env.l2_bound if present
-        max_iters=100,
-        seed=123,
-        log_dir=log_dir,
-        # NEW: checkpoint controls
-        work_dir="checkpoints",
-        trial_name=trial_name,
-        resume=True,                            # set True to load if checkpoint exists
-        save_every=1,                           # save each generation
-        scale_method=args.scale_method,         # None, 'linear', 'exp', 'custom'
-        exp_base=1.1,                           # only used if scale_method=='exp'
-        ratio=args.ratio,                       # ratio between traj over delta
+    parser.add_argument(
+        '--vis_traj', type=str, default=None, 
+        help="Path to saved trajectory .npy for visualization. If None, runs optimization."
     )
+    parser.add_argument(
+        '--exp_name', type=str, default=None,
+    )
+    parser.add_argument('--gui', action='store_true', help="Whether to show GUI.")
+    args = parser.parse_args()
+
+    exp_name = f"{args.exp_name}" if args.exp_name is not None else "cmaes-gd"
+    trial_name = f"trial_{args.task}/{exp_name}"
+    log_dir = f"logs/{args.task}/{exp_name}"
+    env = _build_env(args.task, log_dir, 10, args.vis_traj, args.gui)
+
+    if args.vis_traj is None:
+
+        assert env.requires_grad, "Env must be created with requires_grad=True for traj optim."
+
+        n_steps = args.n_steps
+
+        best_traj, best_reward = optimize_trajectory(
+            env,
+            n_steps=n_steps,
+            act_dim=None,           # infer if available
+            popsize=200,
+            sigma0=0.005,
+            per_comp_bound=0.1,
+            l2_bound=0.1,          # use env.l2_bound if present
+            max_iters=100,
+            seed=123,
+            log_dir=log_dir,
+            # NEW: checkpoint controls
+            work_dir="checkpoints",
+            trial_name=trial_name,
+            resume=True,                            # set True to load if checkpoint exists
+            save_every=1,                           # save each generation
+            scale_method=args.scale_method,         # None, 'linear', 'exp', 'custom'
+            exp_base=1.1,                           # only used if scale_method=='exp'
+            ratio=args.ratio,                       # ratio between traj over delta
+        )
+
+    else:
+
+        print(f'Visualizing CMA-ES+GD trajectory from {args.vis_traj}')
+        evaluate_single(env, np.load(args.vis_traj), log_dir)

@@ -1,4 +1,6 @@
 logs/
+logs_*/
+outs/
 checkpoints/
 tmp/
 MUJOCO_LOG.TXT

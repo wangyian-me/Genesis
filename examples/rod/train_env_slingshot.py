@@ -1,18 +1,14 @@
 import genesis as gs
-import imageio
 import torch
 import numpy as np
-from scipy.spatial.transform import Rotation as R
-import os 
-import json
-import matplotlib.pyplot as plt
 from train_env import Train_Env
 
 class Train_Env_Slingshot(Train_Env):
-    def __init__(self, task='wiring', log_dir="xxx/wiring", n_envs=5):
-        super().__init__(task, n_envs=n_envs, log_dir=log_dir)
+    def __init__(self, task='wiring', GUI=False, camera=False, log_dir="xxx/wiring", n_envs=5, requires_grad=False):
+        super().__init__(task, GUI=GUI, camera=camera, n_envs=n_envs, log_dir=log_dir, requires_grad=requires_grad)
+        self.steps_interval = 200
 
-    def construct_scene(self):
+    def construct_scene(self, camera):
         plane = self.scene.add_entity(
             material=gs.materials.Rigid(
                 needs_coup=True, coup_friction=0.1,
@@ -38,9 +34,12 @@ class Train_Env_Slingshot(Train_Env):
                 pos=(0.0, 0.0, 0.21),
                 euler=(0, 0, 0),
             ),
-            surface=gs.surfaces.Default(
-                color=(0.4, 1.0, 0.4),
+            surface=gs.surfaces.Rough(
+                diffuse_texture=gs.textures.ImageTexture(
+                    image_path="textures/rope01.png",
+                ),
                 vis_mode='recon',
+                normal_diff_clamp=1,
             )
         )
 
@@ -116,12 +115,26 @@ class Train_Env_Slingshot(Train_Env):
             ),
         )
 
-        self.scene.rod_solver.register_gripper_geom_indices([])
+        if camera:
+            self.construct_cameras()
 
         self.scene.build(n_envs=self.n_envs, env_spacing=(1, 1))
 
         self.control_idx = [6]
         self.action_dim = len(self.control_idx) * 3
+    
+    def construct_cameras(self):
+        cameras = list()
+        cameras.append(self.scene.add_camera(
+            res=(1200, 900), pos=(2, -1.4, 1.5), up=(0, 0, 1),
+            lookat=(0.12, 0.2, 0.18), fov=24, GUI=False
+        ))
+        cameras.append(self.scene.add_camera(
+            res=(1200, 900), pos=(-0.15, 1.4, 1.2), up=(0, 0, 1),
+            lookat=(0.12, 0.25, 0.35), fov=33, GUI=False
+        ))
+
+        self.cameras = cameras
 
     def reward(self):
         # [n_envs, 3]
@@ -139,11 +152,7 @@ class Train_Env_Slingshot(Train_Env):
 
         return rewards
 
-    def step(self, actions):
-        raise NotImplementedError()
-        # to be done
-
-    def eval_traj(self, trajs):
+    def eval_traj(self, trajs, debug=False):
         """
         Evaluate trajectories.
 
@@ -170,7 +179,7 @@ class Train_Env_Slingshot(Train_Env):
         fixed_np[:, [0, 1, 10, 11]] = True  # also fix the two ends
         self.rope.set_fixed(0, fixed_np)
 
-        steps_interval = 250
+        steps_interval = self.steps_interval
         total_micro_steps = int(n_steps * steps_interval)
         if total_micro_steps <= 0:
             # Degenerate case: no steps → everyone "survives"; defer to env reward (or -100 if NaN)
@@ -210,9 +219,27 @@ class Train_Env_Slingshot(Train_Env):
             current_pos = verts_rope[:, self.control_idx]              # (n_envs, n_ctrl, 3)
             delta = trajs[:, i].reshape(self.n_envs, -1, 3)            # (n_envs, n_ctrl, 3)
 
+            if debug:
+                debug_pos = current_pos + delta
+                debug_pos = debug_pos.copy()
+                for batch_idx in range(self.n_envs):
+                    offset = self.scene.envs_offset[batch_idx]
+                    for ii in self.debug_point_nodes:
+                        self.scene.clear_debug_object(ii)
+                    self.debug_point_nodes = list()
+                    for ii in range(len(self.control_idx)):
+                        self.debug_point_nodes.append(self.scene.draw_debug_sphere(
+                            pos=debug_pos[batch_idx, ii] + offset,
+                            radius=0.016,
+                            color=(0.0, 1.0, 0.0, 0.6)
+                        ))
+
             for j in range(steps_interval):
                 if not alive.any():
                     break
+
+                # NOTE: Do not move already-failed envs
+                delta[~alive, :, :] = 0.0
 
                 alpha = (j + 1) / steps_interval
                 target_pos = current_pos + delta * alpha               # (n_envs, n_ctrl, 3)
@@ -223,8 +250,13 @@ class Train_Env_Slingshot(Train_Env):
 
                 self.scene.step()
 
+                if j % 10 == 0:
+                    for cid, cam in enumerate(self.cameras):
+                        img = cam.render()[0]
+                        self.frames[cid].append(img)
+
                 # Post-step: detect collisions
-                collided = self.rope._solver.vertices_collided.to_numpy()  # (n_verts, n_envs)
+                collided = self.rope._solver.vertices_collision.collided.to_numpy()  # (n_verts, n_envs)
                 collided = collided.T  # (n_envs, n_vertices)
                 verts_to_check = np.array(self.control_idx) + self.rope._v_start
                 collided_ctrl = collided[:, verts_to_check].any(axis=1)          # (n_envs,)
@@ -268,7 +300,7 @@ class Train_Env_Slingshot(Train_Env):
         # Failed: reward = survival_ratio (counts both collision and NaN cases)
         if failed.any():
             survival_ratio = first_fail_step.astype(np.float32) / float(total_micro_steps)
-            final[failed] = survival_ratio[failed]
+            final[failed] = survival_ratio[failed] - 100
 
         # Survived full rollout: take env reward; if it's NaN, clamp to -100
         final[survived] = env_rewards[survived]

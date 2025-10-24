@@ -1,11 +1,11 @@
 import genesis as gs
-import imageio
 import torch
 import numpy as np
+import mediapy
 from scipy.spatial.transform import Rotation as R
 import os 
-import json
-import matplotlib.pyplot as plt
+from collections import defaultdict
+
 from gd.traj_optim_cmaes import (
     create_linear_array,
     create_exp_array,
@@ -15,13 +15,13 @@ from gd.traj_optim_cmaes import (
 
 
 class Train_Env():
-    def __init__(self, task, scene=None, GUI=False, log_dir=None, n_envs=None, requires_grad=False):
+    def __init__(self, task, scene=None, GUI=False, camera=False, log_dir=None, n_envs=None, requires_grad=False):
         self.task = task
         self.GUI = GUI
         self.n_envs = n_envs
         self.requires_grad = requires_grad
         print(f"GUI: {self.GUI}, n_envs: {self.n_envs}, requires_grad: {self.requires_grad}")
-        gs.init(seed=0, precision="64", logging_level="error", backend=gs.gpu, debug=True, performance_mode=True)
+        gs.init(seed=0, precision="64", logging_level="error", backend=gs.gpu, performance_mode=True)
         if scene is None:
             viewer_options = gs.options.ViewerOptions(
                 camera_pos=(3, -1, 1.5),
@@ -58,7 +58,10 @@ class Train_Env():
 
         self.create_log_dir(log_dir)
 
-        self.construct_scene()
+        self.cameras = list()
+        self.frames = defaultdict(list)
+        self.construct_scene(camera=camera)
+        self.debug_point_nodes = list()
 
     def construct_traj_optim(self, max_ddist=0.1, max_grad_norm=1000, debug=False):
         if not self.requires_grad:
@@ -104,23 +107,29 @@ class Train_Env():
             for link in entity.links:
                 link._inertial_mass = mass
 
-    def construct_scene(self):
+    def construct_scene(self, camera=False):
+        raise NotImplementedError()
+
+    def construct_cameras(self):
         raise NotImplementedError()
 
     def reward(self):
         raise NotImplementedError()
-        self.img_steps += 1
 
-    def save_gif(self, save_dir):
-        images = []
-        file_list = [f for f in os.listdir(save_dir) if f.endswith('.png')]
-        file_list.sort()
-        for f in file_list:
-            images.append(imageio.imread(os.path.join(save_dir, f)))
-        imageio.mimsave(os.path.join(save_dir, 'movie.gif'), images)
-    
+    def loss_criterion(self, state):
+        raise NotImplementedError()
+
     def reset(self):
-        self.scene.reset()
+        raise NotImplementedError()
+
+    def save_animation(self, save_dir):
+        if len(self.frames) == 0:
+            return
+
+        for cid in self.frames:
+            video_path = os.path.join(save_dir, f"view_{cid}_best.mp4")
+            mediapy.write_video(video_path, self.frames[cid], fps=30, qp=18)
+            print(f'Saved video to {video_path}')
 
     def loss_above_plane(self, state):
         # Required loss to make sure the vertices above the plane
@@ -130,6 +139,150 @@ class Train_Env():
         ).sum(dim=1)                    # (n_envs,)
 
         return loss_abv_plane
+
+    def eval_traj(self, trajs, debug=False):
+        """
+        Evaluate trajectories.
+
+        Rewards:
+        - If an env survives all micro-steps: reward = self.reward()[env].
+        - If an env COLLIDES or gets NaNs in verts: reward = survival_time / total_micro_steps.
+        - If env reward is NaN at the end: reward = -100.
+
+        Survival time counts micro-steps from 0..N, where N = n_steps * steps_interval.
+        """
+        import numpy as np
+
+        assert trajs.ndim == 3, f"trajs must be (n_envs, n_steps, dof), got {trajs.shape}"
+        n_envs, n_steps, dof = trajs.shape
+        assert n_envs == self.n_envs, f"n_envs mismatch: trajs has {n_envs}, self.n_envs is {self.n_envs}"
+        n_ctrl = len(self.control_idx)
+        assert dof % 3 == 0 and dof // 3 == n_ctrl, (
+            f"dof must be 3 * len(control_idx). Got dof={dof}, len(control_idx)={n_ctrl}"
+        )
+
+        self.reset()
+
+        steps_interval = self.steps_interval
+        total_micro_steps = int(n_steps * steps_interval)
+        if total_micro_steps <= 0:
+            # Degenerate case: no steps → everyone "survives"; defer to env reward (or -100 if NaN)
+            rewards = np.asarray(self.reward(), dtype=np.float32)
+            rewards[np.isnan(rewards)] = -100.0
+            return rewards.astype(np.float32)
+
+        # Per-env status
+        alive = np.ones((self.n_envs,), dtype=bool)              # True until first failure (collision or NaN)
+        ever_nan = np.zeros((self.n_envs,), dtype=bool)          # True if verts ever became NaN
+        ever_collided = np.zeros((self.n_envs,), dtype=bool)     # True if collision occurred
+        first_fail_step = np.full((self.n_envs,), total_micro_steps, dtype=np.int32)  # micro-step index of first failure
+
+        for i in range(n_steps):
+            # Check NaNs BEFORE micro-stepping this macro-step
+            verts_rope = self.rope.get_all_verts()  # (n_envs, n_vertices, 3)
+            nan_now = np.isnan(verts_rope).any(axis=(1, 2))
+            newly_nan = nan_now & alive
+            if newly_nan.any():
+                # Failure occurs before any micro-step of this macro-step
+                # Use step = max(1, i*steps_interval) to keep survival count >= 1 if we want strictly positive
+                step_at_nan = i * steps_interval
+                step_at_nan = max(1, step_at_nan)
+                first_fail_step[newly_nan] = step_at_nan
+                ever_nan[newly_nan] = True
+                alive[newly_nan] = False
+
+            # Early exit if everyone is already NaN
+            if ever_nan.all():
+                break
+
+            # If no env is alive anymore, we can stop
+            if not alive.any():
+                break
+
+            # Prepare interpolation to targets for this macro-step
+            current_pos = verts_rope[:, self.control_idx]              # (n_envs, n_ctrl, 3)
+            delta = trajs[:, i].reshape(self.n_envs, -1, 3)            # (n_envs, n_ctrl, 3)
+
+            if debug:
+                debug_pos = current_pos + delta
+                debug_pos = debug_pos.copy()
+                for batch_idx in range(self.n_envs):
+                    offset = self.scene.envs_offset[batch_idx]
+                    for ii in self.debug_point_nodes:
+                        self.scene.clear_debug_object(ii)
+                    self.debug_point_nodes = list()
+                    for ii in range(len(self.control_idx)):
+                        self.debug_point_nodes.append(self.scene.draw_debug_sphere(
+                            pos=debug_pos[batch_idx, ii] + offset,
+                            radius=0.016,
+                            color=(0.0, 1.0, 0.0, 0.6)
+                        ))
+
+            for j in range(steps_interval):
+                if not alive.any():
+                    break
+
+                # NOTE: Do not move already-failed envs
+                delta[~alive, :, :] = 0.0
+
+                alpha = (j + 1) / steps_interval
+                target_pos = current_pos + delta * alpha               # (n_envs, n_ctrl, 3)
+
+                # Apply target positions; if set_pos_single isn't batch-aware, loop envs instead.
+                for k in range(n_ctrl):
+                    self.rope.set_pos_single(target_pos[:, k], self.control_idx[k])
+
+                self.scene.step()
+
+                if j % 10 == 0:
+                    for cid, cam in enumerate(self.cameras):
+                        img = cam.render()[0]
+                        self.frames[cid].append(img)
+
+                # Post-step: detect collisions
+                collided = self.rope._solver.vertices_collision.collided.to_numpy()  # (n_verts, n_envs)
+                collided = collided.T  # (n_envs, n_vertices)
+                verts_to_check = np.array(self.control_idx) + self.rope._v_start
+                collided_ctrl = collided[:, verts_to_check].any(axis=1)          # (n_envs,)
+
+                newly_collided = collided_ctrl & alive
+                if newly_collided.any():
+                    global_step = i * steps_interval + (j + 1)
+                    first_fail_step[newly_collided] = np.minimum(first_fail_step[newly_collided], global_step)
+                    ever_collided[newly_collided] = True
+                    alive[newly_collided] = False
+
+                # Post-step: detect NaNs that emerge during micro-stepping
+                verts_rope_post = self.rope.get_all_verts()
+                nan_after = np.isnan(verts_rope_post).any(axis=(1, 2))
+                newly_nan_after = nan_after & alive
+                if newly_nan_after.any():
+                    global_step = i * steps_interval + (j + 1)
+                    first_fail_step[newly_nan_after] = np.minimum(first_fail_step[newly_nan_after], global_step)
+                    ever_nan[newly_nan_after] = True
+                    alive[newly_nan_after] = False
+
+        # Compute base rewards
+        env_rewards = np.asarray(self.reward(), dtype=np.float32)
+        env_rewards_nan = np.isnan(env_rewards)
+
+        # Compose final rewards
+        final = np.empty((n_envs,), dtype=np.float32)
+
+        failed = ~alive  # failed due to collision or NaN during rollout
+        survived = alive
+
+        # Failed: reward = survival_ratio (counts both collision and NaN cases)
+        if failed.any():
+            survival_ratio = first_fail_step.astype(np.float32) / float(total_micro_steps)
+            final[failed] = survival_ratio[failed] - 100
+
+        # Survived full rollout: take env reward; if it's NaN, clamp to -100
+        final[survived] = env_rewards[survived]
+        if env_rewards_nan.any():
+            final[env_rewards_nan] = -100.0
+
+        return final.astype(np.float32)
 
     def adaptive_scale(self, trajs, deltas, ratio=0.1):
         norm_trajs = np.linalg.norm(trajs, axis=-1, keepdims=True)
