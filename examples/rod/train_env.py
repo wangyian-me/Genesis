@@ -95,12 +95,7 @@ class Train_Env():
             raise ValueError(f'Unknown scale method: {scale_method}')
 
     def create_log_dir(self, log_dir):
-        log_dir = os.path.join(log_dir, 'try')
         os.makedirs(log_dir, exist_ok=True)
-        # n_tries = len([fil for fil in os.listdir(log_dir) if not '.' in fil])
-        # self.img_save_dir = os.path.join(log_dir, f"{n_tries:03d}")
-        # os.makedirs(self.img_save_dir, exist_ok=True)
-        # os.makedirs(os.path.join(self.img_save_dir, "opt_log"), exist_ok=True)
 
     def init_mass(self, mass=0.015):
         for entity in self.scene.sim.rigid_solver.entities[2:]:

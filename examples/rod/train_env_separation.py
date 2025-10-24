@@ -27,6 +27,7 @@ class Train_Env_Separation(Train_Env):
             morph=gs.morphs.Rod(
                 file="meshes/ropea.npy",
                 rest_state="straight",
+                pos=(0., 0., 0.012),
             ),
             surface=gs.surfaces.Rough(
                 diffuse_texture=gs.textures.ImageTexture(
@@ -42,11 +43,12 @@ class Train_Env_Separation(Train_Env):
                 segment_radius=segment_radius,
                 segment_mass=0.001,
                 E=5e3,
-                G=0,
+                G=1e3,
             ),
             morph=gs.morphs.Rod(
                 file="meshes/ropeb.npy",
                 rest_state="straight",
+                pos=(0., 0., 0.012),
             ),
             surface=gs.surfaces.Rough(
                 diffuse_texture=gs.textures.ImageTexture(

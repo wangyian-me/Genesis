@@ -448,7 +448,7 @@ if __name__ == "__main__":
             sigma0=0.005,
             per_comp_bound=0.1,
             l2_bound=0.1,          # use env.l2_bound if present
-            max_iters=100,
+            max_iters=20,
             seed=123,
             log_dir=log_dir,
             # NEW: checkpoint controls
