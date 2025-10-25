@@ -6,6 +6,7 @@ import genesis as gs
 import genesis.utils.geom as gu
 from genesis.engine.states.cache import QueriedStates
 from genesis.engine.states.entities import RODEntityState
+import genesis.utils.sdf_decomp as sdf_decomp
 from genesis.utils.misc import ALLOCATE_TENSOR_WARNING, to_gs_tensor, tensor_to_array
 
 from .base_entity import Entity
@@ -177,6 +178,9 @@ class RodEntity(Entity):
             state.fixed,
             state.theta,
             state.omega,
+            state.collided,
+            state.collision_normal,
+            state.collision_penetration
         )
 
         # we store all queried states to track gradient flow
@@ -936,6 +940,10 @@ class RodEntity(Entity):
         fixed: ti.types.ndarray(),
         theta: ti.types.ndarray(),
         omega: ti.types.ndarray(),
+        # collision state
+        collided: ti.types.ndarray(),
+        collision_normal: ti.types.ndarray(),
+        collision_penetration: ti.types.ndarray(),
     ):
         """
         Extract the state of particles at the given frame.
@@ -959,6 +967,15 @@ class RodEntity(Entity):
 
         omega : np.ndarray
             Output array of shape (n_envs, n_edges) to store angular velocities.
+
+        collided : np.ndarray
+            Output array of shape (n_envs, n_vertices) to store collision status.
+
+        collision_normal : np.ndarray
+            Output array of shape (n_envs, n_vertices, 3) to store collision normals.
+
+        collision_penetration : np.ndarray
+            Output array of shape (n_envs, n_vertices) to store collision penetration depths.
         """
 
         for i_v, i_b in ti.ndrange(self.n_vertices, self._sim._B):
@@ -966,7 +983,10 @@ class RodEntity(Entity):
             for j in ti.static(range(3)):
                 pos[i_b, i_v, j] = self._solver.vertices[f, i_global, i_b].vert[j]
                 vel[i_b, i_v, j] = self._solver.vertices[f, i_global, i_b].vel[j]
+                collision_normal[i_b, i_v, j] = self._solver.vertices_collision[i_global, i_b].normal[j]
             fixed[i_b, i_v] = self._solver.vertices_ng[f, i_global, i_b].fixed
+            collided[i_b, i_v] = self._solver.vertices_collision[i_global, i_b].collided
+            collision_penetration[i_b, i_v] = self._solver.vertices_collision[i_global, i_b].penetration
 
         for i_e, i_b in ti.ndrange(self.n_edges, self._sim._B):
             i_global = i_e + self.e_start
@@ -1004,6 +1024,52 @@ class RodEntity(Entity):
         pos = torch.zeros(base_v_shape, **args)
         self.get_all_verts_kernel(pos)
         return pos
+
+    @ti.kernel
+    def get_nearest_verts_from_rigid_geom_kernel(
+        self,
+        geom_idx: ti.i32,
+        nearest_points: ti.types.ndarray(),
+    ):
+        for i_v, i_b in ti.ndrange(self.n_vertices, self._sim._B):
+            i_global = i_v + self.v_start
+            i_va = sdf_decomp.sdf_func_find_closest_vert(
+                geoms_state=self.sim.rigid_solver.geoms_state,
+                geoms_info=self.sim.rigid_solver.geoms_info,
+                sdf_info=self.sim.rigid_solver.sdf._sdf_info,
+                pos_world=self._solver.vertices[0, i_global, i_b].vert,
+                geom_idx=geom_idx,
+                i_b=i_b
+            )
+            g_pos = self.sim.rigid_solver.geoms_state.pos[geom_idx, i_b]
+            g_quat = self.sim.rigid_solver.geoms_state.quat[geom_idx, i_b]
+            n_pos = gu.ti_transform_by_trans_quat(
+                self.sim.rigid_solver.verts_info.init_pos[i_va], g_pos, g_quat
+            )
+            for j in ti.static(range(3)):
+                nearest_points[i_b, i_v, j] = n_pos[j]
+
+    def get_nearest_verts_from_rigid_geom(self, geom_idx):
+        base_v_shape = (self.sim._B, self.n_vertices, 3)
+        args = {
+            "dtype": gs.np_float,
+            # "requires_grad": False,
+            # "scene": self.scene,
+        }
+        nearest_points = np.zeros(base_v_shape, **args)
+        self.get_nearest_verts_from_rigid_geom_kernel(geom_idx, nearest_points)
+        return nearest_points
+
+    def get_nearest_verts_from_rigid_geom_tc(self, geom_idx, requires_grad=False):
+        base_v_shape = (self.sim._B, self.n_vertices, 3)
+        args = {
+            "dtype": gs.tc_float,
+            "requires_grad": requires_grad,
+            # "scene": self.scene,
+        }
+        nearest_points = torch.zeros(base_v_shape, **args)
+        self.get_nearest_verts_from_rigid_geom_kernel(geom_idx, nearest_points)
+        return nearest_points
 
     @ti.kernel
     def set_frame_add_grad_pos(self, f: ti.i32, pos_grad: ti.types.ndarray()):

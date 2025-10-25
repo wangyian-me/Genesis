@@ -215,6 +215,20 @@ class RODEntityState:
         args["requires_grad"] = False
         self._fixed = gs.zeros((self.entity.sim._B, self.entity.n_vertices), **args)
 
+        # collision state (used for policy learning)
+        self._collided = gs.zeros(
+            (self.entity.sim._B, self.entity.n_vertices),
+            dtype=gs.tc_bool, requires_grad=False, scene=self.entity.scene
+        )
+        self._collision_normal = gs.zeros(
+            (self.entity.sim._B, self.entity.n_vertices, 3),
+            dtype=gs.tc_float, requires_grad=False, scene=self.entity.scene
+        )
+        self._collision_penetration = gs.zeros(
+            (self.entity.sim._B, self.entity.n_vertices),
+            dtype=gs.tc_float, requires_grad=False, scene=self.entity.scene
+        )
+
     def serializable(self):
         self._entity = None
 
@@ -223,6 +237,10 @@ class RODEntityState:
         self._fixed = self._fixed.detach()
         self._theta = self._theta.detach()
         self._omega = self._omega.detach()
+
+        self._collided = self._collided.detach()
+        self._collision_normal = self._collision_normal.detach()
+        self._collision_penetration = self._collision_penetration.detach()
 
     @property
     def entity(self):
@@ -251,3 +269,15 @@ class RODEntityState:
     @property
     def omega(self):
         return self._omega
+
+    @property
+    def collided(self):
+        return self._collided
+
+    @property
+    def collision_normal(self):
+        return self._collision_normal
+
+    @property
+    def collision_penetration(self):
+        return self._collision_penetration
