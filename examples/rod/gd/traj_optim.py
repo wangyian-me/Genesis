@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 import genesis as gs
 
 from genesis.engine.entities import RodEntity
@@ -23,6 +24,13 @@ def create_custom_array(N):
     base_seq = base_seq / base_seq.sum() # ensure sum to 1
     return base_seq
 
+def cosine_learning_rate_scheduler(base_lr, cur_iter, max_iter, min_lr=1e-6):
+    if cur_iter >= max_iter:
+        return min_lr
+    cosine_decay = 0.5 * (1 + np.cos(np.pi * cur_iter / max_iter))
+    lr = min_lr + (base_lr - min_lr) * cosine_decay
+    return lr
+
 class TrajOptim:
     def __init__(
         self,
@@ -35,7 +43,9 @@ class TrajOptim:
         max_grad_norm=1000.,
         use_adam=False,
         adam_config=None,
-        debug=False
+        debug=False,
+        # lr scheduler
+        lr_scheduler=None,
     ):
         self.scene = scene
         self.rod = rod
@@ -51,7 +61,6 @@ class TrajOptim:
         if self.use_adam:
             self.m_buffer = torch.zeros_like(self.traj)
             self.v_buffer = torch.zeros_like(self.traj)
-            self.iter = 0
             if adam_config is None:
                 adam_config = {
                     "beta1": 0.9,
@@ -66,6 +75,15 @@ class TrajOptim:
                 if "eps" not in adam_config:
                     adam_config["eps"] = 1e-8
             self.adam_config = adam_config
+
+        if lr_scheduler is None:
+            self.lr_scheduler = None
+            print('No learning rate scheduler used.')
+        elif lr_scheduler == 'cosine':
+            self.lr_scheduler = cosine_learning_rate_scheduler
+            print('Using cosine learning rate scheduler.')
+        else:
+            raise ValueError(f'Unknown learning rate scheduler: {lr_scheduler}')
 
         self.n_stages = n_stages
         self.n_optim_dofs = n_optim_dofs
@@ -114,7 +132,10 @@ class TrajOptim:
         target_pos[:, :, 2] = torch.maximum(target_pos[:, :, 2], rod_radius)
         self.rod.set_position(target_pos)
 
-    def gather_grad(self, stage_idx, horizon_idx, lr=0.01):
+    def gather_grad(self, stage_idx, horizon_idx, cur_step=None, max_step=None, lr=0.01, lr_min=1e-6):
+        if self.lr_scheduler is not None:
+            lr = self.lr_scheduler(base_lr=lr, cur_iter=cur_step, max_iter=max_step, min_lr=lr_min)
+
         grad = self.rod._queried_states[horizon_idx][0].pos.grad
 
         # [n_envs, n_grasp_points, 3]
@@ -139,13 +160,31 @@ class TrajOptim:
             self.m_buffer[:, stage_idx, :, :] = m_t
             self.v_buffer[:, stage_idx, :, :] = v_t
 
-            m_cap = m_t / (1 - beta1 ** (self.iter + 1))
-            v_cap = v_t / (1 - beta2 ** (self.iter + 1))
-            
+            m_cap = m_t / (1 - beta1 ** (cur_step + 1))
+            v_cap = v_t / (1 - beta2 ** (cur_step + 1))
+
             d_pos = -lr * m_cap / (torch.sqrt(v_cap) + eps)
-            self.iter += 1
         else:
             # SGD
             d_pos = -lr * contact_grad
+
+        # Post-step: detect collisions and correct the trajectory if necessary.
+        collided = self.rod._queried_states[horizon_idx][0].collided
+        # [n_envs, n_grasp_points]
+        contact_collided = collided[:, self.grasp_point_ids]
+        if contact_collided.any():
+            collision_normal = self.rod._queried_states[horizon_idx][0].collision_normal
+            collision_penetration = self.rod._queried_states[horizon_idx][0].collision_penetration
+
+            contact_col_normal = collision_normal[:, self.grasp_point_ids, :]
+            contact_col_pen = collision_penetration[:, self.grasp_point_ids]
+
+            # For each collided point, we will push it out along the collision normal by the penetration depth.
+            # This is a simple way to correct for collisions in the trajectory optimization.
+            correction = contact_col_normal * contact_col_pen[:, :, None]
+            # We will apply this correction to the trajectory if the point is collided.
+            d_pos = torch.where(
+                contact_collided[:, :, None], correction, d_pos
+            )
 
         self.traj[:, stage_idx, :, :] += d_pos

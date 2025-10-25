@@ -103,4 +103,21 @@ class TrajOptimCMAES:
 
         delta = -contact_grad # assume lr=1.0 here
 
+        # Post-step: detect collisions and correct the trajectory if necessary.
+        collided = self.rod._queried_states[horizon_idx][0].collided
+        # [n_envs, n_grasp_points]
+        contact_collided = collided[:, self.grasp_point_ids]
+        if contact_collided.any():
+            collision_normal = self.rod._queried_states[horizon_idx][0].collision_normal
+            collision_penetration = self.rod._queried_states[horizon_idx][0].collision_penetration
+
+            contact_col_normal = collision_normal[:, self.grasp_point_ids, :]
+            contact_col_pen = collision_penetration[:, self.grasp_point_ids]
+
+            # For each collided point, we will push it out along the collision normal by the penetration depth.
+            # This is a simple way to correct for collisions in the trajectory optimization.
+            correction = contact_col_normal * contact_col_pen[:, :, None]
+            # We will apply this correction to the trajectory if the point is collided.
+            delta = correction
+
         return delta
