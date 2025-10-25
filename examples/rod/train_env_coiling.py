@@ -61,7 +61,7 @@ class Train_Env_Coiling(Train_Env):
 
         self.scene.build(n_envs=self.n_envs, env_spacing=(1, 1))
 
-        self.control_idx = [1, 58]
+        self.control_idx = [1]
         self.action_dim = len(self.control_idx) * 3
 
     def construct_cameras(self):
