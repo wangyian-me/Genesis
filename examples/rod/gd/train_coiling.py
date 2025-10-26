@@ -121,8 +121,8 @@ class Train_GD_Coiling(Train_Env_GD):
                 lookat=(0., 0., 0.1), fov=30, GUI=False
             ))
             cameras.append(self.scene.add_camera(
-                res=(1200, 900), pos=(-0.5, 2.7, 1.), up=(0, 0, 1),
-            lookat=(0., 0., 0.1), fov=30, GUI=False
+                res=(1200, 900), pos=(-1.8, -0.5, 1.8), up=(0, 0, 1),
+                lookat=(0., 0., 0.1), fov=30, GUI=False
             ))
 
         self.cameras = cameras
