@@ -111,10 +111,15 @@ class TrajOptim:
                     self.scene.clear_debug_object(i)
                 self.debug_point_nodes = list()
                 for i in range(self.n_grasp_points):
+                    if debug_pos[batch_idx, i, 2] < self.rod.material.segment_radius:
+                        color = (1.0, 1.0, 0.0, 0.6)
+                        debug_pos[batch_idx, i, 2] = self.rod.material.segment_radius
+                    else:
+                        color = (0.0, 1.0, 0.0, 0.6)
                     self.debug_point_nodes.append(self.scene.draw_debug_sphere(
                         pos=debug_pos[batch_idx, i] + offset,
                         radius=0.016,
-                        color=(1.0, 0.0, 0.0, 0.6)
+                        color=color
                     ))
 
         target_pos_list = list()

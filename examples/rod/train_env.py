@@ -207,10 +207,15 @@ class Train_Env():
                         self.scene.clear_debug_object(ii)
                     self.debug_point_nodes = list()
                     for ii in range(len(self.control_idx)):
+                        if debug_pos[batch_idx, ii, 2] < self.rope.material.segment_radius:
+                            color = (1.0, 1.0, 0.0, 0.6)
+                            debug_pos[batch_idx, ii, 2] = self.rope.material.segment_radius
+                        else:
+                            color = (0.0, 1.0, 0.0, 0.6)
                         self.debug_point_nodes.append(self.scene.draw_debug_sphere(
                             pos=debug_pos[batch_idx, ii] + offset,
                             radius=0.016,
-                            color=(0.0, 1.0, 0.0, 0.6)
+                            color=color
                         ))
 
             for j in range(steps_interval):
