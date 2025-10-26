@@ -31,6 +31,7 @@ def arg_parser():
     parser.add_argument('--exp_name', type=str, default=None)
     parser.add_argument('--lr_scheduler', type=str, default=None, choices=[None, 'cosine'])
     parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--seed', type=int, default=123)
     return parser.parse_args()
 
 

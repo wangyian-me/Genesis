@@ -21,6 +21,10 @@ class Train_Env_GD:
         ########################## init ##########################
         gs.init(seed=0, precision="64", logging_level="error", backend=gs.gpu, performance_mode=True)
 
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
+
         ########################## create a scene ##########################
         viewer_options = gs.options.ViewerOptions(
             camera_pos=(3, -1, 1.5),

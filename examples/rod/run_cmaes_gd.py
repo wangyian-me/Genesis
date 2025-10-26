@@ -255,6 +255,8 @@ def optimize_trajectory(
         lower.extend((-pcb).tolist())
         upper.extend((+pcb).tolist())
 
+    print(f'Max moving distance {l2_bound}x{n_steps}={l2_bound * n_steps} m for each control point')
+
     # Try to resume CMA-ES
     es = None
     start_iter = 0
@@ -381,7 +383,7 @@ def optimize_trajectory(
 def _build_env(task: str, log_dir: str, n_envs: int, vis_traj: Optional[str] = None, gui: bool = False) -> Train_Env:
     task = task.lower()
     task_to_env = {
-        "wiring":    Train_Env_Wiring_ring,
+        "wiring_ring": Train_Env_Wiring_ring,
         "wiring_post": Train_Env_Wiring_post,
         "lifting":   Train_Env_Lifting,
         "slingshot": Train_Env_Slingshot,
@@ -410,6 +412,9 @@ if __name__ == "__main__":
     parser.add_argument(
         '--task', type=str, default='wiring',
         help="Task / environment to optimize."
+    )
+    parser.add_argument(
+        '--seed', type=int, default=123,
     )
     parser.add_argument(
         '--n_steps', type=int, default=10,
@@ -449,7 +454,7 @@ if __name__ == "__main__":
             per_comp_bound=0.1,
             l2_bound=0.1,          # use env.l2_bound if present
             max_iters=20,
-            seed=123,
+            seed=args.seed,
             log_dir=log_dir,
             # NEW: checkpoint controls
             work_dir="checkpoints",
