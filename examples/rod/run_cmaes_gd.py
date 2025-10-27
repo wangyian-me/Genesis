@@ -134,7 +134,7 @@ def _ckpt_paths(work_dir: Optional[str], trial_name: Optional[str]):
     _ensure_dir(d)
     return os.path.join(d, "cmaes_ckpt.pkl"), os.path.join(d, "resume_meta.json")
 
-def _save_cma_ckpt(es, work_dir: Optional[str], trial_name: Optional[str], iter_idx: int):
+def _save_cma_ckpt(es, work_dir: Optional[str], trial_name: Optional[str], iter_idx: int, best_reward: float):
     pkl_path, meta_path = _ckpt_paths(work_dir, trial_name)
     if pkl_path is None:
         return
@@ -143,7 +143,10 @@ def _save_cma_ckpt(es, work_dir: Optional[str], trial_name: Optional[str], iter_
         f.write(es.pickle_dumps())
     # Save minimal meta so logs can continue with correct iteration index
     with open(meta_path, "w") as f:
-        json.dump({"iter": iter_idx}, f)
+        json.dump({
+            "iter": iter_idx,
+            "best_reward": best_reward,
+    }, f)
 
 def _load_cma_ckpt(work_dir: Optional[str], trial_name: Optional[str]):
     pkl_path, meta_path = _ckpt_paths(work_dir, trial_name)
@@ -154,13 +157,17 @@ def _load_cma_ckpt(work_dir: Optional[str], trial_name: Optional[str]):
     with open(pkl_path, "rb") as f:
         es = pickle.load(f)
     start_iter = 0
+    best_reward = -np.inf
     if os.path.exists(meta_path):
         try:
             with open(meta_path, "r") as f:
-                start_iter = int(json.load(f).get("iter", 0)) + 1
+                content = json.load(f)
+            start_iter = int(content.get("iter", 0)) + 1
+            best_reward = float(content.get("best_reward", -np.inf))
         except Exception:
             start_iter = 0
-    return es, start_iter
+            best_reward = -np.inf
+    return es, start_iter, best_reward
 
 
 # ----------------------------
@@ -257,20 +264,25 @@ def optimize_trajectory(
 
     print(f'Max moving distance {l2_bound}x{n_steps}={l2_bound * n_steps} m for each control point')
 
+    best_traj = None
+    best_reward = -np.inf
+
     # Try to resume CMA-ES
     es = None
     start_iter = 0
     if resume:
-        es_loaded, start_iter = _load_cma_ckpt(work_dir, trial_name)
+        es_loaded, start_iter, best_reward_loaded = _load_cma_ckpt(work_dir, trial_name)
         if es_loaded is not None:
             es = es_loaded
+            best_reward = best_reward_loaded
             # quick sanity: check dimension matches
             if getattr(es, "N", dim) != dim:
                 raise ValueError(f"Loaded CMA-ES dimension {getattr(es, 'N', None)} "
                                  f"does not match expected dim {dim}.")
             # Note: popsize is internal in es.opts; we trust the checkpoint.
             print(f"[resume] Loaded CMA-ES from iteration {start_iter} "
-                  f"with dim={dim}, expected max_iters={max_iters}.")
+                  f"with dim={dim}, expected max_iters={max_iters}, "
+                  f"loaded best reward {best_reward_loaded:.4f}.")
         else:
             print("[resume] No checkpoint found; starting fresh.")
 
@@ -287,9 +299,6 @@ def optimize_trajectory(
                 'verb_disp': 0,
             }
         )
-
-    best_traj = None
-    best_reward = -np.inf
 
     batch_size = env.n_envs
     it = start_iter
@@ -366,12 +375,12 @@ def optimize_trajectory(
 
         # Save checkpoint periodically
         if save_every > 0 and (it % save_every == 0):
-            _save_cma_ckpt(es, work_dir, trial_name, it)
+            _save_cma_ckpt(es, work_dir, trial_name, it, best_reward)
 
         it += 1
 
     # Final checkpoint
-    _save_cma_ckpt(es, work_dir, trial_name, it - 1)
+    _save_cma_ckpt(es, work_dir, trial_name, it - 1, best_reward)
 
     return best_traj, best_reward
 
