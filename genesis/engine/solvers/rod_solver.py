@@ -1944,6 +1944,21 @@ class RodSolver(Solver):
                     self.rr_constraints[f, i_p, i_b].normal = normal
                     self.rr_constraints[f, i_p, i_b].penetration = penetration
 
+                if iter_idx == self._n_pbd_iters - 1 and penetration > 1e-6:
+                    # after the last iteration, collision remains, then record the collision info
+                    self.vertices_collision[idx_a1, i_b].collided = True
+                    self.vertices_collision[idx_a1, i_b].penetration = penetration
+                    self.vertices_collision[idx_a1, i_b].normal = normal
+                    self.vertices_collision[idx_a2, i_b].collided = True
+                    self.vertices_collision[idx_a2, i_b].penetration = penetration
+                    self.vertices_collision[idx_a2, i_b].normal = normal
+                    self.vertices_collision[idx_b1, i_b].collided = True
+                    self.vertices_collision[idx_b1, i_b].penetration = penetration
+                    self.vertices_collision[idx_b1, i_b].normal = -normal
+                    self.vertices_collision[idx_b2, i_b].collided = True
+                    self.vertices_collision[idx_b2, i_b].penetration = penetration
+                    self.vertices_collision[idx_b2, i_b].normal = -normal
+
     @ti.kernel
     def _kernel_apply_rod_collision_constraints_grad(self, f: ti.i32, iter_idx: ti.i32):
         for i_p, i_b in ti.ndrange(self._n_valid_edge_pairs, self._B):
