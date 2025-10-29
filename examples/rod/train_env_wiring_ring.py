@@ -5,12 +5,49 @@ from train_env import Train_Env
 
 class Train_Env_Wiring_ring(Train_Env):
     def __init__(self, task='wiring', GUI=False, camera=False, log_dir="xxx/wiring", n_envs=5, requires_grad=False):
-        super().__init__(task, GUI=GUI, camera=camera, n_envs=n_envs, log_dir=log_dir, requires_grad=requires_grad)
+        gs.init(seed=0, precision="64", logging_level="error", backend=gs.gpu, performance_mode=True)
+        viewer_options = gs.options.ViewerOptions(
+            camera_pos=(3, -1, 1.5),
+            camera_lookat=(0.0, 0.0, 0.0),
+            camera_fov=30,
+            max_FPS=60,
+        )
+
+        scene = gs.Scene(
+            viewer_options=viewer_options,
+            sim_options=gs.options.SimOptions(
+                dt=1e-3,
+                substeps=5,
+                requires_grad=requires_grad,
+            ),
+            rod_options=gs.options.RodOptions(
+                damping=15.0,
+                angular_damping=10.0,
+                adjacent_gap=3,
+                n_pbd_iters=20,
+            ),
+            show_viewer=GUI,
+        )
+        super().__init__(task, scene=scene, GUI=GUI, camera=camera, n_envs=n_envs, log_dir=log_dir, requires_grad=requires_grad)
         self.steps_interval = 200
+
+        self.ring1_center = np.array([0.27, 0.0, self.rope.material.segment_radius], dtype=gs.np_float)
+        self.ring2_center = np.array([0.09, -0.27, self.rope.material.segment_radius], dtype=gs.np_float)
+        self.ring1_normal = np.array([-1., 0., 0.], dtype=gs.np_float)
+        self.ring2_normal = np.array([0., -1., 0.], dtype=gs.np_float)
+
+        self.ring1_center_tc = torch.tensor([0.27, 0.0, self.rope.material.segment_radius], dtype=gs.tc_float)
+        self.ring2_center_tc = torch.tensor([0.09, -0.27, self.rope.material.segment_radius], dtype=gs.tc_float)
+        self.ring1_normal_tc = torch.tensor([-1., 0., 0.], dtype=gs.tc_float)
+        self.ring2_normal_tc = torch.tensor([0., -1., 0.], dtype=gs.tc_float)
+
+        # initial distance between control points
+        self.control_dist_init = self.rope.morph.interval * (self.control_idx[1] - self.control_idx[0])
 
         # NOTE: assume running from "examples/rod"
         self.target_pos = np.load("target_pos/wiring_ring_finalpos.npy")
         print(f'Loaded target pos from "wiring_ring_finalpos.npy", shape = {self.target_pos.shape}')
+        print(f'Initial distance between control points: {self.control_dist_init:.4f}')
 
     def construct_scene(self, camera):
         plane = self.scene.add_entity(
@@ -112,22 +149,63 @@ class Train_Env_Wiring_ring(Train_Env):
 
         self.cameras = cameras
 
+    @staticmethod
+    def sigmoid_func(x):
+        # Sigmoid function to map values to the range (0, 1)
+        return 1 / (1 + np.exp(-x))
+
     def reward(self):
         # [n_envs, n_verts, 3]
         verts_batch = self.rope.get_all_verts()
         assert verts_batch.shape[1] == self.target_pos.shape[0]
 
+        ring1_center = self.ring1_center
+        ring2_center = self.ring2_center
+        ring1_normal = self.ring1_normal
+        ring2_normal = self.ring2_normal
+
         rewards = []
         for i in range(self.n_envs):
             # [n_verts, 3]
-            target = self.target_pos
-            # [n_verts, 3]
             verts = verts_batch[i]
-            # [n_verts]
-            dists = np.linalg.norm(verts - target, axis=1)
 
-            reward = - np.mean(dists) - 0.1 * np.std(dists)
+            # 1. get close to the center of the rings
+            dists_ring1 = np.linalg.norm(verts - ring1_center, axis=1)
+            min_dists_ring1 = np.min(dists_ring1)  # minimum distance to ring1 center
 
+            dists_ring2 = np.linalg.norm(verts - ring2_center, axis=1)
+            min_dists_ring2 = np.min(dists_ring2)  # minimum distance to ring2 center
+
+            # 2. encourage the rope to point through the rings
+            min_idx_ring1 = np.argmin(dists_ring1)
+            # avoid index out of range when accessing verts[min_idx_ring1 + 1]
+            min_idx_ring1 = np.minimum(min_idx_ring1, verts.shape[0] - 2)
+            dir_rope_ring1 = verts[min_idx_ring1] - verts[min_idx_ring1 + 1]  # direction of the rope at the closest point to ring1
+            dir_rope_ring1 = dir_rope_ring1 / (np.linalg.norm(dir_rope_ring1) + 1e-8)  # normalize
+            dir_alignment_ring1 = np.dot(dir_rope_ring1, ring1_normal)
+            score_dir_ring1 = self.sigmoid_func(dir_alignment_ring1 * 5)  # scale to make it more sensitive
+
+            min_idx_ring2 = np.argmin(dists_ring2)
+            # avoid index out of range when accessing verts[min_idx_ring2 + 1]
+            min_idx_ring2 = np.minimum(min_idx_ring2, verts.shape[0] - 2)
+            dir_rope_ring2 = verts[min_idx_ring2] - verts[min_idx_ring2 + 1]  # direction of the rope at the closest point to ring2
+            dir_rope_ring2 = dir_rope_ring2 / (np.linalg.norm(dir_rope_ring2) + 1e-8)  # normalize
+            dir_alignment_ring2 = np.dot(dir_rope_ring2, ring2_normal)
+            score_dir_ring2 = self.sigmoid_func(dir_alignment_ring2 * 5)  # scale to make it more sensitive
+
+            # 3. follow the curve
+            # [n_verts, 3]
+            target = self.target_pos
+            dists_curve = np.linalg.norm(verts - target, axis=1)
+
+            # 4. discourage the distance between the two control points to be larger than initial state because the rope is inextensible
+            control_point_dist = np.linalg.norm(verts[self.control_idx[0]] - verts[self.control_idx[1]])
+            reward_control = -50 if control_point_dist > self.control_dist_init else 0
+
+            # combine the rewards
+            reward = - np.mean(dists_curve) - 0.1 * np.std(dists_curve)
+            reward += - min_dists_ring1 - min_dists_ring2 + score_dir_ring1 + score_dir_ring2
+            reward += reward_control
             rewards.append(reward)
 
         return rewards
@@ -135,16 +213,60 @@ class Train_Env_Wiring_ring(Train_Env):
     def loss_criterion(self, state):
         # (n_envs, n_verts, 3), torch tensor
         verts_batch = state.pos
+
         target = torch.tensor(self.target_pos, dtype=verts_batch.dtype, device=verts_batch.device)
 
-        # Euclidean distance from each vertex to the target point
+        ring1_center = self.ring1_center_tc
+        ring2_center = self.ring2_center_tc
+        ring1_normal = self.ring1_normal_tc
+        ring2_normal = self.ring2_normal_tc
+
+        # 1. get close to the center of the rings
+        dists_ring1 = torch.norm(verts_batch - ring1_center[None, None, :], dim=2)
+        min_dists_ring1 = torch.min(dists_ring1, dim=1)[0]
+        
+        dists_ring2 = torch.norm(verts_batch - ring2_center[None, None, :], dim=2)
+        min_dists_ring2 = torch.min(dists_ring2, dim=1)[0]
+
+        # 2. encourage the rope to point through the rings
+        min_idx_ring1 = torch.argmin(dists_ring1, dim=1)
+        # avoid index out of range when accessing verts_batch[:, min_idx_ring1 + 1]
+        min_idx_ring1 = torch.minimum(min_idx_ring1, torch.tensor(verts_batch.shape[1] - 2, device=verts_batch.device))
+        # direction of the rope at the closest point to ring1
+        dir_rope_ring1 = (
+            verts_batch[torch.arange(verts_batch.shape[0]), min_idx_ring1] - 
+            verts_batch[torch.arange(verts_batch.shape[0]), min_idx_ring1 + 1]
+        )
+        dir_rope_ring1 = dir_rope_ring1 / (torch.norm(dir_rope_ring1, dim=1, keepdim=True) + 1e-8)  # normalize
+        dir_alignment_ring1 = torch.einsum('ij, j -> i', dir_rope_ring1, ring1_normal)
+        score_dir_ring1 = torch.sigmoid(dir_alignment_ring1 * 5)
+
+        min_idx_ring2 = torch.argmin(dists_ring2, dim=1)
+        # avoid index out of range when accessing verts_batch[:, min_idx_ring2 + 1]
+        min_idx_ring2 = torch.minimum(min_idx_ring2, torch.tensor(verts_batch.shape[1] - 2, device=verts_batch.device))
+        # direction of the rope at the closest point to ring2
+        dir_rope_ring2 = (
+            verts_batch[torch.arange(verts_batch.shape[0]), min_idx_ring2] - 
+            verts_batch[torch.arange(verts_batch.shape[0]), min_idx_ring2 + 1]
+        )
+        dir_rope_ring2 = dir_rope_ring2 / (torch.norm(dir_rope_ring2, dim=1, keepdim=True) + 1e-8)
+        dir_alignment_ring2 = torch.einsum('ij, j -> i', dir_rope_ring2, ring2_normal)
+        score_dir_ring2 = torch.sigmoid(dir_alignment_ring2 * 5)
+
+        # 3. follow the curve
         # (n_envs, n_verts)
-        dists = torch.norm(verts_batch - target[None, :, :], dim=2)
+        dists_curve = torch.norm(verts_batch - target[None, :, :], dim=2)
 
-        # Loss per env
-        loss_dist = torch.mean(dists, dim=1) + 0.1 * torch.std(dists, dim=1)   # (n_envs,)
+        # 4. discourage the distance between the two control points to be larger than initial state because the rope is inextensible
+        control_point_dist = torch.norm(verts_batch[:, self.control_idx[0], :] - verts_batch[:, self.control_idx[1], :], dim=1)
+        reward_control = torch.minimum(torch.tensor(0.0, dtype=gs.tc_float), self.control_dist_init - control_point_dist)
 
-        return loss_dist
+        # combine the losses
+        loss = torch.mean(dists_curve, dim=1) + 0.1 * torch.std(dists_curve, dim=1)   # (n_envs,)
+        loss += min_dists_ring1 + min_dists_ring2 - score_dir_ring1 - score_dir_ring2
+        loss += - reward_control
+
+        return loss
 
     def reset(self):
         self.scene.reset()

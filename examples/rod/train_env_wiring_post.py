@@ -5,12 +5,46 @@ from train_env import Train_Env
 
 class Train_Env_Wiring_post(Train_Env):
     def __init__(self, task='wiring', GUI=False, camera=False, log_dir="xxx/wiring", n_envs=5, requires_grad=False):
-        super().__init__(task, GUI=GUI, camera=camera, n_envs=n_envs, log_dir=log_dir, requires_grad=requires_grad)
+        gs.init(seed=0, precision="64", logging_level="error", backend=gs.gpu, performance_mode=True)
+        viewer_options = gs.options.ViewerOptions(
+            camera_pos=(3, -1, 1.5),
+            camera_lookat=(0.0, 0.0, 0.0),
+            camera_fov=30,
+            max_FPS=60,
+        )
+
+        scene = gs.Scene(
+            viewer_options=viewer_options,
+            sim_options=gs.options.SimOptions(
+                dt=1e-3,
+                substeps=5,
+                requires_grad=requires_grad,
+            ),
+            rod_options=gs.options.RodOptions(
+                damping=15.0,
+                angular_damping=10.0,
+                adjacent_gap=3,
+                n_pbd_iters=20,
+            ),
+            show_viewer=GUI,
+        )
+        super().__init__(task, scene=scene, GUI=GUI, camera=camera, n_envs=n_envs, log_dir=log_dir, requires_grad=requires_grad)
         self.steps_interval = 200
+
+        self.stick1_contact = np.array([0.229, 0.109, self.rope.material.segment_radius], dtype=gs.np_float)
+        self.stick2_contact = np.array([0.113, 0.311, self.rope.material.segment_radius], dtype=gs.np_float)
+
+        self.stick1_contact_tc = torch.tensor([0.229, 0.109, self.rope.material.segment_radius], dtype=gs.tc_float)
+        self.stick2_contact_tc = torch.tensor([0.113, 0.311, self.rope.material.segment_radius], dtype=gs.tc_float)
+
+        # initial distance between control points
+        self.control_dist_init = self.rope.morph.interval * (self.control_idx[1] - self.control_idx[0])
 
         # NOTE: assume running from "examples/rod"
         self.target_pos = np.load("target_pos/wiring_post_finalpos.npy")
         print(f'Loaded target pos from "wiring_post_finalpos.npy", shape = {self.target_pos.shape}')
+        print(f'Initial distance between control points: {self.control_dist_init:.4f}')
+        print(self.scene.rod_options)
 
     def construct_scene(self, camera):
         plane = self.scene.add_entity(
@@ -109,6 +143,9 @@ class Train_Env_Wiring_post(Train_Env):
         verts_batch = self.rope.get_all_verts()
         assert verts_batch.shape[1] == self.target_pos.shape[0]
 
+        stick1_contact = self.stick1_contact
+        stick2_contact = self.stick2_contact
+
         rewards = []
         for i in range(self.n_envs):
             # [n_verts, 3]
@@ -118,7 +155,20 @@ class Train_Env_Wiring_post(Train_Env):
             # [n_verts]
             dists = np.linalg.norm(verts - target, axis=1)
 
+            # calculate the minimum distance from the rope vertices to the target position
+            dists_stick1 = np.linalg.norm(verts - stick1_contact, axis=1)
+            dists_stick1 = np.min(dists_stick1)
+
+            dists_stick2 = np.linalg.norm(verts - stick2_contact, axis=1)
+            dists_stick2 = np.min(dists_stick2)
+
+            control_point_dist = np.linalg.norm(verts[self.control_idx[0]] - verts[self.control_idx[1]])
+            reward_control = -50 if control_point_dist > self.control_dist_init else 0
+
             reward = - np.mean(dists) - 0.1 * np.std(dists)
+            reward -= dists_stick1
+            reward -= dists_stick2
+            reward += reward_control
 
             rewards.append(reward)
 
@@ -129,14 +179,30 @@ class Train_Env_Wiring_post(Train_Env):
         verts_batch = state.pos
         target = torch.tensor(self.target_pos, dtype=verts_batch.dtype, device=verts_batch.device)
 
+        stick1_contact = self.stick1_contact_tc
+        stick2_contact = self.stick2_contact_tc
+
         # Euclidean distance from each vertex to the target point
         # (n_envs, n_verts)
         dists = torch.norm(verts_batch - target[None, :, :], dim=2)
 
-        # Loss per env
-        loss_dist = torch.mean(dists, dim=1) + 0.1 * torch.std(dists, dim=1)   # (n_envs,)
+        # calculate the minimum distance from the rope vertices to the target position
+        dists_stick1 = torch.norm(verts_batch - stick1_contact[None, None, :], dim=2)
+        dists_stick1 = torch.min(dists_stick1, dim=1)[0]
 
-        return loss_dist
+        dists_stick2 = torch.norm(verts_batch - stick2_contact[None, None, :], dim=2)
+        dists_stick2 = torch.min(dists_stick2, dim=1)[0]
+
+        control_point_dist = torch.norm(verts_batch[:, self.control_idx[0], :] - verts_batch[:, self.control_idx[1], :], dim=1)
+        reward_control = torch.minimum(torch.tensor(0.0, dtype=gs.tc_float), self.control_dist_init - control_point_dist)
+
+        # Loss per env
+        loss = torch.mean(dists, dim=1) + 0.1 * torch.std(dists, dim=1)   # (n_envs,)
+        loss += dists_stick1
+        loss += dists_stick2
+        loss += - reward_control
+
+        return loss
 
     def reset(self):
         self.scene.reset()

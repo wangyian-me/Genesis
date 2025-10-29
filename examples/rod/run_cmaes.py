@@ -148,9 +148,9 @@ def _save_cma_ckpt(es, work_dir: Optional[str], trial_name: Optional[str], iter_
 def _load_cma_ckpt(work_dir: Optional[str], trial_name: Optional[str]):
     pkl_path, meta_path = _ckpt_paths(work_dir, trial_name)
     if pkl_path is None:
-        return None, 0
+        return None, 0, -np.inf
     if not os.path.exists(pkl_path):
-        return None, 0
+        return None, 0, -np.inf
     with open(pkl_path, "rb") as f:
         es = pickle.load(f)
     start_iter = 0
@@ -411,6 +411,9 @@ if __name__ == "__main__":
         '--seed', type=int, default=123,
     )
     parser.add_argument(
+        '--max_iter', type=int, default=20,
+    )
+    parser.add_argument(
         '--n_steps', type=int, default=10,
     )
     parser.add_argument(
@@ -442,7 +445,7 @@ if __name__ == "__main__":
             sigma0=0.005,
             per_comp_bound=0.1,
             l2_bound=0.1,          # use env.l2_bound if present
-            max_iters=20,
+            max_iters=args.max_iter,
             seed=args.seed,
             log_dir=log_dir,
             # NEW: checkpoint controls

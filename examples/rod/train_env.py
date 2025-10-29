@@ -21,8 +21,11 @@ class Train_Env():
         self.n_envs = n_envs
         self.requires_grad = requires_grad
         print(f"GUI: {self.GUI}, n_envs: {self.n_envs}, requires_grad: {self.requires_grad}")
-        gs.init(seed=0, precision="64", logging_level="error", backend=gs.gpu, performance_mode=True)
+
         if scene is None:
+            # Initialize scene, if not provided
+            gs.init(seed=0, precision="64", logging_level="error", backend=gs.gpu, performance_mode=True)
+
             viewer_options = gs.options.ViewerOptions(
                 camera_pos=(3, -1, 1.5),
                 camera_lookat=(0.0, 0.0, 0.0),
@@ -36,7 +39,6 @@ class Train_Env():
                     dt=1e-3,
                     substeps=5,
                     requires_grad=requires_grad,
-                    # gravity=(0.,0.,0.)
                 ),
                 rod_options=gs.options.RodOptions(
                     damping=15.0,
@@ -46,6 +48,7 @@ class Train_Env():
                 show_viewer=self.GUI,
             )
         else:
+            # Use provided scene, this means genesis already initialized
             self.scene = scene
 
         self.scene_built_for_training = False
@@ -308,11 +311,8 @@ class Train_Env():
 
         total_horizon = 0
         horizon_ids = list()
-        self.scene.reset()
 
-        fixed_np = np.zeros((self.n_envs, self.rope.n_vertices), dtype=bool)
-        fixed_np[:, self.control_idx] = True
-        self.rope.set_fixed(0, fixed_np)
+        self.reset()
 
         loss = 0.
         for i in range(n_steps):
@@ -348,7 +348,7 @@ class Train_Env():
         deltas = deltas.reshape(self.n_envs, n_steps, -1)
         deltas = deltas.detach().cpu().numpy()
 
-        # ensure each delta is within 0.1 x trajs_origin
+        # ensure each delta is within ratio x trajs_origin
         deltas = self.adaptive_scale(trajs_origin, deltas, ratio=ratio)
 
         print(f'traj: {np.abs(trajs_origin).mean(0).mean(0)}')
