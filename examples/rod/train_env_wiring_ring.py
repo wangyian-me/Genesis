@@ -42,12 +42,12 @@ class Train_Env_Wiring_ring(Train_Env):
         self.ring2_normal_tc = torch.tensor([0., -1., 0.], dtype=gs.tc_float)
 
         # initial distance between control points
-        self.control_dist_init = self.rope.morph.interval * (self.control_idx[1] - self.control_idx[0])
+        self.control_dist_init = self.rope.get_geodesic_distance(self.control_idx[0], self.control_idx[1])
 
         # NOTE: assume running from "examples/rod"
         self.target_pos = np.load("target_pos/wiring_ring_finalpos.npy")
         print(f'Loaded target pos from "wiring_ring_finalpos.npy", shape = {self.target_pos.shape}')
-        print(f'Initial distance between control points: {self.control_dist_init:.4f}')
+        print(f'Initial distance between control points: {self.control_dist_init[0]:.4f}')
 
     def construct_scene(self, camera):
         plane = self.scene.add_entity(
@@ -198,14 +198,9 @@ class Train_Env_Wiring_ring(Train_Env):
             target = self.target_pos
             dists_curve = np.linalg.norm(verts - target, axis=1)
 
-            # 4. discourage the distance between the two control points to be larger than initial state because the rope is inextensible
-            control_point_dist = np.linalg.norm(verts[self.control_idx[0]] - verts[self.control_idx[1]])
-            reward_control = -50 if control_point_dist > self.control_dist_init else 0
-
             # combine the rewards
             reward = - np.mean(dists_curve) - 0.1 * np.std(dists_curve)
             reward += - min_dists_ring1 - min_dists_ring2 + score_dir_ring1 + score_dir_ring2
-            reward += reward_control
             rewards.append(reward)
 
         return rewards
@@ -257,14 +252,9 @@ class Train_Env_Wiring_ring(Train_Env):
         # (n_envs, n_verts)
         dists_curve = torch.norm(verts_batch - target[None, :, :], dim=2)
 
-        # 4. discourage the distance between the two control points to be larger than initial state because the rope is inextensible
-        control_point_dist = torch.norm(verts_batch[:, self.control_idx[0], :] - verts_batch[:, self.control_idx[1], :], dim=1)
-        reward_control = torch.minimum(torch.tensor(0.0, dtype=gs.tc_float), self.control_dist_init - control_point_dist)
-
         # combine the losses
         loss = torch.mean(dists_curve, dim=1) + 0.1 * torch.std(dists_curve, dim=1)   # (n_envs,)
         loss += min_dists_ring1 + min_dists_ring2 - score_dir_ring1 - score_dir_ring2
-        loss += - reward_control
 
         return loss
 

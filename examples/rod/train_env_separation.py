@@ -89,7 +89,7 @@ class Train_Env_Separation(Train_Env):
 
         self.scene.build(n_envs=self.n_envs, env_spacing=(1, 1))
 
-        self.control_idx = [27, 27]
+        self.control_idx = [27, 2]
         self.action_dim = len(self.control_idx) * 3
 
     def construct_cameras(self):
@@ -321,10 +321,9 @@ class Train_Env_Separation(Train_Env):
 
         return final.astype(np.float32)
 
-    def gd_one_step(self, trajs, ratio):
+    def gd_one_step(self, trajs):
         assert trajs.ndim == 3, f"trajs must be (n_envs, n_steps, dof), got {trajs.shape}"
         n_envs, n_steps, dof = trajs.shape
-        trajs_origin = trajs.copy()
         trajs = torch.tensor(trajs, dtype=gs.tc_float)
         assert n_envs == self.n_envs, f"n_envs mismatch: trajs has {n_envs}, self.n_envs is {self.n_envs}"
         n_ctrl = len(self.control_idx)
@@ -385,13 +384,7 @@ class Train_Env_Separation(Train_Env):
         deltas = torch.cat([deltas_1, deltas_2], dim=2)
         assert deltas.shape == (self.n_envs, n_steps, n_ctrl, 3)
         deltas = deltas.reshape(self.n_envs, n_steps, -1)
+        # (n_envs, n_steps, dof)
         deltas = deltas.detach().cpu().numpy()
 
-        # ensure each delta is within ratio x trajs_origin
-        deltas = self.adaptive_scale(trajs_origin, deltas, ratio=ratio)
-
-        print(f'traj: {np.abs(trajs_origin).mean(0).mean(0)}')
-        print(f'delta: {np.abs(deltas).mean(0).mean(0)}')
-
-        # Update trajs
-        return trajs_origin + deltas
+        return deltas

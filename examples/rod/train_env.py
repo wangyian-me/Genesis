@@ -51,19 +51,12 @@ class Train_Env():
             # Use provided scene, this means genesis already initialized
             self.scene = scene
 
-        self.scene_built_for_training = False
-        self.scene_built_for_evaluation = False
-        self.img_save_dir = None
-        self.img_steps = 0
-
-        self.cmaes_optimizer_created = False
-        self.iter = 0
-
         self.create_log_dir(log_dir)
 
         self.cameras = list()
         self.frames = defaultdict(list)
         self.construct_scene(camera=camera)
+        self.control_dist_init = None
         self.debug_point_nodes = list()
 
     def construct_traj_optim(self, max_ddist=0.1, max_grad_norm=1000, debug=False):
@@ -173,6 +166,7 @@ class Train_Env():
         alive = np.ones((self.n_envs,), dtype=bool)              # True until first failure (collision or NaN)
         ever_nan = np.zeros((self.n_envs,), dtype=bool)          # True if verts ever became NaN
         ever_collided = np.zeros((self.n_envs,), dtype=bool)     # True if collision occurred
+        ever_stretched = np.zeros((self.n_envs,), dtype=bool)    # True if stretching failure occurred
         first_fail_step = np.full((self.n_envs,), total_micro_steps, dtype=np.int32)  # micro-step index of first failure
 
         for i in range(n_steps):
@@ -255,6 +249,21 @@ class Train_Env():
                     ever_collided[newly_collided] = True
                     alive[newly_collided] = False
 
+                # Post-step: detect stretching failures
+                if self.control_dist_init is not None:
+                    # (n_envs,)
+                    control_dist_now = self.rope.get_geodesic_distance(
+                        self.control_idx[0], self.control_idx[1]
+                    )
+                    # 1% stretch allowed
+                    stretched_between_ctrl = control_dist_now / self.control_dist_init > 1.01
+                    newly_stretched = stretched_between_ctrl & alive
+                    if newly_stretched.any():
+                        global_step = i * steps_interval + (j + 1)
+                        first_fail_step[newly_stretched] = np.minimum(first_fail_step[newly_stretched], global_step)
+                        ever_stretched[newly_stretched] = True
+                        alive[newly_stretched] = False
+
                 # Post-step: detect NaNs that emerge during micro-stepping
                 verts_rope_post = self.rope.get_all_verts()
                 nan_after = np.isnan(verts_rope_post).any(axis=(1, 2))
@@ -298,10 +307,9 @@ class Train_Env():
 
         return deltas_scaled
 
-    def gd_one_step(self, trajs, ratio):
+    def gd_one_step(self, trajs):
         assert trajs.ndim == 3, f"trajs must be (n_envs, n_steps, dof), got {trajs.shape}"
         n_envs, n_steps, dof = trajs.shape
-        trajs_origin = trajs.copy()
         trajs = torch.tensor(trajs, dtype=gs.tc_float)
         assert n_envs == self.n_envs, f"n_envs mismatch: trajs has {n_envs}, self.n_envs is {self.n_envs}"
         n_ctrl = len(self.control_idx)
@@ -346,13 +354,7 @@ class Train_Env():
         # (n_envs, n_steps, n_ctrl, 3)
         deltas = torch.stack(deltas, dim=1)
         deltas = deltas.reshape(self.n_envs, n_steps, -1)
+        # (n_envs, n_steps, dof)
         deltas = deltas.detach().cpu().numpy()
 
-        # ensure each delta is within ratio x trajs_origin
-        deltas = self.adaptive_scale(trajs_origin, deltas, ratio=ratio)
-
-        print(f'traj: {np.abs(trajs_origin).mean(0).mean(0)}')
-        print(f'delta: {np.abs(deltas).mean(0).mean(0)}')
-
-        # Update trajs
-        return trajs_origin + deltas
+        return deltas

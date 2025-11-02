@@ -38,13 +38,12 @@ class Train_Env_Wiring_post(Train_Env):
         self.stick2_contact_tc = torch.tensor([0.113, 0.311, self.rope.material.segment_radius], dtype=gs.tc_float)
 
         # initial distance between control points
-        self.control_dist_init = self.rope.morph.interval * (self.control_idx[1] - self.control_idx[0])
+        self.control_dist_init = self.rope.get_geodesic_distance(self.control_idx[0], self.control_idx[1])
 
         # NOTE: assume running from "examples/rod"
         self.target_pos = np.load("target_pos/wiring_post_finalpos.npy")
         print(f'Loaded target pos from "wiring_post_finalpos.npy", shape = {self.target_pos.shape}')
-        print(f'Initial distance between control points: {self.control_dist_init:.4f}')
-        print(self.scene.rod_options)
+        print(f'Initial distance between control points: {self.control_dist_init[0]:.4f}')
 
     def construct_scene(self, camera):
         plane = self.scene.add_entity(
@@ -162,14 +161,9 @@ class Train_Env_Wiring_post(Train_Env):
             dists_stick2 = np.linalg.norm(verts - stick2_contact, axis=1)
             dists_stick2 = np.min(dists_stick2)
 
-            control_point_dist = np.linalg.norm(verts[self.control_idx[0]] - verts[self.control_idx[1]])
-            reward_control = -50 if control_point_dist > self.control_dist_init else 0
-
             reward = - np.mean(dists) - 0.1 * np.std(dists)
             reward -= dists_stick1
             reward -= dists_stick2
-            reward += reward_control
-
             rewards.append(reward)
 
         return rewards
@@ -193,14 +187,10 @@ class Train_Env_Wiring_post(Train_Env):
         dists_stick2 = torch.norm(verts_batch - stick2_contact[None, None, :], dim=2)
         dists_stick2 = torch.min(dists_stick2, dim=1)[0]
 
-        control_point_dist = torch.norm(verts_batch[:, self.control_idx[0], :] - verts_batch[:, self.control_idx[1], :], dim=1)
-        reward_control = torch.minimum(torch.tensor(0.0, dtype=gs.tc_float), self.control_dist_init - control_point_dist)
-
         # Loss per env
         loss = torch.mean(dists, dim=1) + 0.1 * torch.std(dists, dim=1)   # (n_envs,)
         loss += dists_stick1
         loss += dists_stick2
-        loss += - reward_control
 
         return loss
 

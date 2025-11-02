@@ -1026,6 +1026,30 @@ class RodEntity(Entity):
         return pos
 
     @ti.kernel
+    def get_geodesic_distance_kernel(
+        self,
+        vert_start_idx: ti.i32,
+        vert_end_idx: ti.i32,
+        distance: ti.types.ndarray(),
+    ):
+        for i_b in ti.ndrange(self._sim._B):
+            d = 0.0
+            for i_e in range(vert_start_idx, vert_end_idx):
+                i_global = i_e + self.e_start
+                edge_len = self._solver.edges_ng[0, i_global, i_b].length
+                d += edge_len
+            distance[i_b] = d
+
+    def get_geodesic_distance(self, vert_start_idx, vert_end_idx):
+        assert 0 <= vert_start_idx < vert_end_idx <= self.n_edges, \
+            f"Invalid vertex indices for geodesic distance: {vert_start_idx} to {vert_end_idx}."
+        base_v_shape = (self.sim._B,)
+        args = {"dtype": gs.np_float}
+        distance = np.zeros(base_v_shape, **args)
+        self.get_geodesic_distance_kernel(vert_start_idx, vert_end_idx, distance)
+        return distance
+
+    @ti.kernel
     def get_nearest_verts_from_rigid_geom_kernel(
         self,
         geom_idx: ti.i32,
