@@ -15,39 +15,42 @@ from collections import defaultdict
 
 
 class Train_Env_GD:
-    def __init__(self, args):
+    def __init__(self, args, scene=None):
         self.args = args
 
         ########################## init ##########################
-        gs.init(seed=0, precision="64", logging_level="error", backend=gs.gpu, performance_mode=True)
-
         torch.manual_seed(args.seed)
         torch.cuda.manual_seed(args.seed)
         torch.cuda.manual_seed_all(args.seed)
 
         ########################## create a scene ##########################
-        viewer_options = gs.options.ViewerOptions(
-            camera_pos=(3, -1, 1.5),
-            camera_lookat=(0.0, 0.0, 0.0),
-            camera_fov=30,
-            max_FPS=60,
-        )
 
-        self.scene = gs.Scene(
-            viewer_options=viewer_options,
-            sim_options=gs.options.SimOptions(
-                dt=1e-3,
-                substeps=5,
-                requires_grad=True,
-                # gravity=(0.,0.,0.)
-            ),
-            rod_options=gs.options.RodOptions(
-                damping=15.0,
-                angular_damping=10.0,
-                n_pbd_iters=20,
-            ),
-            show_viewer=args.show_gui,
-        )
+        if scene is None:
+            gs.init(seed=0, precision="64", logging_level="error", backend=gs.gpu, performance_mode=True)
+
+            viewer_options = gs.options.ViewerOptions(
+                camera_pos=(3, -1, 1.5),
+                camera_lookat=(0.0, 0.0, 0.0),
+                camera_fov=30,
+                max_FPS=60,
+            )
+            self.scene = gs.Scene(
+                viewer_options=viewer_options,
+                sim_options=gs.options.SimOptions(
+                    dt=1e-3,
+                    substeps=5,
+                    requires_grad=True,
+                    # gravity=(0.,0.,0.)
+                ),
+                rod_options=gs.options.RodOptions(
+                    damping=15.0,
+                    angular_damping=10.0,
+                    n_pbd_iters=20,
+                ),
+                show_viewer=args.show_gui,
+            )
+        else:
+            self.scene = scene
 
         self.cameras = list()
         self.frames = defaultdict(list)
@@ -162,9 +165,10 @@ class Train_Env_GD:
             for j in range(n_horizons):
                 self.c.on_apply_grad(hpos[j])
                 self.scene.step()
-                for cid, cam in enumerate(self.cameras):
-                    img = cam.render()[0]
-                    self.frames[cid].append(img)
+                if j % 10 == 0:
+                    for cid, cam in enumerate(self.cameras):
+                        img = cam.render()[0]
+                        self.frames[cid].append(img)
 
             state = self.rope.get_state()
             total_horizon += n_horizons

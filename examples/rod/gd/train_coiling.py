@@ -82,7 +82,7 @@ class Train_GD_Coiling(Train_Env_GD):
                 n_vertices=60,
                 interval=0.02,
                 axis="x",
-                pos=(-0.6, 0.265, 0.005),
+                pos=(-0.6, 0.265, 0.01),
                 euler=(0, 0, 0),
             ),
             surface=gs.surfaces.Rough(

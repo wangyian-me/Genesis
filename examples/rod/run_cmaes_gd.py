@@ -382,7 +382,6 @@ def optimize_trajectory_v1(
         pop = len(X)
         n_chunks = (pop + batch_size - 1) // batch_size
 
-        # 1. First, evaluate all trajs without GD step
         all_rewards = []
         for ci, start in enumerate(range(0, pop, batch_size), 1):
             t_chunk = time.time()
@@ -394,41 +393,11 @@ def optimize_trajectory_v1(
                 tr = reshape_to_traj(x_arr, n_steps, act_dim)
                 tr = project_deltas(tr, per_comp_bound, l2_bound)
                 trajs.append(tr)
-            rewards = evaluate_batch_pre(env, trajs)
+            rewards, _ = evaluate_batch(env, trajs, ratio, per_comp_bound, l2_bound)
             all_rewards.extend(rewards.tolist())
-            print(f"  └─ [pre] chunk {ci:>2}/{n_chunks}: {len(chunk):>3} evals | t={time.time() - t_chunk:.3f}s")
+            print(f"  └─ chunk {ci:>2}/{n_chunks}: {len(chunk):>3} evals | t={time.time() - t_chunk:.3f}s")
 
         all_rewards = np.asarray(all_rewards, dtype=np.float32)
-
-        all_rewards_new = []
-        all_updated_trajs = []
-        for ci, start in enumerate(range(0, pop, batch_size), 1):
-            t_chunk = time.time()
-            chunk = X[start:start + batch_size]
-            trajs = []
-            for x in chunk:
-                x_arr = np.asarray(x, dtype=np.float32)
-                # (batch_size, n_steps, act_dim)
-                tr = reshape_to_traj(x_arr, n_steps, act_dim)
-                tr = project_deltas(tr, per_comp_bound, l2_bound)
-                trajs.append(tr)
-            rewards, updated_trajs = evaluate_batch(env, trajs, ratio, per_comp_bound, l2_bound)
-            all_rewards_new.extend(rewards.tolist())
-            all_updated_trajs.append(updated_trajs)
-            print(f"  └─ [gd] chunk {ci:>2}/{n_chunks}: {len(chunk):>3} evals | t={time.time() - t_chunk:.3f}s")
-
-        all_rewards_new = np.asarray(all_rewards_new, dtype=np.float32)
-        assert len(all_rewards_new) == pop, f"Expected {pop} new reward, got {len(all_rewards_new)}"
-        # combine the new rewards with the original rewards
-        all_rewards = np.concatenate([all_rewards, all_rewards_new], axis=0)
-
-        # (pop, n_steps, act_dim)
-        all_updated_trajs = np.concatenate(all_updated_trajs, axis=0)  # (pop, n_steps, act_dim)
-        assert len(all_updated_trajs) == pop, f"Expected {pop} updated trajs, got {len(all_updated_trajs)}"
-        all_updated_trajs = all_updated_trajs.reshape(popsize, n_steps * act_dim)
-        # combine the updated trajs with the original trajs
-        X = X + list(all_updated_trajs)
-        assert len(all_rewards) == len(X), f"Combined rewards length {len(all_rewards)} != trajs length {len(X)}"
 
         # Log raw rewards for this generation
         if log_dir is not None:

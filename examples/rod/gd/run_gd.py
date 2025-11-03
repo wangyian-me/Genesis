@@ -43,7 +43,7 @@ def construct_env(args) -> Train_Env_GD:
         return Train_GD_Coiling(args)
     elif args.task == 'separation':
         return Train_GD_Separation(args)
-    elif args.task == 'wire_art':
+    elif args.task == 'wireart':
         return Train_GD_Wire_Art(args)
     elif args.task == 'wiring_post':
         return Train_GD_Wiring_Post(args)
