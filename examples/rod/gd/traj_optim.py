@@ -96,9 +96,10 @@ class TrajOptim:
     def pre_apply_grad(self, stage_idx, num_horizons=1):
         # compute delta pos for this stage, and then distribute to each horizon step within this stage
         dpos = self.traj[:, stage_idx, :, :]
-        ddist = torch.linalg.norm(dpos, dim=-1)
-        weight = self.max_ddist / (ddist + gs.EPS)
-        dpos_ = dpos * torch.minimum(weight, torch.ones_like(weight))[:, :, None]
+        # ddist = torch.linalg.norm(dpos, dim=-1)
+        # weight = self.max_ddist / (ddist + gs.EPS)
+        # dpos_ = dpos * torch.minimum(weight, torch.ones_like(weight))[:, :, None]
+        dpos_ = dpos
 
         expected_pos = self.rod.get_all_verts_tc()
 
@@ -193,3 +194,9 @@ class TrajOptim:
             )
 
         self.traj[:, stage_idx, :, :] += d_pos
+
+        # ensure the max step distance constraint
+        delta_dis = self.traj[:, stage_idx, :, :]
+        ddist = torch.linalg.norm(delta_dis, dim=-1)
+        weight = self.max_ddist / (ddist + gs.EPS)
+        self.traj[:, stage_idx, :, :] = delta_dis * torch.minimum(weight, torch.ones_like(weight))[:, :, None]
