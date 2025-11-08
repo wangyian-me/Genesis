@@ -91,25 +91,28 @@ class Train_Env_Lifting(Train_Env):
         nut_a_pos_batch = self.b1.get_pos().cpu().numpy()
         nut_b_pos_batch = self.b2.get_pos().cpu().numpy()
         # # [n_envs, n_verts, 3]
-        # rope_verts_batch = self.rope.get_all_verts()
+        verts_batch = self.rope.get_all_verts()
 
         rewards = []
         for i in range(self.n_envs):
+            verts = verts_batch[i]
             nut_a_pos = nut_a_pos_batch[i]
             nut_b_pos = nut_b_pos_batch[i]
 
             dist = np.linalg.norm(nut_a_pos - nut_b_pos)
             height = (nut_a_pos[2] + nut_b_pos[2]) / 2.0
 
-            # # [n_verts, 3]
-            # rope_verts = rope_verts_batch[i]
-            # # check the dist to y axis
-            # rope_y = np.mean(np.abs(rope_verts[:, 1]))
+            dist_nut_a = np.linalg.norm(verts - nut_a_pos, axis=1)
+            min_dists_nut_a = np.min(dist_nut_a)
+
+            dist_nut_b = np.linalg.norm(verts - nut_b_pos, axis=1)
+            min_dists_nut_b = np.min(dist_nut_b)
 
             # dist: we want nut a and nut b to be close
             # height: we want the nuts to be lifted up
-            # rope_y: we want the rope to be as centered as possible
+            # min_dists_nut_a, min_dists_nut_b: we want the rope to be close to the nuts
             reward = - dist + height
+            reward += - min_dists_nut_a - min_dists_nut_b
 
             rewards.append(reward)
 

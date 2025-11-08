@@ -220,6 +220,8 @@ class Train_Env_Slingshot(Train_Env):
             delta = trajs[:, i].reshape(self.n_envs, -1, 3)            # (n_envs, n_ctrl, 3)
 
             if debug:
+                f_s = self.rope.get_all_stretching_force()[0][self.control_idx[0]]
+                print(f"Step {i}, f_s {f_s}, mag {np.linalg.norm(f_s)}")
                 debug_pos = current_pos + delta
                 debug_pos = debug_pos.copy()
                 for batch_idx in range(self.n_envs):
@@ -268,6 +270,16 @@ class Train_Env_Slingshot(Train_Env):
                     ever_collided[newly_collided] = True
                     alive[newly_collided] = False
 
+                # Post-step: detect excessive stretching force
+                streched_force = self.rope.get_all_stretching_force()[:, self.control_idx[0]]       # (n_envs, 3)
+                force_magnitudes = np.linalg.norm(streched_force, axis=1)   # (n_envs,)
+                newly_exceed_force = (force_magnitudes > 50) & alive
+                if newly_exceed_force.any():
+                    global_step = i * steps_interval + (j + 1)
+                    first_fail_step[newly_exceed_force] = np.minimum(first_fail_step[newly_exceed_force], global_step)
+                    ever_collided[newly_exceed_force] = True
+                    alive[newly_exceed_force] = False
+
                 # Post-step: detect NaNs that emerge during micro-stepping
                 verts_rope_post = self.rope.get_all_verts()
                 nan_after = np.isnan(verts_rope_post).any(axis=(1, 2))
@@ -284,8 +296,12 @@ class Train_Env_Slingshot(Train_Env):
             fixed_ids=[0, 1, 10, 11]
         )
 
-        for _ in range(500):
+        for s in range(500):
             self.scene.step()
+            if s % 10 == 0:
+                for cid, cam in enumerate(self.cameras):
+                    img = cam.render()[0]
+                    self.frames[cid].append(img)
 
         # Compute base rewards
         env_rewards = np.asarray(self.reward(), dtype=np.float32)
