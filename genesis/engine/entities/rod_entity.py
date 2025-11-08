@@ -1026,6 +1026,103 @@ class RodEntity(Entity):
         return pos
 
     @ti.kernel
+    def get_all_vels_kernel(
+        self,
+        vel: ti.types.ndarray(),
+    ):
+        for i_v, i_b in ti.ndrange(self.n_vertices, self._sim._B):
+            i_global = i_v + self.v_start
+            for j in ti.static(range(3)):
+                vel[i_b, i_v, j] = self._solver.vertices[0, i_global, i_b].vel[j]
+
+    def get_all_vels(self):
+        base_v_shape = (self.sim._B, self.n_vertices, 3)
+        args = {
+            "dtype": gs.np_float,
+            # "requires_grad": False,
+            # "scene": self.scene,
+        }
+        vel = np.zeros(base_v_shape, **args)
+        self.get_all_vels_kernel(vel)
+        return vel
+
+    def get_all_vels_tc(self, requires_grad=False):
+        base_v_shape = (self.sim._B, self.n_vertices, 3)
+        args = {
+            "dtype": gs.tc_float,
+            "requires_grad": requires_grad,
+            # "scene": self.scene,
+        }
+        vel = torch.zeros(base_v_shape, **args)
+        self.get_all_vels_kernel(vel)
+        return vel
+
+    @ti.kernel
+    def get_all_energy_kernel(
+        self,
+        energy: ti.types.ndarray(),
+    ):
+        for i_b in ti.ndrange(self._sim._B):
+            e = 0.0
+            e += self._solver.rods_energy[self._rod_idx, i_b].stretching_energy
+            e += self._solver.rods_energy[self._rod_idx, i_b].bending_energy
+            e += self._solver.rods_energy[self._rod_idx, i_b].twisting_energy
+            energy[i_b] = e
+
+    def get_all_energy(self):
+        base_v_shape = (self.sim._B,)
+        args = {
+            "dtype": gs.np_float,
+            # "requires_grad": False,
+            # "scene": self.scene,
+        }
+        energy = np.zeros(base_v_shape, **args)
+        self.get_all_energy_kernel(energy)
+        return energy
+
+    @ti.kernel
+    def get_all_stretching_force_kernel(
+        self,
+        stretching_force: ti.types.ndarray(),
+    ):
+        for i_v, i_b in ti.ndrange(self.n_vertices, self._sim._B):
+            i_global = i_v + self.v_start
+            for j in ti.static(range(3)):
+                stretching_force[i_b, i_v, j] = self._solver.vertices_force[0, i_global, i_b].f_s[j]
+
+    def get_all_stretching_force(self):
+        base_v_shape = (self.sim._B, self.n_vertices, 3)
+        args = {
+            "dtype": gs.np_float,
+            # "requires_grad": False,
+            # "scene": self.scene,
+        }
+        stretching_force = np.zeros(base_v_shape, **args)
+        self.get_all_stretching_force_kernel(stretching_force)
+        return stretching_force
+
+    @ti.kernel
+    def get_all_bending_force_kernel(
+        self,
+        bending_force: ti.types.ndarray(),
+    ):
+        for i_v, i_b in ti.ndrange(self.n_vertices, self._sim._B):
+            i_global = i_v + self.v_start
+            for j in ti.static(range(3)):
+                bending_force[i_b, i_v, j] = self._solver.vertices_force[0, i_global, i_b].f_b[j]
+
+    def get_all_bending_force(self):
+        base_v_shape = (self.sim._B, self.n_vertices, 3)
+        args = {
+            "dtype": gs.np_float,
+            # "requires_grad": False,
+            # "scene": self.scene,
+        }
+        bending_force = np.zeros(base_v_shape, **args)
+        self.get_all_bending_force_kernel(bending_force)
+        return bending_force
+
+    @ti.kernel
     def get_geodesic_distance_kernel(
         self,
         vert_start_idx: ti.i32,
