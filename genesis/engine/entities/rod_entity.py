@@ -1088,7 +1088,7 @@ class RodEntity(Entity):
         for i_v, i_b in ti.ndrange(self.n_vertices, self._sim._B):
             i_global = i_v + self.v_start
             for j in ti.static(range(3)):
-                stretching_force[i_b, i_v, j] = self._solver.vertices_force[0, i_global, i_b].f_s[j]
+                stretching_force[i_b, i_v, j] = self._solver.vertices_force[i_global, i_b].f_s[j]
 
     def get_all_stretching_force(self):
         base_v_shape = (self.sim._B, self.n_vertices, 3)
@@ -1109,7 +1109,7 @@ class RodEntity(Entity):
         for i_v, i_b in ti.ndrange(self.n_vertices, self._sim._B):
             i_global = i_v + self.v_start
             for j in ti.static(range(3)):
-                bending_force[i_b, i_v, j] = self._solver.vertices_force[0, i_global, i_b].f_b[j]
+                bending_force[i_b, i_v, j] = self._solver.vertices_force[i_global, i_b].f_b[j]
 
     def get_all_bending_force(self):
         base_v_shape = (self.sim._B, self.n_vertices, 3)
