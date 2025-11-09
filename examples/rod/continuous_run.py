@@ -31,6 +31,8 @@ def main():
     ap.add_argument('--n_top_ratio', type=float, default=0.2)
     ap.add_argument("--delay", type=float, default=2.0,
                     help="Seconds to wait before restarting after exit (default: 2.0)")
+    ap.add_argument('--bound', type=float, default=0.1,
+                    help="Per-step L2 bound for each control point.")
     ap.add_argument('--exp_name', type=str, required=True)
     ap.add_argument('--n_steps', type=int, default=10)
     ap.add_argument('--max_iter', type=int, default=20)
@@ -44,7 +46,7 @@ def main():
         exit(0)
 
     if args.requires_grad:
-        cmd = ["python", "run_cmaes_gd.py", "--task", args.task, "--seed", str(args.seed)]
+        cmd = ["python", "run_cmaes_gd.py", "--task", args.task, "--seed", str(args.seed), "--bound", str(args.bound)]
         if args.scale_method is not None:
             cmd.extend(["--scale_method", str(args.scale_method)])
         cmd.extend(["--version", str(args.version)])
@@ -57,7 +59,7 @@ def main():
         if args.scheduler is not None:
             cmd.extend(["--scheduler", str(args.scheduler)])
     else:
-        cmd = ["python", "run_cmaes.py", "--task", args.task, "--seed", str(args.seed)]
+        cmd = ["python", "run_cmaes.py", "--task", args.task, "--seed", str(args.seed), "--bound", str(args.bound)]
         if args.exp_name is not None:
             cmd.extend(["--exp_name", str(args.exp_name)])
         cmd.extend(["--n_steps", str(args.n_steps)])
