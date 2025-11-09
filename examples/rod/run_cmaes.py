@@ -241,6 +241,7 @@ def optimize_trajectory(
             "seed": seed,
             "work_dir": work_dir,
             "trial_name": trial_name,
+            "bound": l2_bound,
         })
 
     dim = n_steps * act_dim
@@ -421,6 +422,10 @@ if __name__ == "__main__":
         help="Path to saved trajectory .npy for visualization. If None, runs optimization."
     )
     parser.add_argument(
+        '--bound', type=float, default=0.1,
+        help="Per-step L2 bound for each control point."
+    )
+    parser.add_argument(
         '--exp_name', type=str, default=None,
     )
     parser.add_argument('--gui', action='store_true', help="Whether to show GUI.")
@@ -443,8 +448,8 @@ if __name__ == "__main__":
             act_dim=None,           # infer if available
             popsize=200,
             sigma0=0.005,
-            per_comp_bound=0.1,
-            l2_bound=0.1,          # use env.l2_bound if present
+            per_comp_bound=args.bound,
+            l2_bound=args.bound,          # use env.l2_bound if present
             max_iters=args.max_iter,
             seed=args.seed,
             log_dir=log_dir,

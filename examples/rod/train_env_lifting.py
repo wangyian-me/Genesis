@@ -8,6 +8,11 @@ class Train_Env_Lifting(Train_Env):
         super().__init__(task, GUI=GUI, camera=camera, n_envs=n_envs, log_dir=log_dir, requires_grad=requires_grad)
         self.steps_interval = 200
 
+        # initial distance between control points
+        self.control_dist_init = self.rope.get_geodesic_distance(self.control_idx[0], self.control_idx[1])
+
+        print(f'Initial distance between control points: {self.control_dist_init[0]:.4f}')
+
     def construct_scene(self, camera):
         plane = self.scene.add_entity(
             material=gs.materials.Rigid(
@@ -70,7 +75,7 @@ class Train_Env_Lifting(Train_Env):
 
         self.scene.build(n_envs=self.n_envs, env_spacing=(1, 1))
 
-        self.control_idx = [7, 23]
+        self.control_idx = [6, 23]
         self.action_dim = len(self.control_idx) * 3
 
     def construct_cameras(self):

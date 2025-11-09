@@ -191,6 +191,7 @@ class Train_Env_Slingshot(Train_Env):
         alive = np.ones((self.n_envs,), dtype=bool)              # True until first failure (collision or NaN)
         ever_nan = np.zeros((self.n_envs,), dtype=bool)          # True if verts ever became NaN
         ever_collided = np.zeros((self.n_envs,), dtype=bool)     # True if collision occurred
+        ever_stretched = np.zeros((self.n_envs,), dtype=bool)    # True if excessive stretching force occurred
         first_fail_step = np.full((self.n_envs,), total_micro_steps, dtype=np.int32)  # micro-step index of first failure
 
         for i in range(n_steps):
@@ -271,13 +272,13 @@ class Train_Env_Slingshot(Train_Env):
                     alive[newly_collided] = False
 
                 # Post-step: detect excessive stretching force
-                streched_force = self.rope.get_all_stretching_force()[:, self.control_idx[0]]       # (n_envs, 3)
-                force_magnitudes = np.linalg.norm(streched_force, axis=1)   # (n_envs,)
+                stretched_force = self.rope.get_all_stretching_force()[:, self.control_idx[0]]       # (n_envs, 3)
+                force_magnitudes = np.linalg.norm(stretched_force, axis=1)   # (n_envs,)
                 newly_exceed_force = (force_magnitudes > 50) & alive
                 if newly_exceed_force.any():
                     global_step = i * steps_interval + (j + 1)
                     first_fail_step[newly_exceed_force] = np.minimum(first_fail_step[newly_exceed_force], global_step)
-                    ever_collided[newly_exceed_force] = True
+                    ever_stretched[newly_exceed_force] = True
                     alive[newly_exceed_force] = False
 
                 # Post-step: detect NaNs that emerge during micro-stepping
