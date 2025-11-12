@@ -4,7 +4,6 @@ import gstaichi as ti
 import genesis.utils.geom as gu
 
 from genesis.engine.entities import RodEntity
-from genesis.utils.misc import to_gs_tensor
 
 class RobotController:
     def __init__(
@@ -60,6 +59,11 @@ class RobotController:
         else:
             delta_pos = torch.stack([dx, dy, dz], dim=-1)
         target_pos = self.pos_abs + delta_pos
+        if kwargs.get('min_z', None) is not None:
+            min_z = torch.zeros_like(target_pos[..., 2])
+            min_z.fill_(kwargs.pop('min_z'))
+            kwargs.update({'underground': (target_pos[..., 2] < min_z).any()})
+            target_pos[..., 2] = torch.maximum(target_pos[..., 2], min_z)
         if isinstance(di, (float, int)) and isinstance(dj, (float, int)) and isinstance(dk, (float, int)):
             delta_orient = torch.tensor([di, dj, dk], dtype=gs.tc_float)
         else:
@@ -115,6 +119,7 @@ class RobotController:
         pos_arg = target_pos
         quat_arg = target_quat
         gripper_arg = torch.tensor([[g_dof1, g_dof2]] * self.configs.n_envs) if is_batched else torch.tensor([g_dof1, g_dof2])
+        underground = kwargs.pop('underground', False)
 
         if self.debug:
             for i in self.debug_point_nodes:
@@ -124,9 +129,11 @@ class RobotController:
                 if is_batched:
                     offset = self.scene.envs_offset[batch_idx]
                     offset = torch.as_tensor(offset, dtype=target_pos.dtype, device=target_pos.device)
+                color = (1.0, 1.0, 0.0, 0.6) if underground else (0.0, 1.0, 0.0, 0.6)
                 self.debug_point_nodes.append(self.scene.draw_debug_sphere(
                     pos=target_pos[batch_idx] + offset if is_batched else target_pos,
-                    radius=0.01
+                    radius=0.01,
+                    color=color
                 ))
 
         qpos = self.robot.inverse_kinematics(
