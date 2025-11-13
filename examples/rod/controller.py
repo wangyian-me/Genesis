@@ -5,13 +5,23 @@ import genesis.utils.geom as gu
 
 from genesis.engine.entities import RodEntity
 
+
+def rod_attached_to_gripper(scene, contact_info, rod, ef, geom_indices, envs_idx=0):
+    info = scene.sim.coupler.get_rod_rigid_gripper_contact_info(envs_idx=envs_idx)
+    contact_info.update(info)
+    attach_verts = list(contact_info.keys())
+    for v in attach_verts:
+        if contact_info[v] in geom_indices:
+            rod.attach_to_rigid_link(ef, [v])
+
+
 class RobotController:
     def __init__(
         self,
         scene,
         robot,
         ef,
-        configs,
+        configs=None,
         initial_pos=(0., 0., 0.),
         initial_quat=(0., 1., 0., 0.),
         initial_gripper_gap=0.03,
@@ -35,9 +45,9 @@ class RobotController:
         pos_abs = torch.tensor(self.initial_pos, dtype=gs.tc_float)
         quat_abs = torch.tensor(self.initial_quat, dtype=gs.tc_float)
 
-        is_batched = self.configs.n_envs > 0
-        self.pos_abs = torch.stack([pos_abs] * self.configs.n_envs) if is_batched else pos_abs
-        self.quat_abs = torch.stack([quat_abs] * self.configs.n_envs) if is_batched else quat_abs
+        is_batched = self.scene.n_envs > 0
+        self.pos_abs = torch.stack([pos_abs] * self.scene.n_envs) if is_batched else pos_abs
+        self.quat_abs = torch.stack([quat_abs] * self.scene.n_envs) if is_batched else quat_abs
         qpos = self.robot.inverse_kinematics(
             link=self.ef,
             pos=self.pos_abs,
@@ -70,7 +80,7 @@ class RobotController:
             delta_orient = torch.stack([di, dj, dk], dim=-1)
         delta_quat = gu.xyz_to_quat(delta_orient, rpy=True, degrees=degrees)
         if delta_quat.ndim == 1 and self.quat_abs.ndim == 2:
-            delta_quat = torch.stack([delta_quat] * self.configs.n_envs) if self.configs.n_envs > 0 else delta_quat
+            delta_quat = torch.stack([delta_quat] * self.scene.n_envs) if self.scene.n_envs > 0 else delta_quat
         else:
             raise ValueError("`delta_quat` and `quat_abs` must have the same number of dimensions.")
         target_quat = gu.transform_quat_by_quat(delta_quat, self.quat_abs)
@@ -104,7 +114,7 @@ class RobotController:
         target_pos = center_tensor + rotated_vec
 
         if orient_rotation_quat.ndim == 1 and self.quat_abs.ndim == 2:
-            orient_rotation_quat = torch.stack([orient_rotation_quat] * self.configs.n_envs) if self.configs.n_envs > 0 else orient_rotation_quat
+            orient_rotation_quat = torch.stack([orient_rotation_quat] * self.scene.n_envs) if self.scene.n_envs > 0 else orient_rotation_quat
         else:
             raise ValueError("`orient_rotation_quat` and `quat_abs` must have the same number of dimensions.")
         target_quat = gu.transform_quat_by_quat(orient_rotation_quat, self.quat_abs)
@@ -115,17 +125,17 @@ class RobotController:
         """
         Run inverse kinematics and send control commands.
         """
-        is_batched = self.configs.n_envs > 0
+        is_batched = self.scene.n_envs > 0
         pos_arg = target_pos
         quat_arg = target_quat
-        gripper_arg = torch.tensor([[g_dof1, g_dof2]] * self.configs.n_envs) if is_batched else torch.tensor([g_dof1, g_dof2])
+        gripper_arg = torch.tensor([[g_dof1, g_dof2]] * self.scene.n_envs) if is_batched else torch.tensor([g_dof1, g_dof2])
         underground = kwargs.pop('underground', False)
 
         if self.debug:
             for i in self.debug_point_nodes:
                 self.scene.clear_debug_object(i)
             self.debug_point_nodes = list()
-            for batch_idx in range(self.configs.n_envs if is_batched else 1):
+            for batch_idx in range(self.scene.n_envs if is_batched else 1):
                 if is_batched:
                     offset = self.scene.envs_offset[batch_idx]
                     offset = torch.as_tensor(offset, dtype=target_pos.dtype, device=target_pos.device)
