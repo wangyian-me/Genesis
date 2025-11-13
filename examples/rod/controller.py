@@ -15,6 +15,16 @@ def rod_attached_to_gripper(scene, contact_info, rod, ef, geom_indices, envs_idx
             rod.attach_to_rigid_link(ef, [v])
 
 
+def rod_detached_from_gripper(contact_info, rod, geom_indices):
+    vertices_to_detach = list()
+    for i_v, i_g in contact_info.items():
+        if i_g in geom_indices:
+            rod.detach_from_rigid_link([i_v])
+            vertices_to_detach.append(i_v)
+    for i_v in vertices_to_detach:
+        contact_info.pop(i_v)
+
+
 class RobotController:
     def __init__(
         self,
