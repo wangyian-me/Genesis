@@ -12,14 +12,14 @@ def rod_attached_to_gripper(scene, contact_info, rod, ef, geom_indices, envs_idx
     attach_verts = list(contact_info.keys())
     for v in attach_verts:
         if contact_info[v] in geom_indices:
-            rod.attach_to_rigid_link(ef, [v])
+            rod.attach_to_rigid_link_with_envs_idx(ef, [v], envs_idx=envs_idx)
 
 
-def rod_detached_from_gripper(contact_info, rod, geom_indices):
+def rod_detached_from_gripper(contact_info, rod, geom_indices, envs_idx=0):
     vertices_to_detach = list()
     for i_v, i_g in contact_info.items():
         if i_g in geom_indices:
-            rod.detach_from_rigid_link([i_v])
+            rod.detach_from_rigid_link_with_envs_idx([i_v], envs_idx=envs_idx)
             vertices_to_detach.append(i_v)
     for i_v in vertices_to_detach:
         contact_info.pop(i_v)
