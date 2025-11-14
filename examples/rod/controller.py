@@ -70,6 +70,14 @@ class RobotController:
         qpos[..., -2:] = self.init_gap  # initial gripper open
         self.robot.set_dofs_position(qpos)
 
+    def set_initial_dofs_position(self, qpos):
+        is_batched = self.scene.n_envs > 0
+        if is_batched:
+            qpos = torch.stack([qpos] * self.scene.n_envs)
+        self.robot.set_dofs_position(qpos)
+        self.pos_abs = self.ef.get_pos()
+        self.quat_abs = self.ef.get_quat()
+
     def control_robot(
         self, g_dof1, g_dof2,
         dx=0., dy=0., dz=0., di=0., dj=0., dk=0.,
