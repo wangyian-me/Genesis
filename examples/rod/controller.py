@@ -95,7 +95,7 @@ class RobotController:
         delta_quat = gu.xyz_to_quat(delta_orient, rpy=True, degrees=degrees)
         if delta_quat.ndim == 1 and self.quat_abs.ndim == 2:
             delta_quat = torch.stack([delta_quat] * self.scene.n_envs) if self.scene.n_envs > 0 else delta_quat
-        else:
+        elif delta_quat.ndim != self.quat_abs.ndim:
             raise ValueError("`delta_quat` and `quat_abs` must have the same number of dimensions.")
         target_quat = gu.transform_quat_by_quat(delta_quat, self.quat_abs)
 
@@ -129,7 +129,7 @@ class RobotController:
 
         if orient_rotation_quat.ndim == 1 and self.quat_abs.ndim == 2:
             orient_rotation_quat = torch.stack([orient_rotation_quat] * self.scene.n_envs) if self.scene.n_envs > 0 else orient_rotation_quat
-        else:
+        elif orient_rotation_quat.ndim != self.quat_abs.ndim:
             raise ValueError("`orient_rotation_quat` and `quat_abs` must have the same number of dimensions.")
         target_quat = gu.transform_quat_by_quat(orient_rotation_quat, self.quat_abs)
 
