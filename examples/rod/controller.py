@@ -225,7 +225,7 @@ class RobotControllerPink:
         n_motors_dofs=7,
         n_fingers_dofs=2,
         urdf_path=None,
-        ee_frame_name="panda_grasptarget",
+        ee_frame_name=None,
         debug=False,
         # Pink-specific parameters
         pink_max_iterations=100,
@@ -259,9 +259,9 @@ class RobotControllerPink:
         n_fingers_dofs : int, optional
             Number of finger DOFs (default: 2 for Franka gripper)
         urdf_path : str, optional
-            Path to robot URDF file. If None, defaults to 'urdf/panda_bullet/panda.urdf'
+            Path to robot URDF file. If None, defaults to `robot.morph.file`
         ee_frame_name : str, optional
-            Name of end-effector frame in Pinocchio model (default: "panda_grasptarget")
+            Name of end-effector frame in Pinocchio model. If None, defaults to `ef.name`
         debug : bool, optional
             Enable debug visualization
         pink_max_iterations : int, optional
@@ -294,6 +294,8 @@ class RobotControllerPink:
         if urdf_path is None:
             urdf_path = robot.morph.file
         self.urdf_path = urdf_path
+        if ee_frame_name is None:
+            ee_frame_name = ef.name
         self.ee_frame_name = ee_frame_name
 
         # Get robot base position in world frame (Pinocchio assumes robot at origin)
