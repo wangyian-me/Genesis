@@ -3,8 +3,10 @@ import torch
 import numpy as np
 import mediapy
 from scipy.spatial.transform import Rotation as R
-import os 
+import os
 from collections import defaultdict
+from mushroom_rl.core import MDPInfo
+from mushroom_rl.rl_utils.spaces import Box
 
 from gd.traj_optim_cmaes import (
     create_linear_array,
@@ -15,7 +17,7 @@ from gd.traj_optim_cmaes import (
 
 
 class Train_Env():
-    def __init__(self, task, scene=None, GUI=False, camera=False, log_dir=None, n_envs=None, requires_grad=False):
+    def __init__(self, task, scene=None, GUI=False, camera=False, log_dir=None, n_envs=None, requires_grad=False, scene_version=None):
         self.task = task
         self.GUI = GUI
         self.n_envs = n_envs
@@ -55,7 +57,16 @@ class Train_Env():
 
         self.cameras = list()
         self.frames = defaultdict(list)
-        self.construct_scene(camera=camera)
+        if scene_version is None:
+            scene_version = 1
+        if scene_version == 1:
+            self.construct_scene(camera=camera)
+        elif scene_version == 2:
+            self.construct_scene_v2(camera=camera)
+        else:
+            raise ValueError(f"Unknown scene_version: {scene_version}")
+        self.scene_version = scene_version
+        print(f'Scene version set to: {scene_version}')
         self.control_dist_init = None
         self.debug_point_nodes = list()
 
@@ -101,6 +112,9 @@ class Train_Env():
     def construct_scene(self, camera=False):
         raise NotImplementedError()
 
+    def construct_scene_v2(self, camera=False):
+        raise NotImplementedError()
+
     def construct_cameras(self):
         raise NotImplementedError()
 
@@ -110,15 +124,81 @@ class Train_Env():
     def loss_criterion(self, state):
         raise NotImplementedError()
 
-    def reset(self):
+    def reset(self, debug=False, envs_idx=None):
         raise NotImplementedError()
+
+    # # # # # # RL Utils # # # # # #
+    def compute_observation(self):
+        raise NotImplementedError()
+
+    # # # # # # RL Utils # # # # # #
+    def reset_all(self, env_mask, state=None):
+        env_indices = torch.where(env_mask)[0]
+        # Check if there are any environments to reset
+        if len(env_indices) > 0:
+            self.reset(envs_idx=env_indices)
+
+        obs = self.compute_observation()
+        return obs, [{}] * self.n_envs
+
+    # # # # # # RL Utils # # # # # #
+    def init_rl_env(
+        self,
+        n_steps = 10,
+        pos_bound = 0.1,
+        angle_bound = 5.0,
+        n_rigid_obs=0,
+        debug=False
+    ):
+        self._l2_limit = pos_bound
+        # RL/vectorized env configuration
+        self._backend = 'torch'
+        if debug:
+            # TODO: hack here
+            if getattr(self, "c1", None) is not None:
+                self.c1.debug = True
+            if getattr(self, "c2", None) is not None:
+                self.c2.debug = True
+
+        # Observation / action specs
+        self._obs_dim = (self.rope.n_vertices + n_rigid_obs) * 3    # (n_vertices + n_rigid_obs) * 3
+        self._act_dim = len(self.control_idx) * 6                   # n_ctrl * 6
+        self._horizon = n_steps                                     # 10
+        self._steps_per_action = self.steps_interval
+
+        # Observation/action spaces
+        low_obs = torch.full((self._obs_dim,), -np.inf, dtype=torch.float32)
+        high_obs = torch.full((self._obs_dim,), np.inf, dtype=torch.float32)
+        observation_space = Box(low_obs, high_obs)
+
+        act_limit = [pos_bound] * (self._act_dim // 2) + [angle_bound] * (self._act_dim // 2)
+        act_limit = torch.tensor(act_limit, dtype=torch.float32)
+        print(f'Bound: {act_limit}')
+        low_act = -torch.ones((self._act_dim,), dtype=torch.float32) * act_limit
+        high_act = torch.ones((self._act_dim,), dtype=torch.float32) * act_limit
+        action_space = Box(low_act, high_act)
+
+        # Control dt approximates sim dt * internal steps
+        control_dt = self.scene.sim_options.dt * self._steps_per_action
+        self._mdp_info = MDPInfo(observation_space, action_space, gamma=0.99, horizon=self._horizon, dt=control_dt, backend=self._backend)
+
+        # Compatibility in `reset()`
+        self.use_qpos = True
+
+    @property
+    def info(self):
+        return self._mdp_info
+
+    @property
+    def number(self):
+        return self.n_envs
 
     def save_animation(self, save_dir):
         if len(self.frames) == 0:
             return
 
         for cid in self.frames:
-            video_path = os.path.join(save_dir, f"view_{cid}_best.mp4")
+            video_path = os.path.join(save_dir, f"view_{cid}_best_debug.mp4")
             mediapy.write_video(video_path, self.frames[cid], fps=30, qp=18)
             print(f'Saved video to {video_path}')
 
@@ -131,7 +211,25 @@ class Train_Env():
 
         return loss_abv_plane
 
-    def eval_traj(self, trajs, debug=False):
+    # # # # # # RL Utils # # # # # #
+    def render_all(self, env_mask, record=False):
+        if self.GUI:
+            pass
+        if record:
+            return np.zeros((720, 1280, 3), dtype=np.uint8)
+        return None
+
+    # # # # # # RL Utils # # # # # #
+    def stop(self):
+        pass
+
+    def eval_traj(self, trajs, debug=False, **kwargs):
+        if self.scene_version == 1:
+            return self.eval_traj_v1(trajs, debug=debug)
+        elif self.scene_version == 2:
+            return self.eval_traj_v2(trajs, debug=debug, **kwargs)
+
+    def eval_traj_v1(self, trajs, debug=False):
         """
         Evaluate trajectories.
 
@@ -295,6 +393,9 @@ class Train_Env():
             final[env_rewards_nan] = -100.0
 
         return final.astype(np.float32)
+
+    def eval_traj_v2(self, trajs, debug=False, **kwargs):
+        raise NotImplementedError()
 
     def adaptive_scale(self, trajs, deltas, ratio=0.1):
         norm_trajs = np.linalg.norm(trajs, axis=-1, keepdims=True)
