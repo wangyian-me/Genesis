@@ -82,13 +82,6 @@ class LegacyCoupler(RBC):
             self.rod_rigid_gripper_geom_indices = ti.field(
                 dtype=gs.ti_int, needs_grad=False, shape=(self.rigid_solver.n_geoms, self.rod_solver._B)
             )
-            # -2: uninitialized; -1: gripper not contact; >=0: gripper contact with rod vertex index
-            self.rod_rigid_gripper_geom_indices.fill(-2)
-            gripper_n_geoms = self.rod_solver.geom_indices.shape[0]
-            if gripper_n_geoms > 0:
-                self.init_rod_rigid_gripper_geom_indices(gripper_n_geoms, self.rod_solver.geom_indices)
-            gs.logger.info(f"Registered {self.rod_solver.geom_indices.shape[0]} gripper geometries for rod collision handling.")
-            gs.logger.info(f"Geom indices: {self.rod_solver.geom_indices}")
 
         if self._mpm_sph:
             self.mpm_sph_stencil_size = int(np.floor(self.mpm_solver.dx / self.sph_solver.hash_grid_cell_size) + 2)
@@ -115,6 +108,20 @@ class LegacyCoupler(RBC):
             else:
                 self._kernel_reset_sph(envs_idx)
 
+        if self._rigid_rod:
+            gripper_n_geoms = self.rod_solver.geom_indices.shape[0]
+            # -2: uninitialized; -1: gripper not contact; >=0: gripper contact with rod vertex index
+            if envs_idx is None:
+                self.rod_rigid_gripper_geom_indices.fill(-2)
+                if gripper_n_geoms > 0:
+                    self.init_rod_rigid_gripper_geom_indices(gripper_n_geoms, self.rod_solver.geom_indices)
+            else:
+                self._kernel_reset_rod(envs_idx)
+                if gripper_n_geoms > 0:
+                    self.init_rod_rigid_gripper_geom_indices_with_envs_idx(gripper_n_geoms, self.rod_solver.geom_indices, envs_idx)
+            gs.logger.info(f"Registered {self.rod_solver.geom_indices.shape[0]} gripper geometries for rod collision handling.")
+            gs.logger.info(f"Geom indices: {self.rod_solver.geom_indices}")
+
     @ti.kernel
     def _kernel_reset_mpm(self, envs_idx: ti.types.ndarray()):
         for i_p, i_g, i_b_ in ti.ndrange(self.mpm_solver.n_particles, self.rigid_solver.n_geoms, envs_idx.shape[0]):
@@ -124,6 +131,11 @@ class LegacyCoupler(RBC):
     def _kernel_reset_sph(self, envs_idx: ti.types.ndarray()):
         for i_p, i_g, i_b_ in ti.ndrange(self.sph_solver.n_particles, self.rigid_solver.n_geoms, envs_idx.shape[0]):
             self.sph_rigid_normal[i_p, i_g, envs_idx[i_b_]] = 0.0
+    
+    @ti.kernel
+    def _kernel_reset_rod(self, envs_idx: ti.types.ndarray()):
+        for i_v, i_b_ in ti.ndrange(self.rod_solver._n_vertices, envs_idx.shape[0]):
+            self.rod_rigid_gripper_geom_indices[i_v, envs_idx[i_b_]] = -2
 
     @ti.func
     def _func_collide_with_rigid(self, f, pos_world, vel, mass, i_b):
@@ -192,6 +204,7 @@ class LegacyCoupler(RBC):
                 self.rod_solver.vertices_collision[i, batch_idx].collided = True
                 self.rod_solver.vertices_collision[i, batch_idx].normal = normal_rigid
                 self.rod_solver.vertices_collision[i, batch_idx].penetration = -signed_dist
+                self.rod_solver.vertices_collision[i, batch_idx].geom_idx = geom_idx
 
         return vel
 
@@ -934,6 +947,12 @@ class LegacyCoupler(RBC):
         for i, i_b in ti.ndrange(n_geoms, self.rod_solver._B):
             i_g = geom_indices[i]
             self.rod_rigid_gripper_geom_indices[i_g, i_b] = -1
+
+    @ti.kernel
+    def init_rod_rigid_gripper_geom_indices_with_envs_idx(self, n_geoms: ti.i32, geom_indices: ti.types.ndarray(), envs_idx: ti.types.ndarray()):
+        for i, i_b_ in ti.ndrange(n_geoms, envs_idx.shape[0]):
+            i_g = geom_indices[i]
+            self.rod_rigid_gripper_geom_indices[i_g, envs_idx[i_b_]] = -1
 
     @ti.kernel
     def clear_rod_rigid_gripper_geom_indices(self):
