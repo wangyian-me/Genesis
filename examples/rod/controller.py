@@ -205,6 +205,31 @@ class RobotController:
 
         return qpos
 
+    def draw_debug_point(self, delta_pos, min_z):
+        delta_pos = torch.as_tensor(delta_pos)
+        target_pos = self.pos_abs + delta_pos
+        self.pos_abs = target_pos
+        if self.debug:
+            for i in self.debug_point_nodes:
+                self.scene.clear_debug_object(i)
+            self.debug_point_nodes = list()
+            for batch_idx in range(self.scene.n_envs if self.scene.n_envs > 0 else 1):
+                if self.scene.n_envs > 0:
+                    offset = self.scene.envs_offset[batch_idx]
+                    offset = torch.as_tensor(offset, dtype=target_pos.dtype, device=target_pos.device)
+                else:
+                    offset = torch.zeros(3, dtype=target_pos.dtype, device=target_pos.device)
+                if target_pos[batch_idx, 2] < min_z:
+                    color = (1.0, 1.0, 0.0, 0.6)
+                    target_pos[batch_idx, 2] = min_z
+                else:
+                    color = (0.0, 1.0, 0.0, 0.6)
+                self.debug_point_nodes.append(self.scene.draw_debug_sphere(
+                    pos=target_pos[batch_idx] + offset if self.scene.n_envs > 0 else target_pos,
+                    radius=0.01,
+                    color=color
+                ))
+
 class RobotControllerPink:
     """
     Robot controller using Pink-based inverse kinematics.
@@ -358,7 +383,7 @@ class RobotControllerPink:
                 "Make sure the URDF path is correct and accessible."
             )
 
-    def set_initial_position(self):
+    def set_initial_position(self, envs_idx=None):
         """
         Set robot to initial end-effector position using Pink IK.
 
@@ -371,23 +396,33 @@ class RobotControllerPink:
         quat_abs = torch.tensor(self.initial_quat, dtype=gs.tc_float)
 
         is_batched = self.scene.n_envs > 0
-        self.pos_abs = torch.stack([pos_abs] * self.scene.n_envs) if is_batched else pos_abs
-        self.quat_abs = torch.stack([quat_abs] * self.scene.n_envs) if is_batched else quat_abs
+        if envs_idx is None or len(envs_idx) == self.scene.n_envs:
+            # Reset all environments
+            self.pos_abs = torch.stack([pos_abs] * self.scene.n_envs) if is_batched else pos_abs
+            self.quat_abs = torch.stack([quat_abs] * self.scene.n_envs) if is_batched else quat_abs
+        else:
+            # Only update specified environments
+            self.pos_abs[envs_idx] = pos_abs
+            self.quat_abs[envs_idx] = quat_abs
 
         # Get current qpos as initial guess
         current_qpos = self.robot.get_qpos()
 
         if is_batched:
-            # For batched environments, solve IK for the first environment
-            # and replicate to all environments
-            # Pass full qpos (including gripper) to Pink
-            qpos_full = self._solve_pink_ik(
-                pos=self.pos_abs[0].cpu().numpy(),
-                quat=self.quat_abs[0].cpu().numpy(),
-                init_qpos=current_qpos[0].cpu().numpy(),  # Full 9 DOFs
-            )
-            qpos_full = torch.tensor(qpos_full, dtype=gs.tc_float)
-            qpos_full = torch.stack([qpos_full] * self.scene.n_envs)
+            # Solve for each environment separately
+            qpos_list = []
+            env_list = range(self.scene.n_envs) if envs_idx is None else envs_idx
+            for batch_idx in env_list:
+                pos_np = self.pos_abs[batch_idx].cpu().numpy()
+                quat_np = self.quat_abs[batch_idx].cpu().numpy()
+                init_qpos_np = current_qpos[batch_idx].cpu().numpy()  # Full qpos including gripper
+
+                qpos_full, _ = self._solve_pink_ik(pos_np, quat_np, init_qpos_np)
+                qpos_list.append(torch.tensor(qpos_full, dtype=gs.tc_float))
+
+            qpos_full = torch.stack(qpos_list)
+            if envs_idx is not None:
+                assert len(envs_idx) == len(qpos_list), f"len(envs_idx)={len(envs_idx)}, len(qpos_list)={len(qpos_list)}"
 
             # Set gripper to initial gap
             qpos_full[..., -2:] = self.init_gap
@@ -395,7 +430,7 @@ class RobotControllerPink:
         else:
             # Single environment
             # Pass full qpos (including gripper) to Pink
-            qpos_full = self._solve_pink_ik(
+            qpos_full, _ = self._solve_pink_ik(
                 pos=self.pos_abs.cpu().numpy(),
                 quat=self.quat_abs.cpu().numpy(),
                 init_qpos=current_qpos.cpu().numpy(),  # Full 9 DOFs
@@ -405,7 +440,7 @@ class RobotControllerPink:
             # Set gripper to initial gap
             qpos[-2:] = self.init_gap
 
-        self.robot.set_dofs_position(qpos)
+        self.robot.set_dofs_position(qpos, envs_idx=envs_idx)
 
         # # Verify the solution - step scene to update Genesis forward kinematics
         # self.scene.step()
@@ -473,6 +508,8 @@ class RobotControllerPink:
         -------
         qpos : np.ndarray, shape (robot_model.nq,)
             Solved joint configuration (full, including gripper)
+        converged : bool
+            Whether the IK solver converged
         """
         # Update configuration with current qpos
         current_q = np.clip(
@@ -592,12 +629,12 @@ class RobotControllerPink:
         #     if not converged:
         #         gs.logger.warning(f"    Final error norm: {error_norm:.6f}")
 
-        return self.configuration.q.copy()
+        return self.configuration.q.copy(), converged
 
     def control_robot(
         self, g_dof1, g_dof2,
         dx=0., dy=0., dz=0., di=0., dj=0., dk=0.,
-        g_dof_use_force=False, degrees=True, **kwargs
+        g_dof_use_force=False, degrees=True, envs_idx=None, **kwargs
     ):
         """
         Control robot end-effector to move by specified deltas using Pink IK.
@@ -626,7 +663,7 @@ class RobotControllerPink:
         if isinstance(dx, (float, int)) and isinstance(dy, (float, int)) and isinstance(dz, (float, int)):
             delta_pos = torch.tensor([dx, dy, dz], dtype=gs.tc_float)
         else:
-            delta_pos = torch.stack([dx, dy, dz], dim=-1)
+            delta_pos = torch.stack([dx, dy, dz], dim=-1).to(gs.tc_float)
         target_pos = self.pos_abs + delta_pos
 
         # Handle minimum Z constraint
@@ -640,7 +677,7 @@ class RobotControllerPink:
         if isinstance(di, (float, int)) and isinstance(dj, (float, int)) and isinstance(dk, (float, int)):
             delta_orient = torch.tensor([di, dj, dk], dtype=gs.tc_float)
         else:
-            delta_orient = torch.stack([di, dj, dk], dim=-1)
+            delta_orient = torch.stack([di, dj, dk], dim=-1).to(gs.tc_float)
         delta_quat = gu.xyz_to_quat(delta_orient, rpy=True, degrees=degrees)
 
         if delta_quat.ndim == 1 and self.quat_abs.ndim == 2:
@@ -649,7 +686,7 @@ class RobotControllerPink:
             raise ValueError("`delta_quat` and `quat_abs` must have the same number of dimensions.")
         target_quat = gu.transform_quat_by_quat(delta_quat, self.quat_abs)
 
-        qpos = self._execute_ik_control(target_pos, target_quat, g_dof1, g_dof2, g_dof_use_force, **kwargs)
+        qpos = self._execute_ik_control(target_pos, target_quat, g_dof1, g_dof2, g_dof_use_force, envs_idx=envs_idx, **kwargs)
 
         return qpos
 
@@ -712,7 +749,7 @@ class RobotControllerPink:
 
         return qpos
 
-    def _execute_ik_control(self, target_pos, target_quat, g_dof1, g_dof2, g_dof_use_force, **kwargs):
+    def _execute_ik_control(self, target_pos, target_quat, g_dof1, g_dof2, g_dof_use_force, envs_idx=None, **kwargs):
         """
         Execute inverse kinematics and send control commands using Pink.
 
@@ -726,6 +763,8 @@ class RobotControllerPink:
             Gripper DOF commands
         g_dof_use_force : bool
             Use force control for gripper
+        envs_idx : list or None, optional
+            Indices of environments to control (default: None, control all)
         **kwargs : optional
             Additional arguments (e.g., underground flag for debug)
 
@@ -742,7 +781,8 @@ class RobotControllerPink:
             for i in self.debug_point_nodes:
                 self.scene.clear_debug_object(i)
             self.debug_point_nodes = list()
-            for batch_idx in range(self.scene.n_envs if is_batched else 1):
+            env_list = range(max(self.scene.n_envs, 1)) if envs_idx is None else [int(i) for i in envs_idx]
+            for batch_idx in env_list:
                 if is_batched:
                     offset = self.scene.envs_offset[batch_idx]
                     offset = torch.as_tensor(offset, dtype=target_pos.dtype, device=target_pos.device)
@@ -758,19 +798,31 @@ class RobotControllerPink:
         # Get current joint positions
         current_qpos = self.robot.get_qpos()
 
+        # Convergence state
+        convergence = list()
+
         # Solve IK using Pink
         if is_batched:
             # Solve for each environment separately
             qpos_list = []
-            for batch_idx in range(self.scene.n_envs):
+            env_list = range(self.scene.n_envs) if envs_idx is None else envs_idx
+            for batch_idx in env_list:
                 pos_np = target_pos[batch_idx].cpu().numpy()
                 quat_np = target_quat[batch_idx].cpu().numpy()
                 init_qpos_np = current_qpos[batch_idx].cpu().numpy()  # Full qpos including gripper
 
-                qpos_full = self._solve_pink_ik(pos_np, quat_np, init_qpos_np)
-                qpos_list.append(torch.tensor(qpos_full, dtype=gs.tc_float))
+                qpos_full, converged = self._solve_pink_ik(pos_np, quat_np, init_qpos_np)
+                if converged:
+                    qpos_list.append(torch.tensor(qpos_full, dtype=gs.tc_float))
+                else:
+                    # If not converged, keep current qpos
+                    qpos_list.append(current_qpos[batch_idx])
+                convergence.append(converged)
 
             qpos = torch.stack(qpos_list)
+            if envs_idx is not None:
+                assert len(envs_idx) == len(qpos_list), f"len(envs_idx)={len(envs_idx)}, len(qpos_list)={len(qpos_list)}"
+            convergence = np.array(convergence)
 
             # Override gripper DOFs with commanded values
             qpos[:, -2] = g_dof1
@@ -781,28 +833,60 @@ class RobotControllerPink:
             quat_np = target_quat.cpu().numpy()
             init_qpos_np = current_qpos.cpu().numpy()  # Full qpos including gripper
 
-            qpos_full = self._solve_pink_ik(pos_np, quat_np, init_qpos_np)
-            qpos = torch.tensor(qpos_full, dtype=gs.tc_float)
+            qpos_full, converged = self._solve_pink_ik(pos_np, quat_np, init_qpos_np)
+            if converged:
+                qpos = torch.tensor(qpos_full, dtype=gs.tc_float)
+            else:
+                qpos = current_qpos
+            convergence = np.array([converged])
 
             # Override gripper DOFs with commanded values
             qpos[-2] = g_dof1
             qpos[-1] = g_dof2
 
         # Send control commands
-        self.robot.control_dofs_position(qpos[..., :-2], self.motors_dof)
+        self.robot.control_dofs_position(qpos[..., :-2], self.motors_dof, envs_idx=envs_idx)
 
+        n_envs = self.scene.n_envs if envs_idx is None else len(envs_idx)
         if g_dof_use_force:
-            gripper_arg = torch.tensor([[g_dof1, g_dof2]] * self.scene.n_envs) if is_batched else torch.tensor([g_dof1, g_dof2])
-            self.robot.control_dofs_force(gripper_arg, self.fingers_dof)
+            gripper_arg = torch.tensor([[g_dof1, g_dof2]] * n_envs) if is_batched else torch.tensor([g_dof1, g_dof2])
+            self.robot.control_dofs_force(gripper_arg, self.fingers_dof, envs_idx=envs_idx)
         else:
-            gripper_arg = torch.tensor([[g_dof1, g_dof2]] * self.scene.n_envs) if is_batched else torch.tensor([g_dof1, g_dof2])
-            self.robot.control_dofs_position(gripper_arg, self.fingers_dof)
+            gripper_arg = torch.tensor([[g_dof1, g_dof2]] * n_envs) if is_batched else torch.tensor([g_dof1, g_dof2])
+            self.robot.control_dofs_position(gripper_arg, self.fingers_dof, envs_idx=envs_idx)
 
         # Update internal state
         self.pos_abs = target_pos
         self.quat_abs = target_quat
 
+        self.convergence = convergence
+
         return qpos
+
+    def draw_debug_point(self, delta_pos, min_z):
+        delta_pos = torch.as_tensor(delta_pos)
+        target_pos = self.pos_abs + delta_pos
+        self.pos_abs = target_pos
+        if self.debug:
+            for i in self.debug_point_nodes:
+                self.scene.clear_debug_object(i)
+            self.debug_point_nodes = list()
+            for batch_idx in range(self.scene.n_envs if self.scene.n_envs > 0 else 1):
+                if self.scene.n_envs > 0:
+                    offset = self.scene.envs_offset[batch_idx]
+                    offset = torch.as_tensor(offset, dtype=target_pos.dtype, device=target_pos.device)
+                else:
+                    offset = torch.zeros(3, dtype=target_pos.dtype, device=target_pos.device)
+                if target_pos[batch_idx, 2] < min_z:
+                    color = (1.0, 1.0, 0.0, 0.6)
+                    target_pos[batch_idx, 2] = min_z
+                else:
+                    color = (0.0, 1.0, 0.0, 0.6)
+                self.debug_point_nodes.append(self.scene.draw_debug_sphere(
+                    pos=target_pos[batch_idx] + offset if self.scene.n_envs > 0 else target_pos,
+                    radius=0.01,
+                    color=color
+                ))
 
 class RobotControllerOptim(RobotController):
     def __init__(
