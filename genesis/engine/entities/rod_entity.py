@@ -1105,6 +1105,26 @@ class RodEntity(Entity):
         return pos
 
     @ti.kernel
+    def get_all_edge_lengths_kernel(
+        self,
+        edge_lengths: ti.types.ndarray(),
+    ):
+        for i_e, i_b in ti.ndrange(self.n_edges, self._sim._B):
+            i_global = i_e + self.e_start
+            edge_lengths[i_b, i_e] = self._solver.edges_ng[0, i_global, i_b].length
+
+    def get_total_length(self):
+        args = {
+            "dtype": gs.np_float,
+            # "requires_grad": False,
+            # "scene": self.scene,
+        }
+        edge_lengths = np.zeros((self.sim._B, self.n_edges), **args)
+        self.get_all_edge_lengths_kernel(edge_lengths)
+        total_length = np.sum(edge_lengths, axis=1)  # (B,)
+        return total_length
+
+    @ti.kernel
     def get_all_vels_kernel(
         self,
         vel: ti.types.ndarray(),

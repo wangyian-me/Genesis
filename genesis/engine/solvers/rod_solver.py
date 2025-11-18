@@ -234,6 +234,7 @@ class RodSolver(Solver):
             collided=gs.ti_bool,        # has the vertex collided in this step
             normal=gs.ti_vec3,          # collision normal
             penetration=gs.ti_float,    # penetration depth
+            geom_idx=gs.ti_int,         # index of the geometry collided with
         )
 
         self.vertices_info = struct_vertex_info.field(
@@ -1093,7 +1094,8 @@ class RodSolver(Solver):
             self.reset_grad_till_frame(self._sim.substeps_local)
 
             self._kernel_set_state(
-                0, 
+                0,
+                self._scene._envs_idx,
                 self._ckpt[ckpt_name]["pos"],
                 self._ckpt[ckpt_name]["vel"],
                 self._ckpt[ckpt_name]["fixed"],
@@ -1118,8 +1120,9 @@ class RodSolver(Solver):
 
     def set_state(self, f, state, envs_idx=None):
         if self.is_active():
+            envs_idx = self._scene._sanitize_envs_idx(envs_idx)
             self._kernel_set_state(
-                f, state.pos, state.vel, state.fixed, 
+                f, envs_idx, state.pos, state.vel, state.fixed, 
                 state.theta, state.omega,
                 state.d1, state.d2, state.d3,
                 state.d1_ref, state.d2_ref,
@@ -1628,6 +1631,7 @@ class RodSolver(Solver):
     def _kernel_set_state(
         self,
         f: ti.i32,
+        envs_idx: ti.types.ndarray(),
         pos: ti.types.ndarray(),        # shape [B, n_vertices, 3]
         vel: ti.types.ndarray(),        # shape [B, n_vertices, 3]
         fixed: ti.types.ndarray(),      # shape [B, n_vertices]
@@ -1642,13 +1646,15 @@ class RodSolver(Solver):
         twist: ti.types.ndarray(),          # shape [B, n_internal_vertices]
         kappa_rest: ti.types.ndarray(),     # shape [B, n_internal_vertices, 2]
     ):
-        for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
+        for i_v, i_b_ in ti.ndrange(self._n_vertices, envs_idx.shape[0]):
+            i_b = envs_idx[i_b_]
             for j in ti.static(range(3)):
                 self.vertices[f, i_v, i_b].vert[j] = pos[i_b, i_v, j]
                 self.vertices[f, i_v, i_b].vel[j] = vel[i_b, i_v, j]
             self.vertices_ng[f, i_v, i_b].fixed = fixed[i_b, i_v]
 
-        for i_e, i_b in ti.ndrange(self._n_edges, self._B):
+        for i_e, i_b_ in ti.ndrange(self._n_edges, envs_idx.shape[0]):
+            i_b = envs_idx[i_b_]
             self.edges[f, i_e, i_b].theta = theta[i_b, i_e]
             self.edges[f, i_e, i_b].omega = omega[i_b, i_e]
 
@@ -1664,7 +1670,8 @@ class RodSolver(Solver):
             self.edges_ng[f, i_e, i_b].edge = self.vertices[f, v_e, i_b].vert - self.vertices[f, v_s, i_b].vert
             self.edges_ng[f, i_e, i_b].length = tm.length(self.edges_ng[f, i_e, i_b].edge)
 
-        for i_iv, i_b in ti.ndrange(self.n_internal_vertices, self._B):
+        for i_iv, i_b_ in ti.ndrange(self.n_internal_vertices, envs_idx.shape[0]):
+            i_b = envs_idx[i_b_]
             for j in ti.static(range(3)):
                 self.internal_vertices_ng[f, i_iv, i_b].kb[j] = kb[i_b, i_iv, j]
             self.internal_vertices_ng[f, i_iv, i_b].twist = twist[i_b, i_iv]
@@ -1842,6 +1849,7 @@ class RodSolver(Solver):
         for i_v, i_b in ti.ndrange(self._n_vertices, self._B):
             self.vertices_collision[i_v, i_b].collided = False
             self.vertices_collision[i_v, i_b].penetration = 0.0
+            self.vertices_collision[i_v, i_b].geom_idx = -1
             for j in ti.static(range(3)):
                 self.vertices_collision[i_v, i_b].normal[j] = 0.0
 
