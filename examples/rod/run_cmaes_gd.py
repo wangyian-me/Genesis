@@ -3,6 +3,7 @@ import json
 import csv
 import time
 import pickle
+import random
 from typing import Tuple, List, Optional, Sequence
 from argparse import ArgumentParser
 
@@ -315,7 +316,6 @@ def optimize_trajectory_v1(
             "trial_name": trial_name,
             "scale_method": scale_method,
             "ratio": ratio,
-            "bound": l2_bound,
         })
 
     # Construct traj_optim if needed
@@ -520,7 +520,6 @@ def optimize_trajectory_v2(
             "min_ratio": min_ratio,
             "n_top_ratio": n_top_ratio,
             "scheduler": scheduler,
-            "bound": l2_bound,
         })
 
     # Construct traj_optim if needed
@@ -776,7 +775,6 @@ def optimize_trajectory_v3(
             "min_ratio": min_ratio,
             "n_top_ratio": n_top_ratio,
             "scheduler": scheduler,
-            "bound": l2_bound,
         })
 
     # Construct traj_optim if needed
@@ -1038,6 +1036,9 @@ if __name__ == "__main__":
         help="Per-step L2 bound for each control point."
     )
     parser.add_argument(
+        '--sigma', type=float, default=0.005
+    )
+    parser.add_argument(
         '--exp_name', type=str, default=None,
     )
     parser.add_argument('--gui', action='store_true', help="Whether to show GUI.")
@@ -1047,6 +1048,9 @@ if __name__ == "__main__":
     trial_name = f"trial_{args.task}/{exp_name}"
     log_dir = f"logs/{args.task}/{exp_name}"
     env = _build_env(args.task, log_dir, 10, args.vis_traj, args.gui)
+
+    random.seed(args.seed)
+    np.random.seed(args.seed)
 
     if args.vis_traj is None:
 
@@ -1075,7 +1079,7 @@ if __name__ == "__main__":
             n_steps=n_steps,
             act_dim=None,           # infer if available
             popsize=200,
-            sigma0=0.005,
+            sigma0=args.sigma,
             per_comp_bound=args.bound,
             l2_bound=args.bound,          # use env.l2_bound if present
             max_iters=args.max_iter,

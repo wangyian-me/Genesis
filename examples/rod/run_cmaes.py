@@ -3,6 +3,7 @@ import json
 import csv
 import time
 import pickle
+import random
 from typing import Tuple, List, Optional, Sequence
 from argparse import ArgumentParser
 
@@ -39,18 +40,32 @@ def _as_per_comp_array(per_comp_bound: Optional[Sequence[float]], act_dim: int) 
     return arr
 
 def project_deltas(traj: np.ndarray,
-                   per_comp_bound: Optional[Sequence[float]],
-                   max_l2_per_step: Optional[float]) -> np.ndarray:
+                   pcb: np.ndarray,
+                   max_l2_per_step: Optional[float],
+                   scene_version: int = 1) -> np.ndarray:
     n_steps, act_dim = traj.shape
-    pcb = _as_per_comp_array(per_comp_bound, act_dim)
+    assert pcb.shape == (act_dim,)
+    # if scene_version == 2:
+    #     # scale rotational components (original sigma0 is small for rotational components)
+    #     traj[:, act_dim // 2:] *= 16.
+    #     # convert radians to degrees for rotational components
+    #     traj[:, act_dim // 2:] *= 180. / np.pi
     if np.isfinite(pcb).any():
         traj = np.clip(traj, -pcb, pcb)
     if max_l2_per_step is not None and np.isfinite(max_l2_per_step):
-        norms = np.linalg.norm(traj, axis=1, keepdims=True)
-        scale = np.ones_like(norms, dtype=traj.dtype)
-        over = norms > max_l2_per_step
-        scale[over] = max_l2_per_step / (norms[over] + 1e-12)
-        traj = traj * scale
+        if scene_version == 1:
+            norms = np.linalg.norm(traj, axis=1, keepdims=True)
+            scale = np.ones_like(norms, dtype=traj.dtype)
+            over = norms > max_l2_per_step
+            scale[over] = max_l2_per_step / (norms[over] + 1e-12)
+            traj = traj * scale
+        elif scene_version == 2:
+            # only limit the first half of the action dimensions (x,y,z)
+            norms = np.linalg.norm(traj[:, :act_dim // 2], axis=1, keepdims=True)
+            scale = np.ones_like(norms, dtype=traj.dtype)
+            over = norms > max_l2_per_step
+            scale[over] = max_l2_per_step / (norms[over] + 1e-12)
+            traj[:, :act_dim // 2] = traj[:, :act_dim // 2] * scale
     return traj
 
 
@@ -67,8 +82,25 @@ def evaluate_batch(env, traj_list: List[np.ndarray]) -> np.ndarray:
     rewards = env.eval_traj(trajs)
     return np.asarray(rewards, dtype=np.float32)
 
-def evaluate_single(env: Train_Env, traj: np.ndarray, log_dir: str) -> float:
-    rewards = env.eval_traj(traj[None, ...], debug=True)
+def evaluate_single(env: Train_Env, traj: np.ndarray, log_dir: str, n_steps: int) -> float:
+    print(f'Traj shape: {traj.shape}')
+    if env.scene_version == 1:
+        rewards = env.eval_traj(traj[None, ...], debug=True)
+    elif env.scene_version == 2:
+        # TODO: hack here
+        if getattr(env, "c1", None) is not None:
+            env.c1.debug = True
+        if getattr(env, "c2", None) is not None:
+            env.c2.debug = True
+
+        if os.path.exists(os.path.join(log_dir, "best_traj.npy")):
+            placeholder = np.load(os.path.join(log_dir, "best_traj.npy"))
+            placeholder = placeholder[None, ...]
+        else:
+            # Resolve shapes
+            act_dim = _infer_act_dim(env)
+            placeholder = np.zeros((1, n_steps, act_dim), dtype=np.float32)
+        rewards = env.eval_traj(placeholder, debug=True, qpos=traj)
     print(f'Single traj reward: {rewards[0]:.4f}')
     env.save_animation(save_dir=log_dir)
     return rewards[0]
@@ -110,6 +142,9 @@ def _append_summary(log_dir: str, iteration: int, pop: int, n_chunks: int,
 
 def _save_best_traj(log_dir: str, best_traj: np.ndarray):
     np.save(os.path.join(log_dir, "best_traj.npy"), best_traj)
+
+def _save_best_qpos(log_dir: str, best_qpos: np.ndarray):
+    np.save(os.path.join(log_dir, "best_qpos.npy"), best_qpos)
 
 def _save_run_config(log_dir: str, cfg: dict):
     with open(os.path.join(log_dir, "run_config.json"), "w") as f:
@@ -194,6 +229,7 @@ def optimize_trajectory(
     sigma0: float = 0.01,
     per_comp_bound: Optional[Sequence[float]] = 0.01,
     l2_bound: Optional[float] = None,
+    angle_bound: Optional[float] = None,
     max_iters: int = 200,
     seed: int = 42,
     log_dir: Optional[str] = None,
@@ -202,6 +238,7 @@ def optimize_trajectory(
     trial_name: Optional[str] = None,
     resume: bool = False,
     save_every: int = 1,
+    scene_version: int = 1,
 ) -> Tuple[np.ndarray, float]:
     """
     Adds CMA-ES checkpointing via (work_dir/trial_name)/cmaes_ckpt.pkl.
@@ -237,15 +274,23 @@ def optimize_trajectory(
             "per_comp_bound": (float(per_comp_bound) if np.isscalar(per_comp_bound)
                                else (list(per_comp_bound) if per_comp_bound is not None else None)),
             "l2_bound": l2_bound,
+            "angle_bound": angle_bound,
             "max_iters": max_iters,
             "seed": seed,
             "work_dir": work_dir,
             "trial_name": trial_name,
-            "bound": l2_bound,
+            "scene_version": scene_version,
         })
 
     dim = n_steps * act_dim
-    pcb = _as_per_comp_array(per_comp_bound, act_dim)
+    if scene_version == 1:
+        pcb = _as_per_comp_array(per_comp_bound, act_dim)
+    elif scene_version == 2:
+        pcb = _as_per_comp_array(per_comp_bound, act_dim // 2)
+        pcb_angle = _as_per_comp_array(angle_bound, act_dim // 2)
+        pcb = np.concatenate([pcb, pcb_angle])
+
+    print(f'Bound: {pcb}')
     lower, upper = [], []
     for _ in range(n_steps):
         lower.extend((-pcb).tolist())
@@ -302,6 +347,7 @@ def optimize_trajectory(
         X = es.ask()    # (popsize, n_steps * act_dim)
         pop = len(X)
         n_chunks = (pop + batch_size - 1) // batch_size
+        qpos_list = list()
 
         all_rewards = []
         for ci, start in enumerate(range(0, pop, batch_size), 1):
@@ -311,9 +357,11 @@ def optimize_trajectory(
             for x in chunk:
                 x_arr = np.asarray(x, dtype=np.float32)
                 tr = reshape_to_traj(x_arr, n_steps, act_dim)
-                tr = project_deltas(tr, per_comp_bound, l2_bound)
+                tr = project_deltas(tr, pcb, l2_bound, scene_version=scene_version)
                 trajs.append(tr)
             rewards = evaluate_batch(env, trajs)
+            if scene_version == 2:
+                qpos_list.extend(env.qpos_seq.tolist())
             all_rewards.extend(rewards.tolist())
             print(f"  └─ chunk {ci:>2}/{n_chunks}: {len(chunk):>3} evals | t={time.time() - t_chunk:.3f}s")
 
@@ -329,17 +377,30 @@ def optimize_trajectory(
         # Track best of gen
         gen_best_idx = int(np.argmax(all_rewards))
         gen_best_reward = float(all_rewards[gen_best_idx])
-        gen_best_x = np.asarray(X[gen_best_idx], dtype=np.float32)
-        gen_best_traj = project_deltas(
-            reshape_to_traj(gen_best_x, n_steps, act_dim),
-            per_comp_bound, l2_bound
-        )
+        if scene_version == 1:
+            gen_best_x = np.asarray(X[gen_best_idx], dtype=np.float32)
+            gen_best_traj = project_deltas(
+                reshape_to_traj(gen_best_x, n_steps, act_dim),
+                pcb, l2_bound, scene_version=scene_version
+            )
+        elif scene_version == 2:
+            qpos_array = np.asarray(qpos_list, dtype=np.float32)
+            assert qpos_array.shape[0] == len(X), f"qpos_array {qpos_array.shape[0]} and X lengths {len(X)} do not match"
+            gen_best_qpos = np.asarray(qpos_array[gen_best_idx], dtype=np.float32)
+
+            gen_best_x = np.asarray(X[gen_best_idx], dtype=np.float32)
+            gen_best_traj = project_deltas(
+                reshape_to_traj(gen_best_x, n_steps, act_dim),
+                pcb, l2_bound, scene_version=scene_version
+            )
 
         if gen_best_reward > best_reward:
             best_reward = gen_best_reward
             best_traj = gen_best_traj.copy()
             if log_dir is not None:
                 _save_best_traj(log_dir, best_traj)
+                if scene_version == 2:
+                    _save_best_qpos(log_dir, gen_best_qpos)
 
         # Iteration summary
         m = float(all_rewards.mean()) if all_rewards.size else float('nan')
@@ -377,7 +438,7 @@ def optimize_trajectory(
 # Example usage
 # ----------------------------
 
-def _build_env(task: str, log_dir: str, n_envs: int, vis_traj: Optional[str] = None, gui: bool = False) -> Train_Env:
+def _build_env(task: str, log_dir: str, n_envs: int, vis_traj: Optional[str] = None, gui: bool = False, scene_version: int = 1) -> Train_Env:
     task = task.lower()
     task_to_env = {
         "wiring_ring": Train_Env_Wiring_ring,
@@ -399,7 +460,7 @@ def _build_env(task: str, log_dir: str, n_envs: int, vis_traj: Optional[str] = N
         n_envs = 1
         camera = True
 
-    return EnvCls(task=task, log_dir=log_dir, n_envs=n_envs, GUI=gui, camera=camera)
+    return EnvCls(task=task, log_dir=log_dir, n_envs=n_envs, GUI=gui, camera=camera, scene_version=scene_version)
 
 
 if __name__ == "__main__":
@@ -426,7 +487,17 @@ if __name__ == "__main__":
         help="Per-step L2 bound for each control point."
     )
     parser.add_argument(
+        '--angle_bound', type=float, default=10.0,
+        help="Per-step angle bound for each control point."
+    )
+    parser.add_argument(
+        '--sigma', type=float, default=0.005
+    )
+    parser.add_argument(
         '--exp_name', type=str, default=None,
+    )
+    parser.add_argument(
+        '--scene_version', type=int, default=1,
     )
     parser.add_argument('--gui', action='store_true', help="Whether to show GUI.")
     args = parser.parse_args()
@@ -434,22 +505,25 @@ if __name__ == "__main__":
     exp_name = f"{args.exp_name}" if args.exp_name is not None else "cmaes"
     trial_name = f"trial_{args.task}/{exp_name}"
     log_dir = f"logs/{args.task}/{exp_name}"
-    env = _build_env(args.task, log_dir, 10, args.vis_traj, args.gui)
+    env = _build_env(args.task, log_dir, 10, args.vis_traj, args.gui, args.scene_version)
+    n_steps = args.n_steps
+
+    random.seed(args.seed)
+    np.random.seed(args.seed)
 
     if args.vis_traj is None:
 
         assert not env.requires_grad, "CMA-ES optimization does not need env with gradients."
-
-        n_steps = args.n_steps
-
+        
         best_traj, best_reward = optimize_trajectory(
             env,
             n_steps=n_steps,
             act_dim=None,           # infer if available
             popsize=200,
-            sigma0=0.005,
+            sigma0=args.sigma,
             per_comp_bound=args.bound,
             l2_bound=args.bound,          # use env.l2_bound if present
+            angle_bound=args.angle_bound,
             max_iters=args.max_iter,
             seed=args.seed,
             log_dir=log_dir,
@@ -458,9 +532,10 @@ if __name__ == "__main__":
             trial_name=trial_name,
             resume=True,            # set True to load if checkpoint exists
             save_every=1,           # save each generation
+            scene_version=args.scene_version,
         )
 
     else:
 
         print(f'Visualizing CMA-ES trajectory from {args.vis_traj}')
-        evaluate_single(env, np.load(args.vis_traj), log_dir)
+        evaluate_single(env, np.load(args.vis_traj), log_dir, n_steps)

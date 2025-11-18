@@ -33,9 +33,13 @@ def main():
                     help="Seconds to wait before restarting after exit (default: 2.0)")
     ap.add_argument('--bound', type=float, default=0.1,
                     help="Per-step L2 bound for each control point.")
+    ap.add_argument('--angle_bound', type=float, default=10.0,
+                    help="Per-step angle bound for each control point.")
+    ap.add_argument('--sigma', type=float, default=0.005)
     ap.add_argument('--exp_name', type=str, required=True)
     ap.add_argument('--n_steps', type=int, default=10)
     ap.add_argument('--max_iter', type=int, default=20)
+    ap.add_argument('--scene_version', type=int, default=1)
     args = ap.parse_args()
 
     if not args.requires_grad and "gd" in args.exp_name:
@@ -46,7 +50,7 @@ def main():
         exit(0)
 
     if args.requires_grad:
-        cmd = ["python", "run_cmaes_gd.py", "--task", args.task, "--seed", str(args.seed), "--bound", str(args.bound)]
+        cmd = ["python", "run_cmaes_gd.py", "--task", args.task, "--seed", str(args.seed), "--bound", str(args.bound), "--sigma", str(args.sigma)]
         if args.scale_method is not None:
             cmd.extend(["--scale_method", str(args.scale_method)])
         cmd.extend(["--version", str(args.version)])
@@ -59,10 +63,12 @@ def main():
         if args.scheduler is not None:
             cmd.extend(["--scheduler", str(args.scheduler)])
     else:
-        cmd = ["python", "run_cmaes.py", "--task", args.task, "--seed", str(args.seed), "--bound", str(args.bound)]
+        cmd = ["python", "run_cmaes.py", "--task", args.task, "--seed", str(args.seed), "--bound", str(args.bound), "--sigma", str(args.sigma)]
         if args.exp_name is not None:
             cmd.extend(["--exp_name", str(args.exp_name)])
         cmd.extend(["--n_steps", str(args.n_steps)])
+        cmd.extend(["--angle_bound", str(args.angle_bound)])
+        cmd.extend(["--scene_version", str(args.scene_version)])
 
     print(f"[supervisor] Starting loop. Will run: {' '.join(cmd)}")
     try:
