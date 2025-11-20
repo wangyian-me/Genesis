@@ -666,6 +666,7 @@ class MPMSolver(Solver):
 
             self._kernel_set_state(
                 0,
+                self._scene._envs_idx,
                 self._ckpt[ckpt_name]["pos"],
                 self._ckpt[ckpt_name]["vel"],
                 self._ckpt[ckpt_name]["C"],
@@ -924,6 +925,7 @@ class MPMSolver(Solver):
     def _kernel_set_state(
         self,
         f: ti.i32,
+        envs_idx: ti.types.ndarray(),
         pos: ti.types.ndarray(),  # shape [B, n_particles, 3]
         vel: ti.types.ndarray(),  # shape [B, n_particles, 3]
         C: ti.types.ndarray(),  # shape [B, n_particles, 3, 3]
@@ -931,7 +933,8 @@ class MPMSolver(Solver):
         Jp: ti.types.ndarray(),  # shape [B, n_particles]
         active: ti.types.ndarray(),  # shape [B, n_particles]
     ):
-        for i_p, i_b in ti.ndrange(self._n_particles, self._B):
+        for i_p, i_b_ in ti.ndrange(self._n_particles, envs_idx.shape[0]):
+            i_b = envs_idx[i_b_]
             # Write pos, vel
             for j in ti.static(range(3)):
                 self.particles[f, i_p, i_b].pos[j] = pos[i_b, i_p, j]
@@ -954,7 +957,8 @@ class MPMSolver(Solver):
 
     def set_state(self, f, state, envs_idx=None):
         if self.is_active():
-            self._kernel_set_state(f, state.pos, state.vel, state.C, state.F, state.Jp, state.active)
+            envs_idx = self._scene._sanitize_envs_idx(envs_idx)
+            self._kernel_set_state(f, envs_idx, state.pos, state.vel, state.C, state.F, state.Jp, state.active)
 
     @ti.kernel
     def _kernel_update_render_fields(self, f: ti.i32):
