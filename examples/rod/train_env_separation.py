@@ -326,8 +326,6 @@ class Train_Env_Separation(Train_Env):
 
         Survival time counts micro-steps from 0..N, where N = n_steps * steps_interval.
         """
-        import numpy as np
-
         assert trajs.ndim == 3, f"trajs must be (n_envs, n_steps, dof), got {trajs.shape}"
         n_envs, n_steps, dof = trajs.shape
         assert n_envs == self.n_envs, f"n_envs mismatch: trajs has {n_envs}, self.n_envs is {self.n_envs}"
@@ -565,8 +563,6 @@ class Train_Env_Separation(Train_Env):
 
         Survival time counts micro-steps from 0..N, where N = n_steps * steps_interval.
         """
-        import numpy as np
-
         assert trajs.ndim == 3, f"trajs must be (n_envs, n_steps, dof), got {trajs.shape}"
         n_envs, n_steps, dof = trajs.shape
         assert n_envs == self.n_envs, f"n_envs mismatch: trajs has {n_envs}, self.n_envs is {self.n_envs}"
@@ -596,7 +592,6 @@ class Train_Env_Separation(Train_Env):
         # Per-env status
         alive = np.ones((self.n_envs,), dtype=bool)              # True until first failure (collision or NaN)
         ever_nan = np.zeros((self.n_envs,), dtype=bool)          # True if verts ever became NaN
-        ever_collided = np.zeros((self.n_envs,), dtype=bool)     # True if collision occurred
         first_fail_step = np.full((self.n_envs,), total_micro_steps, dtype=np.int32)  # micro-step index of first failure
 
         for i in range(n_steps):
@@ -775,6 +770,7 @@ class Train_Env_Separation(Train_Env):
         alive = tracked.copy()
 
         action = action.to(torch.float32)
+        action = action * self._act_magnitude
         action = torch.clamp(action, self._mdp_info.action_space.low, self._mdp_info.action_space.high)
 
         # Split action for two controllers: first half for controller 1, second half for controller 2

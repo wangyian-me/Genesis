@@ -463,7 +463,7 @@ class RobotControllerPink:
 
         return qpos
 
-    def set_initial_dofs_position(self, qpos, use_initial_pq=True):
+    def set_initial_dofs_position(self, qpos, use_initial_pq=True, envs_idx=None):
         """
         Set initial joint positions directly.
 
@@ -476,18 +476,36 @@ class RobotControllerPink:
             If False, compute from current end-effector pose.
         """
         is_batched = self.scene.n_envs > 0
-        if is_batched:
-            qpos = torch.stack([qpos] * self.scene.n_envs)
-        self.robot.set_dofs_position(qpos)
+        if envs_idx is None or len(envs_idx) == self.scene.n_envs:
+            # Reset all environments
+            if is_batched:
+                qpos_full = torch.stack([qpos] * self.scene.n_envs)
+            else:
+                qpos_full = qpos
+            self.robot.set_dofs_position(qpos_full)
+        else:
+            # Only update specified environments
+            qpos_full = torch.stack([qpos] * len(envs_idx))
+            self.robot.set_dofs_position(qpos_full, envs_idx=envs_idx)
 
         if use_initial_pq:
-            pos_abs = torch.tensor(self.initial_pos, dtype=gs.tc_float)
-            quat_abs = torch.tensor(self.initial_quat, dtype=gs.tc_float)
-            self.pos_abs = torch.stack([pos_abs] * self.scene.n_envs) if is_batched else pos_abs
-            self.quat_abs = torch.stack([quat_abs] * self.scene.n_envs) if is_batched else quat_abs
+            if envs_idx is None or len(envs_idx) == self.scene.n_envs:
+                pos_abs = torch.tensor(self.initial_pos, dtype=gs.tc_float)
+                quat_abs = torch.tensor(self.initial_quat, dtype=gs.tc_float)
+                self.pos_abs = torch.stack([pos_abs] * self.scene.n_envs) if is_batched else pos_abs
+                self.quat_abs = torch.stack([quat_abs] * self.scene.n_envs) if is_batched else quat_abs
+            else:
+                pos_abs = torch.tensor(self.initial_pos, dtype=gs.tc_float)
+                quat_abs = torch.tensor(self.initial_quat, dtype=gs.tc_float)
+                self.pos_abs[envs_idx] = pos_abs
+                self.quat_abs[envs_idx] = quat_abs
         else:
-            self.pos_abs = self.ef.get_pos()
-            self.quat_abs = self.ef.get_quat()
+            if envs_idx is None or len(envs_idx) == self.scene.n_envs:
+                self.pos_abs = self.ef.get_pos()
+                self.quat_abs = self.ef.get_quat()
+            else:
+                self.pos_abs[envs_idx] = self.ef.get_pos()[envs_idx]
+                self.quat_abs[envs_idx] = self.ef.get_quat()[envs_idx]
 
     def _solve_pink_ik(self, pos, quat, init_qpos, stop_threshold=1e-5):
         """

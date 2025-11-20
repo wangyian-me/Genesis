@@ -252,8 +252,6 @@ class Train_Env_Coiling(Train_Env):
 
         Survival time counts micro-steps from 0..N, where N = n_steps * steps_interval.
         """
-        import numpy as np
-
         assert trajs.ndim == 3, f"trajs must be (n_envs, n_steps, dof), got {trajs.shape}"
         n_envs, n_steps, dof = trajs.shape
         assert n_envs == self.n_envs, f"n_envs mismatch: trajs has {n_envs}, self.n_envs is {self.n_envs}"
@@ -465,6 +463,7 @@ class Train_Env_Coiling(Train_Env):
         alive = tracked.copy()
 
         action = action.to(torch.float32)
+        action = action * self._act_magnitude
         action = torch.clamp(action, self._mdp_info.action_space.low, self._mdp_info.action_space.high)
         action_xyz = action[:, :self._act_dim // 2]
         action_rot = action[:, self._act_dim // 2:]
@@ -564,7 +563,7 @@ class Train_Env_Coiling(Train_Env):
         rewards = np.full((self.n_envs,), 0.0, dtype=np.float32)
         failed = absorbing | env_rewards_nan
         rewards[failed] = 0.0
-        rewards[~failed] = env_rewards[~failed] + 30.
+        rewards[~failed] = env_rewards[~failed] * 0.1 + 3.0
         rewards = torch.as_tensor(rewards).reshape((self.n_envs,))
         absorbing = torch.as_tensor(absorbing).reshape((self.n_envs,))
 

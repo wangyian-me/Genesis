@@ -606,6 +606,7 @@ class Train_Env_Wireart(Train_Env):
         alive = tracked.copy()
 
         action = action.to(torch.float32)
+        action = action * self._act_magnitude
         action = torch.clamp(action, self._mdp_info.action_space.low, self._mdp_info.action_space.high)
 
         # Split action for two controllers: first half for controller 1, second half for controller 2
@@ -730,7 +731,7 @@ class Train_Env_Wireart(Train_Env):
         rewards = np.full((self.n_envs,), 0.0, dtype=np.float32)
         failed = absorbing | env_rewards_nan
         rewards[failed] = 0.0
-        rewards[~failed] = env_rewards[~failed] + 30.
+        rewards[~failed] = env_rewards[~failed] + 2.0
         rewards = torch.as_tensor(rewards).reshape((self.n_envs,))
         absorbing = torch.as_tensor(absorbing).reshape((self.n_envs,))
 

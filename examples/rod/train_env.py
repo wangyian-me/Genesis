@@ -172,8 +172,9 @@ class Train_Env():
         observation_space = Box(low_obs, high_obs)
 
         act_limit = [pos_bound] * (self._act_dim // 2) + [angle_bound] * (self._act_dim // 2)
-        act_limit = torch.tensor(act_limit, dtype=torch.float32)
         print(f'Bound: {act_limit}')
+        act_limit = torch.tensor(act_limit, dtype=torch.float32)
+        self._act_magnitude = act_limit
         low_act = -torch.ones((self._act_dim,), dtype=torch.float32) * act_limit
         high_act = torch.ones((self._act_dim,), dtype=torch.float32) * act_limit
         action_space = Box(low_act, high_act)
@@ -198,7 +199,7 @@ class Train_Env():
             return
 
         for cid in self.frames:
-            video_path = os.path.join(save_dir, f"view_{cid}_best_debug.mp4")
+            video_path = os.path.join(save_dir, f"view_{cid}_best.mp4")
             mediapy.write_video(video_path, self.frames[cid], fps=30, qp=18)
             print(f'Saved video to {video_path}')
 
