@@ -112,6 +112,7 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_steps, n_steps_per_fit, n
         raise ValueError(f"Unknown env_name: {task}")
 
     print(f'Max moving distance {mdp._l2_limit}x{n_outer_steps}={mdp._l2_limit * n_outer_steps} m for each control point')
+    print(f'n_steps: {n_steps}, n_steps_per_fit: {n_steps_per_fit}')
 
     curve_dir = Path("logs") / task / exp_name
     curve_dir.mkdir(parents=True, exist_ok=True)
@@ -330,6 +331,7 @@ if __name__ == '__main__':
     parser.add_argument('--n_envs', type=int, default=20)
     parser.add_argument('--n_traj', type=int, default=20, help='Number of trajectories per environment')
     parser.add_argument('--n_steps', type=int, default=10)
+    parser.add_argument('--per_fit_ratio', type=int, default=1)
     parser.add_argument('--bound', type=float, default=0.1)
     parser.add_argument('--angle_bound', type=float, default=5.0)
     parser.add_argument('--scene_version', type=int, default=1)
@@ -387,7 +389,7 @@ if __name__ == '__main__':
         n_epochs=20,
         n_outer_steps=args.n_steps,
         n_steps=n_envs * args.n_steps * n_trajectories,
-        n_steps_per_fit=n_envs * args.n_steps * n_trajectories,
+        n_steps_per_fit=(n_envs * args.n_steps * n_trajectories) // args.per_fit_ratio,
         n_episodes_test=n_envs * 3,  # Evaluate with 30 episodes (3 per env)
         alg_params=ppo_params,
         policy_params=policy_params,
