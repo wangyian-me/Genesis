@@ -355,10 +355,10 @@ if __name__ == '__main__':
             'params': {'lr': 3e-4}
         },
         n_epochs_policy=5,
-        batch_size=128,
+        batch_size=256,
         eps_ppo=.2,
         lam=.95,
-        ent_coeff=0.001
+        ent_coeff=0.01
     )
     policy_params = dict(
         std_0=1.0,
@@ -373,7 +373,7 @@ if __name__ == '__main__':
         },
         loss=F.mse_loss,
         n_features=[256, 128, 64],
-        batch_size=128,
+        batch_size=256,
         use_cuda=True,
         output_shape=(1,)
     )
@@ -387,7 +387,7 @@ if __name__ == '__main__':
         n_epochs=20,
         n_outer_steps=args.n_steps,
         n_steps=n_envs * args.n_steps * n_trajectories,
-        n_steps_per_fit=(n_envs * args.n_steps * n_trajectories) // 10,
+        n_steps_per_fit=n_envs * args.n_steps * n_trajectories,
         n_episodes_test=n_envs * 3,  # Evaluate with 30 episodes (3 per env)
         alg_params=ppo_params,
         policy_params=policy_params,
