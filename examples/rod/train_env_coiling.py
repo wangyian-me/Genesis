@@ -421,9 +421,6 @@ class Train_Env_Coiling(Train_Env):
         if env_rewards_nan.any():
             final[env_rewards_nan] = -100.0
 
-        # for i in range(self.n_envs):
-        #     rod_vertex_detached_from_gripper(self.rope, self.control_idx[0], envs_idx=i)
-
         if not self.use_qpos:
             self.qpos_seq = self.qpos_seq.transpose(1, 0, 2)  # (n_envs, n_steps * n_steps_sub + 1, n_dofs)
             self.qpos_seq = self.qpos_seq.astype(np.float32)
