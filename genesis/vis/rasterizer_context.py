@@ -451,7 +451,7 @@ class RasterizerContext:
                     buffer_updates[node] = geom_T.transpose((0, 2, 1))
 
     def on_mpm(self):
-        if self.sim.mpm_solver.is_active:
+        if self.sim.mpm_solver.is_active():
             for mpm_entity in self.sim.mpm_solver.entities:
                 if mpm_entity.surface.vis_mode == "recon":
                     self.add_dynamic_node(mpm_entity, None)
@@ -494,7 +494,7 @@ class RasterizerContext:
                     )
 
     def update_mpm(self, buffer_updates):
-        if self.sim.mpm_solver.is_active:
+        if self.sim.mpm_solver.is_active():
             particles_all = self.sim.mpm_solver.particles_render.pos.to_numpy() + self.scene.envs_offset
             active_all = self.sim.mpm_solver.particles_render.active.to_numpy().astype(dtype=np.bool_, copy=False)
             vverts_all = self.sim.mpm_solver.vverts_render.pos.to_numpy() + self.scene.envs_offset
