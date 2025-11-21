@@ -234,9 +234,10 @@ class Train_Env_Coiling(Train_Env):
                 rod_vertex_detached_from_gripper(self.rope, self.control_idx[0], envs_idx=i)
 
             qpos = self.c1.set_initial_position(envs_idx=envs_idx)
-            if not self.use_qpos:
-                qpos = qpos.cpu().numpy()
-                self.qpos_seq[0] = qpos
+            if not self.rl_initialized:
+                if not self.use_qpos:
+                    qpos = qpos.cpu().numpy()
+                    self.qpos_seq[0] = qpos
 
             for i in envs_idx_:
                 rod_vertex_attached_to_gripper(self.rope, self.control_idx[0], self._ef1, envs_idx=i)

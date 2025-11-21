@@ -13,6 +13,12 @@ class Train_Env_Slingshot(Train_Env):
         initial_gripper_qpos = np.load("target_pos/slingshot_pregrasp_qpos.npy")
         self.initial_gripper_qpos = torch.tensor(initial_gripper_qpos, dtype=gs.tc_float)
 
+    def init_rl_env(self, n_steps=10, pos_bound=0.1, angle_bound=5.0, n_rigid_obs=0, debug=False):
+        super().init_rl_env(n_steps, pos_bound, angle_bound, n_rigid_obs, debug)
+
+        # Use the counter to track how many steps have been taken for each env
+        self._env_step_counter = np.array([0] * self.n_envs)
+
     def construct_scene(self, camera):
         plane = self.scene.add_entity(
             material=gs.materials.Rigid(
@@ -342,6 +348,8 @@ class Train_Env_Slingshot(Train_Env):
                     for cid, cam in enumerate(self.cameras):
                         img = cam.render()[0]
                         self.frames[cid].append(img)
+
+            self._env_step_counter[np.asarray(envs_idx_)] = 0
 
     def eval_traj_v1(self, trajs, debug=False):
         """
@@ -742,9 +750,15 @@ class Train_Env_Slingshot(Train_Env):
                 alive[newly_nan_after] = False
 
         # release gripper
-        self.c1.control_robot(0.08, 0.08)
-        for s in range(500):
-            self.scene.step()
+        is_final_step = self._env_step_counter >= self._horizon - 1
+        should_release = is_final_step & (~absorbing)
+        if should_release.any():
+            release_envs_idx = np.where(should_release)[0].tolist()
+            self.c1.control_robot(0.08, 0.08, envs_idx=release_envs_idx)
+            for s in range(500):
+                self.scene.step()
+
+        self._env_step_counter[~absorbing] += 1
 
         # Compute base rewards
         env_rewards = np.asarray(self.reward(), dtype=np.float32)

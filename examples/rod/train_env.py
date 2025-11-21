@@ -70,6 +70,8 @@ class Train_Env():
         self.control_dist_init = None
         self.debug_point_nodes = list()
 
+        self.rl_initialized = False
+
     def construct_traj_optim(self, max_ddist=0.1, max_grad_norm=1000, debug=False):
         if not self.requires_grad:
             return
@@ -184,7 +186,7 @@ class Train_Env():
         self._mdp_info = MDPInfo(observation_space, action_space, gamma=0.99, horizon=self._horizon, dt=control_dt, backend=self._backend)
 
         # Compatibility in `reset()`
-        self.use_qpos = True
+        self.rl_initialized = True
 
     @property
     def info(self):

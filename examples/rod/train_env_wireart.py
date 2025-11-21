@@ -340,11 +340,12 @@ class Train_Env_Wireart(Train_Env):
 
             qpos1 = self.c1.set_initial_position(envs_idx=envs_idx)
             qpos2 = self.c2.set_initial_position(envs_idx=envs_idx)
-            if not self.use_qpos:
-                qpos1 = qpos1.cpu().numpy()
-                qpos2 = qpos2.cpu().numpy()
-                qpos = np.concatenate([qpos1, qpos2], axis=-1)
-                self.qpos_seq[0] = qpos
+            if not self.rl_initialized:
+                if not self.use_qpos:
+                    qpos1 = qpos1.cpu().numpy()
+                    qpos2 = qpos2.cpu().numpy()
+                    qpos = np.concatenate([qpos1, qpos2], axis=-1)
+                    self.qpos_seq[0] = qpos
 
             for i in envs_idx_:
                 rod_vertex_attached_to_gripper(self.rope, self.control_idx[0], self._ef1, envs_idx=i)
