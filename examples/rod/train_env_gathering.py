@@ -2,12 +2,7 @@ import genesis as gs
 import torch
 import numpy as np
 from train_env import Train_Env
-from controller import (
-    rod_vertex_attached_to_gripper,
-    rod_vertex_detached_from_gripper,
-    RobotController,
-    RobotControllerPink,
-)
+from controller import RobotController, RobotControllerPink
 
 class Train_Env_Gathering(Train_Env):
     def __init__(self, task='wiring', GUI=False, camera=False, log_dir="xxx/wiring", n_envs=5, n_substeps_per_step=None, requires_grad=False, scene_version=None):
@@ -255,6 +250,8 @@ class Train_Env_Gathering(Train_Env):
             gripper_geom_indices.append(gi.idx)
 
         self.gripper_geom_indices = gripper_geom_indices
+        self.scene.rod_solver.register_gripper_geom_indices(gripper_geom_indices)
+        print('gripper geom rigstered', self.scene.rod_solver._geom_indices)
         self.scene.build(n_envs=self.n_envs, env_spacing=(1, 1))
 
         self.control_idx = [1, 43]
@@ -362,10 +359,6 @@ class Train_Env_Gathering(Train_Env):
                     envs_idx=envs_idx_
                 )
 
-            for i in envs_idx_:
-                rod_vertex_detached_from_gripper(self.rope, self.control_idx[0], envs_idx=i)
-                rod_vertex_detached_from_gripper(self.rope, self.control_idx[1], envs_idx=i)
-
             qpos1 = self.c1.set_initial_position(envs_idx=envs_idx)
             qpos2 = self.c2.set_initial_position(envs_idx=envs_idx)
             if not self.rl_initialized:
@@ -375,9 +368,14 @@ class Train_Env_Gathering(Train_Env):
                     qpos = np.concatenate([qpos1, qpos2], axis=-1)
                     self.qpos_seq[0] = qpos
 
-            for i in envs_idx_:
-                rod_vertex_attached_to_gripper(self.rope, self.control_idx[0], self._ef1, envs_idx=i)
-                rod_vertex_attached_to_gripper(self.rope, self.control_idx[1], self._ef2, envs_idx=i)
+            self.c1.control_robot(-1, -1, g_dof_use_force=True, envs_idx=envs_idx)
+            self.c2.control_robot(-1, -1, g_dof_use_force=True, envs_idx=envs_idx)
+            for i in range(20):
+                self.scene.step()
+                if i % 10 == 0:
+                    for cid, cam in enumerate(self.cameras):
+                        img = cam.render()[0]
+                        self.frames[cid].append(img)
 
     def eval_traj_v2(self, trajs, **kwargs):
         """
@@ -712,36 +710,23 @@ class Train_Env_Gathering(Train_Env):
             for k in range(n_intervals_per_substep):
                 self.scene.step()
 
-            # Post-step: detect collisions
-            collided = self.rope._solver.vertices_collision.collided.to_numpy()  # (n_verts, n_envs)
-            collided = collided.T  # (n_envs, n_vertices)
-            collided_geom_idx = self.rope._solver.vertices_collision.geom_idx.to_numpy()  # (n_verts, n_envs)
-            collided_geom_idx = collided_geom_idx.T  # (n_envs, n_verts)
-            # check all verts
-            verts_to_check = np.arange(self.rope.n_vertices) + self.rope._v_start
-            collided_precheck = collided[:, verts_to_check]                    # (n_envs, n_verts_to_check)
-            collided_geom_is_registered = np.zeros_like(collided_precheck, dtype=bool)  # (n_envs, n_verts_to_check)
-            for registered_geom_idx in self.gripper_geom_indices:
-                collided_geom_is_registered |= (collided_geom_idx[:, verts_to_check] == registered_geom_idx)
-            # collided ctrl is collided with geom idx not in registered gripper geometries
-            collided_ctrl = collided_precheck & ~collided_geom_is_registered
-            collided_ctrl = collided_ctrl.any(axis=1)  # (n_envs,)
-
-            newly_collided = collided_ctrl & alive
-            if newly_collided.any():
-                absorbing[newly_collided] = True
-                alive[newly_collided] = False
-
-            # Post-step: detect stretching failures
-            if self.control_dist_init is not None:
-                # (n_envs,)
-                control_dist_now = self.rope.get_total_length()
-                # 5% stretch allowed
-                stretched_between_ctrl = control_dist_now / self.control_dist_init > 1.05
-                newly_stretched = stretched_between_ctrl & alive
-                if newly_stretched.any():
-                    absorbing[newly_stretched] = True
-                    alive[newly_stretched] = False
+            # Post-step: detect whether gripper lost the rod
+            lost = np.ones((self.n_envs,), dtype=bool)
+            for i_b in range(self.n_envs):
+                grasp_info = self.scene.sim.coupler.get_rod_rigid_gripper_contact_info(envs_idx=i_b)
+                c1_retained = False
+                c2_retained = False
+                for k, v in grasp_info.items():
+                    if v == self.gripper_geom_indices[0] or v == self.gripper_geom_indices[1]:
+                        c1_retained = True
+                    if v == self.gripper_geom_indices[2] or v == self.gripper_geom_indices[3]:
+                        c2_retained = True
+                # lost either gripper
+                lost[i_b] = not (c1_retained and c2_retained)
+            newly_lost = lost & alive
+            if newly_lost.any():
+                absorbing[newly_lost] = True
+                alive[newly_lost] = False
 
             # Post-step: detect ik convergence for controller 1
             if hasattr(self.c1, 'convergence'):
