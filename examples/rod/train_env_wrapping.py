@@ -543,7 +543,17 @@ class Train_Env_Wrapping(Train_Env):
         vel_cylinder = self.cylinder.get_vel().to(torch.float32)
         obs_cylinder = torch.cat([pos_cylinder, vel_cylinder], dim=1)
 
-        obs = torch.cat([obs_rope, obs_cylinder], dim=1)
+        ef1_pos = self.c1.ef.get_pos().to(torch.float32)
+        ef1_quat = self.c1.ef.get_quat().to(torch.float32)
+        joint1_qpos = self.c1.robot.get_dofs_position(self.c1.motors_dof).to(torch.float32)
+        c1_obs = torch.cat([ef1_pos, ef1_quat, joint1_qpos], dim=1)
+
+        ef2_pos = self.c2.ef.get_pos().to(torch.float32)
+        ef2_quat = self.c2.ef.get_quat().to(torch.float32)
+        joint2_qpos = self.c2.robot.get_dofs_position(self.c2.motors_dof).to(torch.float32)
+        c2_obs = torch.cat([ef2_pos, ef2_quat, joint2_qpos], dim=1)
+
+        obs = torch.cat([obs_rope, obs_cylinder, c1_obs, c2_obs], dim=1)
         return obs
 
     def step_all(self, env_mask, action):
