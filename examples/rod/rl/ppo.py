@@ -101,7 +101,7 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_inner_steps, steps_interv
     elif task == "separation":
         mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_additional_obj=mdp.rope2.n_vertices, steps_interval_split=steps_interval_split, debug=args.gui)
     elif task == "slingshot":
-        mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_additional_obj=0, steps_interval_split=steps_interval_split, debug=args.gui)
+        mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_additional_obj=2, steps_interval_split=steps_interval_split, debug=args.gui)
     elif task == "wireart":
         mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_additional_obj=0, steps_interval_split=steps_interval_split, debug=args.gui)
     elif task == "wiring_post":
@@ -334,13 +334,13 @@ if __name__ == '__main__':
     parser.add_argument('--exp_name', type=str, required=True, help='Experiment name')
     parser.add_argument('--n_epochs', type=int, default=100)
     parser.add_argument('--n_envs', type=int, default=100)
-    parser.add_argument('--n_traj', type=int, default=10)
-    parser.add_argument('--n_steps', type=int, default=40)
-    parser.add_argument('--n_substeps_per_step', type=int, default=50)
+    parser.add_argument('--n_traj', type=int, default=4)
+    parser.add_argument('--n_steps', type=int, default=100)
+    parser.add_argument('--n_substeps_per_step', type=int, default=20)
     parser.add_argument('--steps_interval_split', type=int, default=1)
     parser.add_argument('--per_fit_ratio', type=int, default=1)
-    parser.add_argument('--bound', type=float, default=0.025)
-    parser.add_argument('--angle_bound', type=float, default=0.25)
+    parser.add_argument('--bound', type=float, default=0.01)
+    parser.add_argument('--angle_bound', type=float, default=0.1)
     parser.add_argument('--scene_version', type=int, default=1)
     parser.add_argument('--seed', type=int, default=123)
     parser.add_argument('--gui', action='store_true')
