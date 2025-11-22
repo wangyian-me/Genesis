@@ -637,12 +637,61 @@ class MPMEntity(ParticleEntity):
         self._kernel_get_particles(self._sim.cur_substep_local, pos)
         return pos
 
+    @gs.assert_built
+    def get_particles_tc(self):
+        """
+        Retrieve current particle positions from the solver as a torch tensor.
+
+        Returns
+        -------
+        pos : torch.Tensor
+            Tensor of particle positions, shape (B, n_particles, 3).
+        """
+        pos = torch.empty((self._sim._B, self.n_particles, 3), dtype=gs.tc_float)
+        self._kernel_get_particles(self._sim.cur_substep_local, pos)
+        return pos
+
+    @gs.assert_built
+    def get_velocities(self):
+        """
+        Retrieve current particle velocities from the solver.
+
+        Returns
+        -------
+        vel : np.ndarray
+            Array of particle velocities, shape (B, n_particles, 3).
+        """
+        vel = np.empty((self._sim._B, self.n_particles, 3), dtype=gs.np_float)
+        self._kernel_get_velocities(self._sim.cur_substep_local, vel)
+        return vel
+
+    @gs.assert_built
+    def get_velocities_tc(self):
+        """
+        Retrieve current particle velocities from the solver as a torch tensor.
+
+        Returns
+        -------
+        vel : torch.Tensor
+            Tensor of particle velocities, shape (B, n_particles, 3).
+        """
+        vel = torch.empty((self._sim._B, self.n_particles, 3), dtype=gs.tc_float)
+        self._kernel_get_velocities(self._sim.cur_substep_local, vel)
+        return vel
+
     @ti.kernel
     def _kernel_get_particles(self, f: ti.i32, pos: ti.types.ndarray()):
         for i_p_, i_b in ti.ndrange(self.n_particles, self._sim._B):
             i_p = i_p_ + self._particle_start
             for j in ti.static(range(3)):
                 pos[i_b, i_p_, j] = self._solver.particles[f, i_p, i_b].pos[j]
+
+    @ti.kernel
+    def _kernel_get_velocities(self, f: ti.i32, vel: ti.types.ndarray()):
+        for i_p_, i_b in ti.ndrange(self.n_particles, self._sim._B):
+            i_p = i_p_ + self._particle_start
+            for j in ti.static(range(3)):
+                vel[i_b, i_p_, j] = self._solver.particles[f, i_p, i_b].vel[j]
 
     @gs.assert_built
     def get_state(self):
