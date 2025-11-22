@@ -17,12 +17,13 @@ from gd.traj_optim_cmaes import (
 
 
 class Train_Env():
-    def __init__(self, task, scene=None, GUI=False, camera=False, log_dir=None, n_envs=None, requires_grad=False, scene_version=None):
+    def __init__(self, task, scene=None, GUI=False, camera=False, log_dir=None, n_envs=None, n_substeps_per_step=None, requires_grad=False, scene_version=None):
         self.task = task
         self.GUI = GUI
         self.n_envs = n_envs
         self.requires_grad = requires_grad
-        print(f"GUI: {self.GUI}, n_envs: {self.n_envs}, requires_grad: {self.requires_grad}")
+        self.steps_interval = n_substeps_per_step or 200
+        print(f"GUI: {self.GUI}, n_envs: {self.n_envs}, steps_interval: {self.steps_interval}, requires_grad: {self.requires_grad}")
 
         if scene is None:
             # Initialize scene, if not provided
@@ -149,7 +150,8 @@ class Train_Env():
         n_steps = 10,
         pos_bound = 0.1,
         angle_bound = 5.0,
-        n_rigid_obs=0,
+        n_additional_obj=0,
+        steps_interval_split=2,
         debug=False
     ):
         self._l2_limit = pos_bound
@@ -163,10 +165,11 @@ class Train_Env():
                 self.c2.debug = True
 
         # Observation / action specs
-        self._obs_dim = (self.rope.n_vertices + n_rigid_obs) * 3    # (n_vertices + n_rigid_obs) * 3
+        self._obs_dim = (self.rope.n_vertices + n_additional_obj) * 6 + len(self.control_idx) * 14
         self._act_dim = len(self.control_idx) * 6                   # n_ctrl * 6
         self._horizon = n_steps                                     # 10
         self._steps_per_action = self.steps_interval
+        self._steps_interval_split = steps_interval_split
 
         # Observation/action spaces
         low_obs = torch.full((self._obs_dim,), -np.inf, dtype=torch.float32)
@@ -174,7 +177,6 @@ class Train_Env():
         observation_space = Box(low_obs, high_obs)
 
         act_limit = [pos_bound] * (self._act_dim // 2) + [angle_bound] * (self._act_dim // 2)
-        print(f'Bound: {act_limit}')
         act_limit = torch.tensor(act_limit, dtype=torch.float32)
         self._act_magnitude = act_limit
         low_act = -torch.ones((self._act_dim,), dtype=torch.float32) * act_limit
@@ -397,7 +399,7 @@ class Train_Env():
 
         return final.astype(np.float32)
 
-    def eval_traj_v2(self, trajs, debug=False, **kwargs):
+    def eval_traj_v2(self, trajs, **kwargs):
         raise NotImplementedError()
 
     def adaptive_scale(self, trajs, deltas, ratio=0.1):

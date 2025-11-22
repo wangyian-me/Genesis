@@ -10,9 +10,8 @@ from controller import (
 )
 
 class Train_Env_Lifting(Train_Env):
-    def __init__(self, task='wiring', GUI=False, camera=False, log_dir="xxx/wiring", n_envs=5, requires_grad=False, scene_version=None):
-        super().__init__(task, GUI=GUI, camera=camera, n_envs=n_envs, log_dir=log_dir, requires_grad=requires_grad, scene_version=scene_version)
-        self.steps_interval = 200
+    def __init__(self, task='wiring', GUI=False, camera=False, log_dir="xxx/wiring", n_envs=5, n_substeps_per_step=None, requires_grad=False, scene_version=None):
+        super().__init__(task, GUI=GUI, camera=camera, n_envs=n_envs, n_substeps_per_step=n_substeps_per_step, log_dir=log_dir, requires_grad=requires_grad, scene_version=scene_version)
 
         # initial distance between control points
         self.control_dist_init = self.rope.get_geodesic_distance(self.control_idx[0], self.control_idx[1])
@@ -268,7 +267,7 @@ class Train_Env_Lifting(Train_Env):
 
         return rewards
 
-    def reset(self, debug=False, envs_idx=None):
+    def reset(self, envs_idx=None):
         self.scene.reset(envs_idx=envs_idx)
 
         if self.scene_version == 1:
@@ -302,7 +301,7 @@ class Train_Env_Lifting(Train_Env):
                 rod_vertex_attached_to_gripper(self.rope, self.control_idx[0], self._ef1, envs_idx=i)
                 rod_vertex_attached_to_gripper(self.rope, self.control_idx[1], self._ef2, envs_idx=i)
 
-    def eval_traj_v2(self, trajs, debug=False, **kwargs):
+    def eval_traj_v2(self, trajs, **kwargs):
         """
         Evaluate trajectories.
 
@@ -329,7 +328,7 @@ class Train_Env_Lifting(Train_Env):
             self.qpos_seq = kwargs["qpos"]
             self.use_qpos = True
 
-        self.reset(debug=debug)
+        self.reset()
 
         steps_interval = self.steps_interval
         total_micro_steps = int(n_steps * steps_interval)
@@ -497,14 +496,31 @@ class Train_Env_Lifting(Train_Env):
 
     def compute_observation(self):
         verts_rope = self.rope.get_all_verts_tc()                   # (n_envs, n_verts, 3)
-        obs_rope = verts_rope.reshape(self.n_envs, -1).to(torch.float32)
+        obs_rope_pos = verts_rope.reshape(self.n_envs, -1).to(torch.float32)
 
-        nut_a_pos = self.b1.get_pos()     # shape: (n_envs, 3)
-        nut_a_pos = torch.tensor(nut_a_pos, dtype=torch.float32)
-        nut_b_pos = self.b2.get_pos()  # shape: (n_envs, 3)
-        nut_b_pos = torch.tensor(nut_b_pos, dtype=torch.float32)
+        vels_rope = self.rope.get_all_vels_tc()                   # (n_envs, n_verts, 3)
+        obs_rope_vel = vels_rope.reshape(self.n_envs, -1).to(torch.float32)
 
-        obs = torch.cat([obs_rope, nut_a_pos, nut_b_pos], dim=1)
+        obs_rope = torch.cat([obs_rope_pos, obs_rope_vel], dim=1)
+
+        nut_a_pos = self.b1.get_pos().to(torch.float32)           # shape: (n_envs, 3)
+        nut_a_vel = self.b1.get_vel().to(torch.float32)           # shape: (n_envs, 3)
+        nut_b_pos = self.b2.get_pos().to(torch.float32)           # shape: (n_envs, 3)
+        nut_b_vel = self.b2.get_vel().to(torch.float32)           # shape: (n_envs, 3)
+
+        nut_obs = torch.cat([nut_a_pos, nut_a_vel, nut_b_pos, nut_b_vel], dim=1)
+
+        ef1_pos = self.c1.ef.get_pos().to(torch.float32)
+        ef1_quat = self.c1.ef.get_quat().to(torch.float32)
+        joint1_qpos = self.c1.robot.get_dofs_position(self.c1.motors_dof).to(torch.float32)
+        c1_obs = torch.cat([ef1_pos, ef1_quat, joint1_qpos], dim=1)
+
+        ef2_pos = self.c2.ef.get_pos().to(torch.float32)
+        ef2_quat = self.c2.ef.get_quat().to(torch.float32)
+        joint2_qpos = self.c2.robot.get_dofs_position(self.c2.motors_dof).to(torch.float32)
+        c2_obs = torch.cat([ef2_pos, ef2_quat, joint2_qpos], dim=1)
+
+        obs = torch.cat([obs_rope, nut_obs, c1_obs, c2_obs], dim=1)
         return obs
 
     def step_all(self, env_mask, action):
@@ -562,7 +578,7 @@ class Train_Env_Lifting(Train_Env):
             absorbing[newly_nan] = True
             alive[newly_nan] = False
 
-        n_steps_sub = 2
+        n_steps_sub = self._steps_interval_split
         n_intervals_per_substep = self._steps_per_action // n_steps_sub
 
         for j in range(n_steps_sub):

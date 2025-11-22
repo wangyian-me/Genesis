@@ -10,9 +10,8 @@ from controller import (
 )
 
 class Train_Env_Coiling(Train_Env):
-    def __init__(self, task='wiring', GUI=False, camera=False, log_dir="xxx/wiring", n_envs=5, requires_grad=False, scene_version=None):
-        super().__init__(task, GUI=GUI, camera=camera, n_envs=n_envs, log_dir=log_dir, requires_grad=requires_grad, scene_version=scene_version)
-        self.steps_interval = 200
+    def __init__(self, task='wiring', GUI=False, camera=False, log_dir="xxx/wiring", n_envs=5, n_substeps_per_step=None, requires_grad=False, scene_version=None):
+        super().__init__(task, GUI=GUI, camera=camera, n_envs=n_envs, n_substeps_per_step=n_substeps_per_step, log_dir=log_dir, requires_grad=requires_grad, scene_version=scene_version)
 
     def construct_scene(self, camera):
         plane = self.scene.add_entity(
@@ -213,7 +212,7 @@ class Train_Env_Coiling(Train_Env):
 
         return loss_dist
 
-    def reset(self, debug=False, envs_idx=None):
+    def reset(self, envs_idx=None):
         self.scene.reset(envs_idx=envs_idx)
 
         if self.scene_version == 1:
@@ -242,7 +241,7 @@ class Train_Env_Coiling(Train_Env):
             for i in envs_idx_:
                 rod_vertex_attached_to_gripper(self.rope, self.control_idx[0], self._ef1, envs_idx=i)
 
-    def eval_traj_v2(self, trajs, debug=False, **kwargs):
+    def eval_traj_v2(self, trajs, **kwargs):
         """
         Evaluate trajectories.
 
@@ -269,7 +268,7 @@ class Train_Env_Coiling(Train_Env):
             self.qpos_seq = kwargs["qpos"]
             self.use_qpos = True
 
-        self.reset(debug=debug)
+        self.reset()
 
         steps_interval = self.steps_interval
         total_micro_steps = int(n_steps * steps_interval)
@@ -377,21 +376,6 @@ class Train_Env_Coiling(Train_Env):
                         first_fail_step[newly_not_converged] = np.minimum(first_fail_step[newly_not_converged], global_step)
                         alive[newly_not_converged] = False
 
-                # Post-step: detect stretching failures
-                if self.control_dist_init is not None:
-                    # (n_envs,)
-                    control_dist_now = self.rope.get_geodesic_distance(
-                        self.control_idx[0], self.control_idx[1]
-                    )
-                    # 1% stretch allowed
-                    stretched_between_ctrl = control_dist_now / self.control_dist_init > 1.01
-                    newly_stretched = stretched_between_ctrl & alive
-                    if newly_stretched.any():
-                        global_step = i * steps_interval + (j + 1)
-                        first_fail_step[newly_stretched] = np.minimum(first_fail_step[newly_stretched], global_step)
-                        ever_stretched[newly_stretched] = True
-                        alive[newly_stretched] = False
-
                 # Post-step: detect NaNs that emerge during micro-stepping
                 verts_rope_post = self.rope.get_all_verts()
                 nan_after = np.isnan(verts_rope_post).any(axis=(1, 2))
@@ -430,11 +414,25 @@ class Train_Env_Coiling(Train_Env):
 
     def compute_observation(self):
         verts_rope = self.rope.get_all_verts_tc()                   # (n_envs, n_verts, 3)
-        obs_rope = verts_rope.reshape(self.n_envs, -1).to(torch.float32)
+        obs_rope_pos = verts_rope.reshape(self.n_envs, -1).to(torch.float32)
+
+        vels_rope = self.rope.get_all_vels_tc()                   # (n_envs, n_verts, 3)
+        obs_rope_vel = vels_rope.reshape(self.n_envs, -1).to(torch.float32)
+
+        obs_rope = torch.cat([obs_rope_pos, obs_rope_vel], dim=1)
 
         pos_cone = self.cone1.get_pos()                             # (n_envs, 3)
-        obs_cone = pos_cone.reshape(self.n_envs, -1).to(torch.float32)
-        obs = torch.cat([obs_rope, obs_cone], dim=1)
+        obs_cone_pos = pos_cone.reshape(self.n_envs, -1).to(torch.float32)
+        vel_cone = self.cone1.get_vel()                             # (n_envs, 3)
+        obs_cone_vel = vel_cone.reshape(self.n_envs, -1).to(torch.float32)
+
+        obs_cone = torch.cat([obs_cone_pos, obs_cone_vel], dim=1)
+
+        ef_pos = self.c1.ef.get_pos().to(torch.float32)
+        ef_quat = self.c1.ef.get_quat().to(torch.float32)
+        joint_qpos = self.c1.robot.get_dofs_position(self.c1.motors_dof).to(torch.float32)
+
+        obs = torch.cat([obs_rope, obs_cone, ef_pos, ef_quat, joint_qpos], dim=1)
         return obs
 
     def step_all(self, env_mask, action):
@@ -481,7 +479,7 @@ class Train_Env_Coiling(Train_Env):
             absorbing[newly_nan] = True
             alive[newly_nan] = False
 
-        n_steps_sub = 2
+        n_steps_sub = self._steps_interval_split
         n_intervals_per_substep = self._steps_per_action // n_steps_sub
 
         for j in range(n_steps_sub):
@@ -530,20 +528,6 @@ class Train_Env_Coiling(Train_Env):
                 if newly_not_converged.any():
                     absorbing[newly_not_converged] = True
                     alive[newly_not_converged] = False
-
-
-            # Post-step: detect stretching failures
-            if self.control_dist_init is not None:
-                # (n_envs,)
-                control_dist_now = self.rope.get_geodesic_distance(
-                    self.control_idx[0], self.control_idx[1]
-                )
-                # 1% stretch allowed
-                stretched_between_ctrl = control_dist_now / self.control_dist_init > 1.01
-                newly_stretched = stretched_between_ctrl & alive
-                if newly_stretched.any():
-                    absorbing[newly_stretched] = True
-                    alive[newly_stretched] = False
 
             # Post-step: detect NaNs that emerge during micro-stepping
             verts_rope_post = self.rope.get_all_verts()

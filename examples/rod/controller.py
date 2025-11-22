@@ -877,7 +877,14 @@ class RobotControllerPink:
         self.pos_abs = target_pos
         self.quat_abs = target_quat
 
-        self.convergence = convergence
+        if is_batched:
+            self.convergence = np.empty(self.scene.n_envs, dtype=bool)
+            if envs_idx is None:
+                self.convergence = convergence
+            else:
+                self.convergence[envs_idx] = convergence
+        else:
+            self.convergence = convergence[0]
 
         return qpos
 

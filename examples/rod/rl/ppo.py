@@ -1,17 +1,16 @@
-import torch
-import random
-import argparse
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-import numpy as np
 import os
 import json
 import time
+import torch
+import random
+import argparse
+import numpy as np
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from tqdm import trange
 from pathlib import Path
 from natsort import natsorted
-
-from tqdm import trange
 
 from mushroom_rl.core import VectorCore, Logger
 from mushroom_rl.algorithms.actor_critic import PPO
@@ -65,7 +64,7 @@ class Network(nn.Module):
 
         return a
 
-def experiment(alg, n_envs, n_epochs, n_outer_steps, n_steps, n_steps_per_fit, n_episodes_test,
+def experiment(alg, n_envs, n_epochs, n_outer_steps, n_inner_steps, steps_interval_split, n_steps, n_steps_per_fit, n_episodes_test,
                alg_params, policy_params, critic_params,
                task="wiring_ring", exp_name="PPO",
                scene_version=1, pos_bound=0.1, angle_bound=5.0,
@@ -87,32 +86,37 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_steps, n_steps_per_fit, n
         task=task,
         log_dir=os.path.join("logs", task, exp_name),
         n_envs=n_envs,
+        n_substeps_per_step=n_inner_steps,
         GUI=args.gui,
         camera=False,
         scene_version=scene_version,
     )
 
     if task == "coiling":
-        mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_rigid_obs=1, debug=args.gui)
+        mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_additional_obj=1, steps_interval_split=steps_interval_split, debug=args.gui)
     elif task == "gathering":
-        mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_rigid_obs=3, debug=args.gui)
+        mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_additional_obj=3, steps_interval_split=steps_interval_split, debug=args.gui)
     elif task == "lifting":
-        mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_rigid_obs=2, debug=args.gui)
+        mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_additional_obj=2, steps_interval_split=steps_interval_split, debug=args.gui)
     elif task == "separation":
-        mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_rigid_obs=mdp.rope2.n_vertices, debug=args.gui)
+        mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_additional_obj=mdp.rope2.n_vertices, steps_interval_split=steps_interval_split, debug=args.gui)
     elif task == "slingshot":
-        mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_rigid_obs=0, debug=args.gui)
+        mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_additional_obj=0, steps_interval_split=steps_interval_split, debug=args.gui)
     elif task == "wireart":
-        mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_rigid_obs=0, debug=args.gui)
+        mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_additional_obj=0, steps_interval_split=steps_interval_split, debug=args.gui)
     elif task == "wiring_post":
-        mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_rigid_obs=0, debug=args.gui)
+        mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_additional_obj=0, steps_interval_split=steps_interval_split, debug=args.gui)
     elif task == "wrapping":
-        mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_rigid_obs=1, debug=args.gui)
+        mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_additional_obj=1, steps_interval_split=steps_interval_split, debug=args.gui)
     else:
         raise ValueError(f"Unknown env_name: {task}")
 
     print(f'Max moving distance {mdp._l2_limit}x{n_outer_steps}={mdp._l2_limit * n_outer_steps} m for each control point')
-    print(f'n_steps: {n_steps}, n_steps_per_fit: {n_steps_per_fit}')
+    print(f'Total substeps: {n_outer_steps}x{n_inner_steps}={n_outer_steps * n_inner_steps}')
+    print(f'Total RL steps: {n_steps}x{n_envs}={n_steps * n_envs}')
+    print(f'Bound: {mdp._act_magnitude}')
+    print(f'Observation dimension: {mdp._obs_dim}, Action dimension: {mdp._act_dim}')
+    print(f'n_steps_per_fit: {n_steps_per_fit}, steps_interval_split: {steps_interval_split}')
 
     curve_dir = Path("logs") / task / exp_name
     curve_dir.mkdir(parents=True, exist_ok=True)
@@ -267,8 +271,8 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_steps, n_steps_per_fit, n
         diagnostic_log_file.write(f"Episode lengths: min={episode_length.min().item()}, max={episode_length.max().item()}, mean={episode_length.float().mean().item():.1f}\n")
         diagnostic_log_file.write(f"Action stats - Pos: mean={action[:, :3].mean():.4f}, std={action[:, :3].std():.4f}\n")
         diagnostic_log_file.write(f"Action stats - Rot: mean={action[:, 3:].mean():.4f}, std={action[:, 3:].std():.4f}\n")
-        success_rate = (episode_length == 10).float().mean().item() * 100
-        diagnostic_log_file.write(f"Success rate: {success_rate:.1f}% ({(episode_length == 10).sum().item()}/{len(episode_length)} episodes)\n")
+        success_rate = (episode_length == n_outer_steps).float().mean().item() * 100
+        diagnostic_log_file.write(f"Success rate: {success_rate:.1f}% ({(episode_length == n_outer_steps).sum().item()}/{len(episode_length)} episodes)\n")
         diagnostic_log_file.write(f"Best final reward: {fsr[:, last_idx].max():.2f}\n")
         diagnostic_log_file.write(f"{'='*60}\n\n")
         diagnostic_log_file.flush()
@@ -302,9 +306,9 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_steps, n_steps_per_fit, n
         FinalReward = np.mean(batch_F)
         FinalReward_std = np.std(batch_F)
         agent.save(path=ckpt_dir / f"{it}_ppo.pkl", full_save=True)
-        if FinalReward > best_so_far:
+        if Return > best_so_far:
             agent.save(path=curve_dir / "best_ppo.pkl", full_save=True)
-            best_so_far = FinalReward
+            best_so_far = Return
 
         epoch_end = time.time()
         epoch_duration = epoch_end - epoch_start
@@ -328,12 +332,15 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--task', type=str, default='wiring_ring', help='Task name')
     parser.add_argument('--exp_name', type=str, required=True, help='Experiment name')
-    parser.add_argument('--n_envs', type=int, default=20)
-    parser.add_argument('--n_traj', type=int, default=20, help='Number of trajectories per environment')
-    parser.add_argument('--n_steps', type=int, default=10)
+    parser.add_argument('--n_epochs', type=int, default=100)
+    parser.add_argument('--n_envs', type=int, default=100)
+    parser.add_argument('--n_traj', type=int, default=10)
+    parser.add_argument('--n_steps', type=int, default=40)
+    parser.add_argument('--n_substeps_per_step', type=int, default=50)
+    parser.add_argument('--steps_interval_split', type=int, default=1)
     parser.add_argument('--per_fit_ratio', type=int, default=1)
-    parser.add_argument('--bound', type=float, default=0.1)
-    parser.add_argument('--angle_bound', type=float, default=5.0)
+    parser.add_argument('--bound', type=float, default=0.025)
+    parser.add_argument('--angle_bound', type=float, default=0.25)
     parser.add_argument('--scene_version', type=int, default=1)
     parser.add_argument('--seed', type=int, default=123)
     parser.add_argument('--gui', action='store_true')
@@ -357,7 +364,7 @@ if __name__ == '__main__':
             'params': {'lr': 3e-4}
         },
         n_epochs_policy=5,
-        batch_size=256,
+        batch_size=2048,
         eps_ppo=.2,
         lam=.95,
         ent_coeff=0.01
@@ -375,22 +382,23 @@ if __name__ == '__main__':
         },
         loss=F.mse_loss,
         n_features=[256, 128, 64],
-        batch_size=256,
+        batch_size=2048,
         use_cuda=True,
         output_shape=(1,)
     )
 
-    # Setup for: 10 envs, 10 steps/trajectory, 20 trajectories before policy update
     n_trajectories = args.n_traj  # Number of trajectories to collect per env
 
     experiment(
         alg=PPO,
         n_envs=n_envs,
-        n_epochs=20,
+        n_epochs=args.n_epochs,
         n_outer_steps=args.n_steps,
+        n_inner_steps=args.n_substeps_per_step,
+        steps_interval_split=args.steps_interval_split,
         n_steps=n_envs * args.n_steps * n_trajectories,
         n_steps_per_fit=(n_envs * args.n_steps * n_trajectories) // args.per_fit_ratio,
-        n_episodes_test=n_envs * 3,  # Evaluate with 30 episodes (3 per env)
+        n_episodes_test=n_envs,
         alg_params=ppo_params,
         policy_params=policy_params,
         critic_params=critic_params,

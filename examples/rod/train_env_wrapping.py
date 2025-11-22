@@ -5,9 +5,8 @@ from train_env import Train_Env
 from controller import RobotController, RobotControllerPink
 
 class Train_Env_Wrapping(Train_Env):
-    def __init__(self, task='wiring', GUI=False, camera=False, log_dir="xxx/wiring", n_envs=5, requires_grad=False, scene_version=None):
-        super().__init__(task, GUI=GUI, camera=camera, n_envs=n_envs, log_dir=log_dir, requires_grad=requires_grad, scene_version=scene_version)
-        self.steps_interval = 200
+    def __init__(self, task='wiring', GUI=False, camera=False, log_dir="xxx/wiring", n_envs=5, n_substeps_per_step=None, requires_grad=False, scene_version=None):
+        super().__init__(task, GUI=GUI, camera=camera, n_envs=n_envs, n_substeps_per_step=n_substeps_per_step, log_dir=log_dir, requires_grad=requires_grad, scene_version=scene_version)
 
     def construct_scene(self, camera):
         plane = self.scene.add_entity(
@@ -281,7 +280,7 @@ class Train_Env_Wrapping(Train_Env):
 
         return gap
 
-    def reset(self, debug=False, envs_idx=None):
+    def reset(self, envs_idx=None):
         self.scene.reset(envs_idx=envs_idx)
 
         if self.scene_version == 1:
@@ -316,7 +315,7 @@ class Train_Env_Wrapping(Train_Env):
                         img = cam.render()[0]
                         self.frames[cid].append(img)
 
-    def eval_traj_v2(self, trajs, debug=False, **kwargs):
+    def eval_traj_v2(self, trajs, **kwargs):
         """
         Evaluate trajectories.
 
@@ -345,7 +344,7 @@ class Train_Env_Wrapping(Train_Env):
             self.qpos_seq = kwargs["qpos"]
             self.use_qpos = True
 
-        self.reset(debug=debug)
+        self.reset()
 
         steps_interval = self.steps_interval
         total_micro_steps = int(n_steps * steps_interval)
@@ -532,11 +531,19 @@ class Train_Env_Wrapping(Train_Env):
         return final.astype(np.float32)
 
     def compute_observation(self):
-        verts_rope = self.rope.get_all_verts_tc()
-        obs_rope = verts_rope.reshape(self.n_envs, -1).to(torch.float32)
-        pos_cylinder = self.cylinder.get_pos()
-        pos_cylinder = torch.tensor(pos_cylinder, dtype=torch.float32)
-        obs = torch.cat([obs_rope, pos_cylinder], dim=1)
+        verts_rope = self.rope.get_all_verts_tc()                   # (n_envs, n_verts, 3)
+        obs_rope_pos = verts_rope.reshape(self.n_envs, -1).to(torch.float32)
+
+        vels_rope = self.rope.get_all_vels_tc()                     # (n_envs, n_verts, 3)
+        obs_rope_vel = vels_rope.reshape(self.n_envs, -1).to(torch.float32)
+
+        obs_rope = torch.cat([obs_rope_pos, obs_rope_vel], dim=1)
+
+        pos_cylinder = self.cylinder.get_pos().to(torch.float32)
+        vel_cylinder = self.cylinder.get_vel().to(torch.float32)
+        obs_cylinder = torch.cat([pos_cylinder, vel_cylinder], dim=1)
+
+        obs = torch.cat([obs_rope, obs_cylinder], dim=1)
         return obs
 
     def step_all(self, env_mask, action):
@@ -594,7 +601,7 @@ class Train_Env_Wrapping(Train_Env):
             absorbing[newly_nan] = True
             alive[newly_nan] = False
 
-        n_steps_sub = 2
+        n_steps_sub = self._steps_interval_split
         n_intervals_per_substep = self._steps_per_action // n_steps_sub
 
         for j in range(n_steps_sub):

@@ -10,7 +10,7 @@ from controller import (
 )
 
 class Train_Env_Wiring_post(Train_Env):
-    def __init__(self, task='wiring', GUI=False, camera=False, log_dir="xxx/wiring", n_envs=5, requires_grad=False, scene_version=None):
+    def __init__(self, task='wiring', GUI=False, camera=False, log_dir="xxx/wiring", n_envs=5, n_substeps_per_step=None, requires_grad=False, scene_version=None):
         gs.init(seed=0, precision="64", logging_level="error", backend=gs.gpu, performance_mode=True)
         viewer_options = gs.options.ViewerOptions(
             camera_pos=(3, -1, 1.5),
@@ -34,8 +34,7 @@ class Train_Env_Wiring_post(Train_Env):
             ),
             show_viewer=GUI,
         )
-        super().__init__(task, scene=scene, GUI=GUI, camera=camera, n_envs=n_envs, log_dir=log_dir, requires_grad=requires_grad, scene_version=scene_version)
-        self.steps_interval = 200
+        super().__init__(task, scene=scene, GUI=GUI, camera=camera, n_envs=n_envs, n_substeps_per_step=n_substeps_per_step, log_dir=log_dir, requires_grad=requires_grad, scene_version=scene_version)
 
         self.stick1_contact = np.array([0.229, 0.109, self.rope.material.segment_radius], dtype=gs.np_float)
         self.stick2_contact = np.array([0.113, 0.311, self.rope.material.segment_radius], dtype=gs.np_float)
@@ -353,7 +352,7 @@ class Train_Env_Wiring_post(Train_Env):
 
         return loss
 
-    def reset(self, debug=False, envs_idx=None):
+    def reset(self, envs_idx=None):
         self.scene.reset(envs_idx=envs_idx)
 
         if self.scene_version == 1:
@@ -393,7 +392,7 @@ class Train_Env_Wiring_post(Train_Env):
         fixed_stick2_np = np.ones((self.n_envs, self.stick2.n_vertices), dtype=bool)
         self.stick2.set_fixed(0, fixed_stick2_np)
 
-    def eval_traj_v2(self, trajs, debug=False, **kwargs):
+    def eval_traj_v2(self, trajs, **kwargs):
         """
         Evaluate trajectories.
 
@@ -422,7 +421,7 @@ class Train_Env_Wiring_post(Train_Env):
             self.qpos_seq = kwargs["qpos"]
             self.use_qpos = True
 
-        self.reset(debug=debug)
+        self.reset()
 
         steps_interval = self.steps_interval
         total_micro_steps = int(n_steps * steps_interval)
@@ -612,8 +611,26 @@ class Train_Env_Wiring_post(Train_Env):
 
     def compute_observation(self):
         verts_rope = self.rope.get_all_verts_tc()                   # (n_envs, n_verts, 3)
-        obs_rope = verts_rope.reshape(self.n_envs, -1).to(torch.float32)
-        return obs_rope
+        obs_rope_pos = verts_rope.reshape(self.n_envs, -1).to(torch.float32)
+
+        vels_rope = self.rope.get_all_vels_tc()                     # (n_envs, n_verts, 3)
+        obs_rope_vel = vels_rope.reshape(self.n_envs, -1).to(torch.float32)
+
+        obs_rope = torch.cat([obs_rope_pos, obs_rope_vel], dim=1)
+
+        ef1_pos = self.c1.ef.get_pos().to(torch.float32)
+        ef1_quat = self.c1.ef.get_quat().to(torch.float32)
+        joint1_qpos = self.c1.robot.get_dofs_position(self.c1.motors_dof).to(torch.float32)
+        c1_obs = torch.cat([ef1_pos, ef1_quat, joint1_qpos], dim=1)
+
+        ef2_pos = self.c2.ef.get_pos().to(torch.float32)
+        ef2_quat = self.c2.ef.get_quat().to(torch.float32)
+        joint2_qpos = self.c2.robot.get_dofs_position(self.c2.motors_dof).to(torch.float32)
+        c2_obs = torch.cat([ef2_pos, ef2_quat, joint2_qpos], dim=1)
+
+        obs = torch.cat([obs_rope, c1_obs, c2_obs], dim=1)
+
+        return obs
 
     def step_all(self, env_mask, action):
         """ Used in MushroomRL """
@@ -670,7 +687,7 @@ class Train_Env_Wiring_post(Train_Env):
             absorbing[newly_nan] = True
             alive[newly_nan] = False
 
-        n_steps_sub = 2
+        n_steps_sub = self._steps_interval_split
         n_intervals_per_substep = self._steps_per_action // n_steps_sub
 
         for j in range(n_steps_sub):

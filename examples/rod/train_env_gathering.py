@@ -10,7 +10,7 @@ from controller import (
 )
 
 class Train_Env_Gathering(Train_Env):
-    def __init__(self, task='wiring', GUI=False, camera=False, log_dir="xxx/wiring", n_envs=5, requires_grad=False, scene_version=None):
+    def __init__(self, task='wiring', GUI=False, camera=False, log_dir="xxx/wiring", n_envs=5, n_substeps_per_step=None, requires_grad=False, scene_version=None):
         gs.init(seed=0, precision="64", logging_level="error", backend=gs.gpu, performance_mode=True)
         viewer_options = gs.options.ViewerOptions(
             camera_pos=(3, -1, 1.5),
@@ -38,8 +38,7 @@ class Train_Env_Gathering(Train_Env):
             ),
             show_viewer=GUI,
         )
-        super().__init__(task, scene=scene, GUI=GUI, camera=camera, n_envs=n_envs, log_dir=log_dir, requires_grad=requires_grad, scene_version=scene_version)
-        self.steps_interval = 200
+        super().__init__(task, scene=scene, GUI=GUI, camera=camera, n_envs=n_envs, n_substeps_per_step=n_substeps_per_step, log_dir=log_dir, requires_grad=requires_grad, scene_version=scene_version)
 
         # initial total length
         self.control_dist_init = self.rope.get_total_length()   # (n_envs,)
@@ -346,7 +345,7 @@ class Train_Env_Gathering(Train_Env):
 
         return rewards             # list[float] of length n_envs
 
-    def reset(self, debug=False, envs_idx=None):
+    def reset(self, envs_idx=None):
         self.scene.reset(envs_idx=envs_idx)
 
         if self.scene_version == 1:
@@ -380,7 +379,7 @@ class Train_Env_Gathering(Train_Env):
                 rod_vertex_attached_to_gripper(self.rope, self.control_idx[0], self._ef1, envs_idx=i)
                 rod_vertex_attached_to_gripper(self.rope, self.control_idx[1], self._ef2, envs_idx=i)
 
-    def eval_traj_v2(self, trajs, debug=False, **kwargs):
+    def eval_traj_v2(self, trajs, **kwargs):
         """
         Evaluate trajectories.
 
@@ -407,7 +406,7 @@ class Train_Env_Gathering(Train_Env):
             self.qpos_seq = kwargs["qpos"]
             self.use_qpos = True
 
-        self.reset(debug=debug)
+        self.reset()
 
         steps_interval = self.steps_interval
         total_micro_steps = int(n_steps * steps_interval)
@@ -595,15 +594,36 @@ class Train_Env_Gathering(Train_Env):
 
     def compute_observation(self):
         verts_rope = self.rope.get_all_verts_tc()                   # (n_envs, n_verts, 3)
-        obs_rope = verts_rope.reshape(self.n_envs, -1).to(torch.float32)
+        obs_rope_pos = verts_rope.reshape(self.n_envs, -1).to(torch.float32)
 
-        pos1 = self.sphere.get_particles()    # shape: (n_envs, n_particles, 3)
-        pos1 = np.mean(pos1, axis=1)          # shape: (n_envs, 3)
-        pos1 = torch.tensor(pos1, dtype=torch.float32)
-        pos2 = self.bunny.get_pos().to(torch.float32)     # shape: (n_envs, 3)
-        pos3 = self.cylinder.get_pos().to(torch.float32)  # shape: (n_envs, 3)
+        vels_rope = self.rope.get_all_vels_tc()                     # (n_envs, n_verts, 3)
+        obs_rope_vel = vels_rope.reshape(self.n_envs, -1).to(torch.float32)
 
-        obs = torch.cat([obs_rope, pos1, pos2, pos3], dim=1)
+        obs_rope = torch.cat([obs_rope_pos, obs_rope_vel], dim=1)
+
+        pos1 = self.sphere.get_particles_tc()                       # shape: (n_envs, n_particles, 3)
+        pos1 = torch.mean(pos1, dim=1).to(torch.float32)            # shape: (n_envs, 3)
+        pos2 = self.bunny.get_pos().to(torch.float32)               # shape: (n_envs, 3)
+        pos3 = self.cylinder.get_pos().to(torch.float32)            # shape: (n_envs, 3)
+
+        vel1 = self.sphere.get_velocities_tc()                      # shape: (n_envs, n_particles, 3)
+        vel1 = torch.mean(vel1, dim=1).to(torch.float32)            # shape: (n_envs, 3)
+        vel2 = self.bunny.get_vel().to(torch.float32)               # shape: (n_envs, 3)
+        vel3 = self.cylinder.get_vel().to(torch.float32)            # shape: (n_envs, 3)
+
+        obs_add = torch.cat([pos1, vel1, pos2, vel2, pos3, vel3], dim=1)
+
+        ef1_pos = self.c1.ef.get_pos().to(torch.float32)
+        ef1_quat = self.c1.ef.get_quat().to(torch.float32)
+        joint1_qpos = self.c1.robot.get_dofs_position(self.c1.motors_dof).to(torch.float32)
+        c1_obs = torch.cat([ef1_pos, ef1_quat, joint1_qpos], dim=1)
+
+        ef2_pos = self.c2.ef.get_pos().to(torch.float32)
+        ef2_quat = self.c2.ef.get_quat().to(torch.float32)
+        joint2_qpos = self.c2.robot.get_dofs_position(self.c2.motors_dof).to(torch.float32)
+        c2_obs = torch.cat([ef2_pos, ef2_quat, joint2_qpos], dim=1)
+
+        obs = torch.cat([obs_rope, obs_add, c1_obs, c2_obs], dim=1)
         return obs
 
     def step_all(self, env_mask, action):
@@ -661,7 +681,7 @@ class Train_Env_Gathering(Train_Env):
             absorbing[newly_nan] = True
             alive[newly_nan] = False
 
-        n_steps_sub = 2
+        n_steps_sub = self._steps_interval_split
         n_intervals_per_substep = self._steps_per_action // n_steps_sub
 
         for j in range(n_steps_sub):

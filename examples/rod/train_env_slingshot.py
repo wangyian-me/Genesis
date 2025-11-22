@@ -5,9 +5,8 @@ from train_env import Train_Env
 from controller import RobotController, RobotControllerPink
 
 class Train_Env_Slingshot(Train_Env):
-    def __init__(self, task='wiring', GUI=False, camera=False, log_dir="xxx/wiring", n_envs=5, requires_grad=False, scene_version=None):
-        super().__init__(task, GUI=GUI, camera=camera, n_envs=n_envs, log_dir=log_dir, requires_grad=requires_grad, scene_version=scene_version)
-        self.steps_interval = 200
+    def __init__(self, task='wiring', GUI=False, camera=False, log_dir="xxx/wiring", n_envs=5, n_substeps_per_step=None, requires_grad=False, scene_version=None):
+        super().__init__(task, GUI=GUI, camera=camera, n_envs=n_envs, n_substeps_per_step=n_substeps_per_step, log_dir=log_dir, requires_grad=requires_grad, scene_version=scene_version)
 
         # NOTE: assume running from "examples/rod"
         initial_gripper_qpos = np.load("target_pos/slingshot_pregrasp_qpos.npy")
@@ -318,7 +317,7 @@ class Train_Env_Slingshot(Train_Env):
 
         return rewards
 
-    def reset(self, debug=False, envs_idx=None):
+    def reset(self, envs_idx=None):
         self.scene.reset(envs_idx=envs_idx)
 
         if self.scene_version == 1:
@@ -520,7 +519,7 @@ class Train_Env_Slingshot(Train_Env):
 
         return final.astype(np.float32)
 
-    def eval_traj_v2(self, trajs, debug=False, **kwargs):
+    def eval_traj_v2(self, trajs, **kwargs):
         """
         Evaluate trajectories.
 
@@ -547,7 +546,7 @@ class Train_Env_Slingshot(Train_Env):
             self.qpos_seq = kwargs["qpos"]
             self.use_qpos = True
 
-        self.reset(debug=debug)
+        self.reset()
 
         steps_interval = self.steps_interval
         total_micro_steps = int(n_steps * steps_interval)
@@ -671,8 +670,25 @@ class Train_Env_Slingshot(Train_Env):
 
     def compute_observation(self):
         verts_rope = self.rope.get_all_verts_tc()                   # (n_envs, n_verts, 3)
-        obs_rope = verts_rope.reshape(self.n_envs, -1).to(torch.float32)
-        return obs_rope
+        obs_rope_pos = verts_rope.reshape(self.n_envs, -1).to(torch.float32)
+
+        vels_rope = self.rope.get_all_vels_tc()                     # (n_envs, n_verts, 3)
+        obs_rope_vel = vels_rope.reshape(self.n_envs, -1).to(torch.float32)
+
+        obs_rope = torch.cat([obs_rope_pos, obs_rope_vel], dim=1)
+
+        sphere_pos = self.sphere.get_pos().to(torch.float32)
+        sphere_vel = self.sphere.get_vel().to(torch.float32)
+
+        cube_pos = self.cube.get_pos().to(torch.float32)
+        cube_vel = self.cube.get_vel().to(torch.float32)
+
+        ef_pos = self.c1.ef.get_pos().to(torch.float32)
+        ef_quat = self.c1.ef.get_quat().to(torch.float32)
+        joint_qpos = self.c1.robot.get_dofs_position(self.c1.motors_dof).to(torch.float32)
+
+        obs = torch.cat([obs_rope, sphere_pos, sphere_vel, cube_pos, cube_vel, ef_pos, ef_quat, joint_qpos], dim=1)
+        return obs
 
     def step_all(self, env_mask, action):
         """ Used in MushroomRL """
@@ -718,7 +734,7 @@ class Train_Env_Slingshot(Train_Env):
             absorbing[newly_nan] = True
             alive[newly_nan] = False
 
-        n_steps_sub = 2
+        n_steps_sub = self._steps_interval_split
         n_intervals_per_substep = self._steps_per_action // n_steps_sub
 
         for j in range(n_steps_sub):
