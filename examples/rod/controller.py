@@ -882,7 +882,8 @@ class RobotControllerPink:
             if envs_idx is None:
                 self.convergence = convergence
             else:
-                self.convergence[envs_idx.cpu().numpy()] = convergence
+                idx_ = [int(i) for i in envs_idx]
+                self.convergence[np.array(idx_)] = convergence
         else:
             self.convergence = convergence[0]
 
