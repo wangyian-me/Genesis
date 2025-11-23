@@ -244,6 +244,44 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_inner_steps, steps_interv
 
         return
 
+    if start_epoch == 0:
+        epoch_start = time.time()
+        batch_R = list()
+        batch_F = list()
+
+        dataset = core.evaluate(n_episodes=n_episodes_test, render=False, record=False)
+        ur = dataset.undiscounted_return
+        fsr = dataset.reward_sequence
+        episode_length = dataset.episodes_length
+
+        n_data = len(ur)
+        for j in range(n_data):
+            actual_last_idx = episode_length[j] - 1
+            last_reward = fsr[j, actual_last_idx]
+            batch_R.append(ur[j])
+            batch_F.append(last_reward)
+
+        # (n_envs * batch_size, )
+        batch_R = torch.as_tensor(batch_R)
+        batch_R = batch_R.cpu().numpy()
+        batch_F = torch.as_tensor(batch_F)
+        batch_F = batch_F.cpu().numpy()
+
+        Return_opt = np.max(batch_R)
+        Return = np.mean(batch_R)
+        Return_std = np.std(batch_R)
+        FinalReward_opt = np.max(batch_F)
+        FinalReward = np.mean(batch_F)
+        FinalReward_std = np.std(batch_F)
+
+        epoch_end = time.time()
+        epoch_duration = epoch_end - epoch_start
+
+        # Initial evaluation
+        curve_file.write(f"-1,{Return},{Return_std},{Return_opt},{FinalReward},{FinalReward_std},{FinalReward_opt},{best_so_far},{epoch_duration}\n")
+        curve_file.flush()
+        os.fsync(curve_file.fileno())
+
     logger = Logger(log_name=exp_name, results_dir=Path("logs") / task, log_console=True, append=True, log_file_name="train")
     agent.set_logger(logger)
 

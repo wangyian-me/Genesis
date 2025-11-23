@@ -1,21 +1,22 @@
-import os
-import json
-import time
 import torch
 import random
 import argparse
-import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from tqdm import trange
+import numpy as np
+import os
+import json
+import time
 from pathlib import Path
 from natsort import natsorted
+from typing_extensions import Literal
+
+from tqdm import trange
 
 from mushroom_rl.core import VectorCore, Logger
-from mushroom_rl.algorithms.actor_critic import RudinPPO
+from mushroom_rl.algorithms.actor_critic import SAC
 from mushroom_rl.utils import TorchUtils
-from mushroom_rl.policy import GaussianTorchPolicy
 
 import sys
 sys.path.append('.')
@@ -29,9 +30,38 @@ from train_env_wireart import Train_Env_Wireart
 from train_env_wiring_post import Train_Env_Wiring_post
 from train_env_wrapping import Train_Env_Wrapping
 
-class Network(nn.Module):
+class CriticNetwork(nn.Module):
     def __init__(self, input_shape, output_shape, n_features, **kwargs):
-        super(Network, self).__init__()
+        super().__init__()
+
+        n_input = input_shape[-1]
+        n_output = output_shape[0]
+
+        self._h1 = nn.Linear(n_input, n_features)
+        self._h2 = nn.Linear(n_features, n_features)
+        self._h3 = nn.Linear(n_features, n_output)
+
+        nn.init.xavier_uniform_(self._h1.weight,
+                                gain=nn.init.calculate_gain('relu'))
+        nn.init.xavier_uniform_(self._h2.weight,
+                                gain=nn.init.calculate_gain('relu'))
+        nn.init.uniform_(self._h3.weight, -0.001, 0.001)
+        nn.init.constant_(self._h3.bias, 0.0)
+
+        # Ensure parameters are float32 to avoid Float/Double mismatches
+        self.float()
+
+    def forward(self, state, action):
+        state_action = torch.cat((state.float(), action.float()), dim=1)
+        features1 = F.relu(self._h1(state_action))
+        features2 = F.relu(self._h2(features1))
+        q = self._h3(features2)
+
+        return torch.squeeze(q)
+
+class ActorNetwork(nn.Module):
+    def __init__(self, input_shape, output_shape, n_features, type: Literal['mu', 'sigma'] = 'mu', **kwargs):
+        super(ActorNetwork, self).__init__()
 
         n_input = input_shape[-1]
         n_output = output_shape[0]
@@ -47,8 +77,13 @@ class Network(nn.Module):
                                 gain=nn.init.calculate_gain('relu'))
         nn.init.xavier_uniform_(self._h3.weight,
                                 gain=nn.init.calculate_gain('relu'))
-        nn.init.uniform_(self._h4.weight, -0.001, 0.001)
-        nn.init.constant_(self._h4.bias, 0.0)
+
+        if type == 'mu':
+            nn.init.uniform_(self._h4.weight, -0.001, 0.001)
+            nn.init.constant_(self._h4.bias, 0.0)
+        elif type == 'sigma':
+            nn.init.xavier_uniform_(self._h4.weight,
+                                    gain=nn.init.calculate_gain('linear'))
 
         # Ensure parameters are float32 to avoid Float/Double mismatches
         self.float()
@@ -65,8 +100,8 @@ class Network(nn.Module):
         return a
 
 def experiment(alg, n_envs, n_epochs, n_outer_steps, n_inner_steps, steps_interval_split, n_steps, n_steps_per_fit, n_episodes_test,
-               alg_params, policy_params, critic_params,
-               task="wiring_ring", exp_name="PPO",
+               alg_params, critic_params,
+               task="wiring_ring", exp_name="SAC",
                scene_version=1, pos_bound=0.1, angle_bound=5.0,
                args=None):
 
@@ -115,7 +150,7 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_inner_steps, steps_interv
     print(f'Total substeps: {n_outer_steps}x{n_inner_steps}={n_outer_steps * n_inner_steps}')
     print(f'Total RL steps: {n_steps}x{n_envs}={n_steps * n_envs}')
     print(f'Bound: {mdp._act_magnitude}')
-    print(f'Observation dimension: {mdp._obs_dim}, Action dimension: {mdp._act_dim}')
+    print(f'Observation dimension: {mdp._obs_dim}, Action dimension: {mdp._act_dim}, Target entropy: {-mdp.info.action_space.shape[0] / 2}')
     print(f'n_steps_per_fit: {n_steps_per_fit}, steps_interval_split: {steps_interval_split}')
 
     curve_dir = Path("logs") / task / exp_name
@@ -143,6 +178,22 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_inner_steps, steps_interv
 
         diagnostic_log_file = open(diagnostic_log_path, "w")
 
+    # Approximators
+    actor_input_shape = mdp.info.observation_space.shape
+    actor_mu_params = dict(network=ActorNetwork,
+                           n_features=alg_params['actor_n_features'],
+                           input_shape=actor_input_shape,
+                           output_shape=mdp.info.action_space.shape,
+                           type='mu')
+    actor_sigma_params = dict(network=ActorNetwork,
+                              n_features=alg_params['actor_n_features'],
+                              input_shape=actor_input_shape,
+                              output_shape=mdp.info.action_space.shape,
+                              type='sigma')
+    critic_input_shape = (actor_input_shape[0] + mdp.info.action_space.shape[0],)
+    critic_params.update({'input_shape': critic_input_shape})
+    critic_params.update({'n_features': alg_params['critic_n_features']})
+
     if args.test is None:   # Only save args if in training mode
         import copy
 
@@ -150,12 +201,12 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_inner_steps, steps_interv
             info = vars(args)
             alg_info = copy.deepcopy(alg_params)
             alg_info['actor_optimizer']['class'] = alg_info['actor_optimizer']['class'].__name__
+            alg_info['actor_optimizer']['clipping']['method'] = alg_info['actor_optimizer']['clipping']['method'].__name__
             critic_info = copy.deepcopy(critic_params)
             critic_info['network'] = critic_info['network'].__name__
             critic_info['optimizer']['class'] = critic_info['optimizer']['class'].__name__
             critic_info['loss'] = critic_info['loss'].__name__
 
-            info.update(policy_params=policy_params)
             info.update(critic_params=critic_info)
             info.update(alg_params=alg_info)
             json.dump(info, f, indent=4)
@@ -163,15 +214,15 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_inner_steps, steps_interv
     ckpt_dir = curve_dir / "ckpts"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    policy = GaussianTorchPolicy(Network,
-                                 mdp.info.observation_space.shape,
-                                 mdp.info.action_space.shape,
-                                 **policy_params)
-
-    critic_params.update(input_shape=mdp.info.observation_space.shape)
-    alg_params['critic_params'] = critic_params
-
-    agent = alg(mdp.info, policy, **alg_params)
+    # Agent
+    agent = alg(mdp.info, actor_mu_params, actor_sigma_params,
+                alg_params['actor_optimizer'], critic_params,
+                alg_params['batch_size'], alg_params['initial_replay_size'],
+                alg_params['max_replay_size'], alg_params['warmup_transitions'],
+                alg_params['tau'], alg_params['lr_alpha'],
+                log_std_min=alg_params['log_std_min'], log_std_max=alg_params['log_std_max'],
+                target_entropy=-mdp.info.action_space.shape[0] / 2,
+                critic_fit_params=None)
     best_so_far = -np.inf
     start_epoch = 0
     if resume:
@@ -182,9 +233,9 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_inner_steps, steps_interv
                 agent = alg.load(path=available_ckpts[-1])
         else:
             if args.test == "best":
-                ckpt_path = curve_dir / "best_ppo.pkl"
+                ckpt_path = curve_dir / "best_sac.pkl"
             else:
-                ckpt_path = ckpt_dir / f"{args.test}_ppo.pkl"
+                ckpt_path = ckpt_dir / f"{args.test}_sac.pkl"
             print(f"Resuming from checkpoint: {ckpt_path}")
             agent = alg.load(path=ckpt_path)
 
@@ -196,6 +247,7 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_inner_steps, steps_interv
                 start_epoch = record_data.get("epoch", -1) + 1
     print(f"Best so far loaded: {best_so_far}")
 
+    print('replay init size: ', agent._replay_memory._initial_size, 'replay max size: ', agent._replay_memory._max_size, 'replay idx: ', agent._replay_memory._idx)
     core = VectorCore(agent, mdp)
 
     if args.test is not None:
@@ -282,6 +334,11 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_inner_steps, steps_interv
         curve_file.flush()
         os.fsync(curve_file.fileno())
 
+    # Warmup
+    if start_epoch == 0 or agent._replay_memory._dataset is None:
+        print("Starting warmup...")
+        core.learn(n_steps=alg_params['initial_replay_size'], n_steps_per_fit=alg_params['initial_replay_size'])
+
     logger = Logger(log_name=exp_name, results_dir=Path("logs") / task, log_console=True, append=True, log_file_name="train")
     agent.set_logger(logger)
 
@@ -300,12 +357,10 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_inner_steps, steps_interv
         last_idx = episode_length - 1
         action = dataset.action
 
-        # Diagnostic: Print action and policy statistics
-        policy_std = torch.exp(agent.policy._log_sigma).cpu().detach()
+        # Diagnostic
         diagnostic_log_file.write(f"\n\n{'='*60}\n")
         diagnostic_log_file.write(f"DIAGNOSTICS (epoch {it})\n")
         diagnostic_log_file.write(f"{'='*60}\n")
-        diagnostic_log_file.write(f"Policy std: min={policy_std.min():.4f}, max={policy_std.max():.4f}, mean={policy_std.mean():.4f}\n")
         diagnostic_log_file.write(f"Episode lengths: min={episode_length.min().item()}, max={episode_length.max().item()}, mean={episode_length.float().mean().item():.1f}\n")
         diagnostic_log_file.write(f"Action stats - Pos: mean={action[:, :3].mean():.4f}, std={action[:, :3].std():.4f}\n")
         diagnostic_log_file.write(f"Action stats - Rot: mean={action[:, 3:].mean():.4f}, std={action[:, 3:].std():.4f}\n")
@@ -327,8 +382,6 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_inner_steps, steps_interv
             full_log_file.flush()
             os.fsync(full_log_file.fileno())
 
-        del dataset
-
         # (n_envs * batch_size, )
         batch_R = torch.as_tensor(batch_R)
         batch_R = batch_R.cpu().numpy()
@@ -343,10 +396,9 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_inner_steps, steps_interv
         FinalReward_opt = np.max(batch_F)
         FinalReward = np.mean(batch_F)
         FinalReward_std = np.std(batch_F)
-        if it % 10 == 0 or it == n_epochs - 1:
-            agent.save(path=ckpt_dir / f"{it}_ppo.pkl", full_save=True)
+        agent.save(path=ckpt_dir / f"{it}_sac.pkl", full_save=False)
         if Return > best_so_far:
-            agent.save(path=curve_dir / "best_ppo.pkl", full_save=True)
+            agent.save(path=curve_dir / "best_sac.pkl", full_save=False)
             best_so_far = Return
 
         epoch_end = time.time()
@@ -356,7 +408,7 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_inner_steps, steps_interv
         curve_file.write(f"{it},{Return},{Return_std},{Return_opt},{FinalReward},{FinalReward_std},{FinalReward_opt},{best_so_far},{epoch_duration}\n")
         curve_file.flush()
         os.fsync(curve_file.fileno())
-        logger.epoch_info(it, R=Return, F=FinalReward, best_so_far=best_so_far, E=agent.policy.entropy().item())
+        logger.epoch_info(it, R=Return, F=FinalReward, best_so_far=best_so_far, E=agent.policy.entropy(dataset.state).item())
 
         # Update record file
         record = ckpt_dir / "record.json"
@@ -367,7 +419,7 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_inner_steps, steps_interv
     curve_file.close()
     full_log_file.close()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--task', type=str, default='wiring_ring', help='Task name')
     parser.add_argument('--exp_name', type=str, required=True, help='Experiment name')
@@ -377,7 +429,6 @@ if __name__ == '__main__':
     parser.add_argument('--n_steps', type=int, default=100)
     parser.add_argument('--n_substeps_per_step', type=int, default=20)
     parser.add_argument('--steps_interval_split', type=int, default=1)
-    parser.add_argument('--per_fit_ratio', type=int, default=1)
     parser.add_argument('--bound', type=float, default=0.01)
     parser.add_argument('--angle_bound', type=float, default=0.1)
     parser.add_argument('--scene_version', type=int, default=1)
@@ -397,50 +448,48 @@ if __name__ == '__main__':
     torch.set_default_dtype(torch.float32)
     TorchUtils.set_default_device('cuda:0')
     n_envs = args.n_envs
-    ppo_params = dict(
-        actor_optimizer={
-            'class': optim.Adam,
-            'params': {'lr': 5e-4}
-        },
-        n_epochs_policy=5,
-        batch_size=2048,
-        eps_ppo=.2,
-        lam=.95,
-        ent_coeff=0.005,
-        clip_grad_norm=0.5
-    )
-    policy_params = dict(
-        std_0=1.0,
-        n_features=[256, 128, 64],
-        use_cuda=True
-    )
     critic_params = dict(
-        network=Network,
-        optimizer={
-            'class': optim.Adam,
-            'params': {'lr': 5e-4}
-        },
-        loss=F.smooth_l1_loss,
-        n_features=[256, 128, 64],
-        batch_size=2048,
-        use_cuda=True,
+        network=CriticNetwork,
+        optimizer={'class': optim.Adam,
+                'params': {'lr': 1e-4}},
+        loss=F.mse_loss,
         output_shape=(1,)
     )
+    sac_params = {
+        'actor_n_features': [256, 128, 64],
+        'critic_n_features': 256,
+        'actor_optimizer': {
+            'class': optim.Adam,
+            'params': {'lr': 1e-4},
+            'clipping': {
+                'method': torch.nn.utils.clip_grad_norm_,
+                'params': {'max_norm': 0.5}
+            }
+        },
+        'batch_size': 2048,
+        'initial_replay_size': 10000,
+        'max_replay_size': 200000,
+        'warmup_transitions': 20000,
+        'tau': 0.005,
+        'lr_alpha': 5e-5,
+        'log_std_min': -5.0,
+        'log_std_max': 1.0
+    }
 
+    # Setup for: 10 envs, 10 steps/trajectory, 20 trajectories before policy update
     n_trajectories = args.n_traj  # Number of trajectories to collect per env
 
     experiment(
-        alg=RudinPPO,
+        alg=SAC,
         n_envs=n_envs,
         n_epochs=args.n_epochs,
         n_outer_steps=args.n_steps,
         n_inner_steps=args.n_substeps_per_step,
         steps_interval_split=args.steps_interval_split,
         n_steps=n_envs * args.n_steps * n_trajectories,
-        n_steps_per_fit=(n_envs * args.n_steps * n_trajectories) // args.per_fit_ratio,
+        n_steps_per_fit=n_envs,
         n_episodes_test=n_envs,
-        alg_params=ppo_params,
-        policy_params=policy_params,
+        alg_params=sac_params,
         critic_params=critic_params,
         task=args.task,
         exp_name=args.exp_name,
