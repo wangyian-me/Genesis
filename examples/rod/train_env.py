@@ -71,6 +71,7 @@ class Train_Env():
         self.control_dist_init = None
         self.debug_point_nodes = list()
 
+        self.cmaes_initialized = False
         self.rl_initialized = False
 
     def construct_traj_optim(self, max_ddist=0.1, max_grad_norm=1000, debug=False):
@@ -129,6 +130,16 @@ class Train_Env():
 
     def reset(self, debug=False, envs_idx=None):
         raise NotImplementedError()
+
+    def init_cmaes_env(
+        self,
+        n_steps_sub=10,
+        eval_version=3,
+    ):
+        self._cmaes_n_steps_sub = n_steps_sub
+        self._cmaes_eval_version = eval_version
+
+        self.cmaes_initialized = True
 
     # # # # # # RL Utils # # # # # #
     def compute_observation(self):
@@ -239,10 +250,13 @@ class Train_Env():
         pass
 
     def eval_traj(self, trajs, debug=False, **kwargs):
-        if self.scene_version == 1:
+        assert self.cmaes_initialized, "CMA-ES environment not initialized. Call init_cmaes_env() first."
+        if self._cmaes_eval_version == 1:
             return self.eval_traj_v1(trajs, debug=debug)
-        elif self.scene_version == 2:
+        elif self._cmaes_eval_version == 2:
             return self.eval_traj_v2(trajs, debug=debug, **kwargs)
+        elif self._cmaes_eval_version == 3:
+            return self.eval_traj_v3(trajs, debug=debug, **kwargs)
 
     def eval_traj_v1(self, trajs, debug=False):
         """
@@ -410,6 +424,9 @@ class Train_Env():
         return final.astype(np.float32)
 
     def eval_traj_v2(self, trajs, **kwargs):
+        raise NotImplementedError()
+
+    def eval_traj_v3(self, trajs, **kwargs):
         raise NotImplementedError()
 
     def adaptive_scale(self, trajs, deltas, ratio=0.1):

@@ -267,7 +267,10 @@ def optimize_trajectory(
     if log_dir is not None:
         _ensure_dir(log_dir)
         _save_run_config(log_dir, {
+            "n_envs": getattr(env, "n_envs", None),
             "n_steps": n_steps,
+            "n_steps_sub": getattr(env, "_cmaes_n_steps_sub", None),
+            "eval_version": getattr(env, "_cmaes_eval_version", None),
             "act_dim": act_dim,
             "popsize": popsize,
             "sigma0": sigma0,
@@ -333,6 +336,8 @@ def optimize_trajectory(
                 'verb_disp': 0,
             }
         )
+
+    assert es.popsize == popsize, f"CMA-ES popsize {es.popsize} != expected {popsize}"
 
     batch_size = env.n_envs
     it = start_iter
@@ -473,10 +478,19 @@ if __name__ == "__main__":
         '--seed', type=int, default=123,
     )
     parser.add_argument(
+        '--n_envs', type=int, default=10,
+    )
+    parser.add_argument(
         '--max_iter', type=int, default=20,
     )
     parser.add_argument(
         '--n_steps', type=int, default=10,
+    )
+    parser.add_argument(
+        '--n_steps_sub', type=int, default=10,
+    )
+    parser.add_argument(
+        '--eval_version', type=int, default=2,
     )
     parser.add_argument(
         '--vis_traj', type=str, default=None, 
@@ -505,7 +519,12 @@ if __name__ == "__main__":
     exp_name = f"{args.exp_name}" if args.exp_name is not None else "cmaes"
     trial_name = f"trial_{args.task}/{exp_name}"
     log_dir = f"logs/{args.task}/{exp_name}"
-    env = _build_env(args.task, log_dir, 10, args.vis_traj, args.gui, args.scene_version)
+    env = _build_env(args.task, log_dir, args.n_envs, args.vis_traj, args.gui, args.scene_version)
+    env.init_cmaes_env(
+        n_steps_sub=args.n_steps_sub,
+        eval_version=args.eval_version,
+    )
+    print(f'CMA-ES n_steps_sub: {env._cmaes_n_steps_sub}, eval_version: {env._cmaes_eval_version}')
     n_steps = args.n_steps
 
     random.seed(args.seed)

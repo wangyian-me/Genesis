@@ -412,6 +412,147 @@ class Train_Env_Coiling(Train_Env):
 
         return final.astype(np.float32)
 
+    def eval_traj_v3(self, trajs, **kwargs):
+        """
+        Evaluate trajectories using cumulative reward.
+        """
+        assert trajs.ndim == 3, f"trajs must be (n_envs, n_steps, dof), got {trajs.shape}"
+        n_envs, n_steps, dof = trajs.shape
+        assert n_envs == self.n_envs, f"n_envs mismatch: trajs has {n_envs}, self.n_envs is {self.n_envs}"
+        n_ctrl = len(self.control_idx)
+        assert dof % 6 == 0 and dof // 6 == n_ctrl, (
+            f"dof must be 6 * len(control_idx). Got dof={dof}, len(control_idx)={n_ctrl}"
+        )
+
+        n_steps_sub = self._cmaes_n_steps_sub
+        if kwargs.get("qpos", None) is None:
+            self.qpos_seq = np.zeros((n_steps * n_steps_sub + 1, self.n_envs, len(self.control_idx) * 9))
+            self.use_qpos = False
+        else:
+            self.qpos_seq = kwargs["qpos"]
+            self.use_qpos = True
+
+        self.reset()
+
+        steps_interval = self.steps_interval
+        total_micro_steps = int(n_steps * steps_interval)
+        if total_micro_steps <= 0:
+            # Degenerate case: no steps → everyone "survives"; defer to env reward (or -100 if NaN)
+            rewards = np.asarray(self.reward(), dtype=np.float32)
+            rewards[np.isnan(rewards)] = -100.0
+            return rewards.astype(np.float32)
+
+        # Per-env status
+        alive = np.ones((self.n_envs,), dtype=bool)              # True until first failure (collision or NaN)
+        ever_nan = np.zeros((self.n_envs,), dtype=bool)          # True if verts ever became NaN
+
+        reward_accum = np.zeros((self.n_envs,), dtype=np.float32)
+
+        for i in range(n_steps):
+            # Check NaNs BEFORE micro-stepping this macro-step
+            verts_rope = self.rope.get_all_verts()  # (n_envs, n_vertices, 3)
+            nan_now = np.isnan(verts_rope).any(axis=(1, 2))
+            newly_nan = nan_now & alive
+            if newly_nan.any():
+                ever_nan[newly_nan] = True
+                alive[newly_nan] = False
+
+            # Early exit if everyone is already NaN
+            if ever_nan.all():
+                break
+
+            # If no env is alive anymore, we can stop
+            if not alive.any():
+                break
+
+            # Prepare interpolation to targets for this macro-step
+            delta = trajs[:, i].reshape(self.n_envs, 6)            # (n_envs, 6), n_ctrl == 1!
+            delta = torch.tensor(delta, dtype=gs.tc_float)
+
+            n_intervals_per_substep = steps_interval // n_steps_sub
+
+            for j in range(n_steps_sub):
+                if not alive.any():
+                    break
+
+                # NOTE: Do not move already-failed envs
+                delta[~alive, :] = 0.0
+
+                alpha = 1 / n_steps_sub
+                dxyz = alpha * delta[:, :3]
+                drot = alpha * delta[:, 3:]
+
+                if self.use_qpos:
+                    qpos = self.qpos_seq[i * n_steps_sub + j + 1]
+                    qpos = torch.tensor(qpos, dtype=gs.tc_float)
+                    self.c1.robot.control_dofs_position(qpos[..., :-2], self.c1.motors_dof)
+                    self.c1.robot.control_dofs_position(qpos[..., -2:], self.c1.fingers_dof)
+
+                    self.c1.draw_debug_point(dxyz, min_z=0.03)
+                else:
+                    qpos = self.c1.control_robot(
+                        0, 0,
+                        dx=dxyz[:, 0], dy=dxyz[:, 1], dz=dxyz[:, 2], di=drot[:, 0], dj=drot[:, 1], dk=drot[:, 2], min_z=0.03
+                    )
+                    self.qpos_seq[i * n_steps_sub + j + 1] = qpos.cpu().numpy()
+
+                for k in range(n_intervals_per_substep):
+                    self.scene.step()
+
+                    if (k + j * n_intervals_per_substep) % 10 == 0:
+                        for cid, cam in enumerate(self.cameras):
+                            img = cam.render()[0]
+                            self.frames[cid].append(img)
+
+                # Post-step: detect collisions
+                collided = self.rope._solver.vertices_collision.collided.to_numpy()  # (n_verts, n_envs)
+                collided = collided.T  # (n_envs, n_vertices)
+                collided_geom_idx = self.rope._solver.vertices_collision.geom_idx.to_numpy()  # (n_verts, n_envs)
+                collided_geom_idx = collided_geom_idx.T  # (n_envs, n_verts)
+                # check all verts
+                verts_to_check = np.arange(self.rope.n_vertices) + self.rope._v_start
+                collided_precheck = collided[:, verts_to_check]                    # (n_envs, n_verts_to_check)
+                collided_geom_is_registered = np.zeros_like(collided_precheck, dtype=bool)  # (n_envs, n_verts_to_check)
+                for registered_geom_idx in self.gripper_geom_indices:
+                    collided_geom_is_registered |= (collided_geom_idx[:, verts_to_check] == registered_geom_idx)
+                # collided ctrl is collided with geom idx not in registered gripper geometries
+                collided_ctrl = collided_precheck & ~collided_geom_is_registered
+                collided_ctrl = collided_ctrl.any(axis=1)  # (n_envs,)
+
+                newly_collided = collided_ctrl & alive
+                if newly_collided.any():
+                    alive[newly_collided] = False
+
+                # Post-step: detect ik convergence
+                if hasattr(self.c1, 'convergence'):
+                    newly_not_converged = ~self.c1.convergence & alive
+                    if newly_not_converged.any():
+                        alive[newly_not_converged] = False
+
+                # Post-step: detect NaNs that emerge during micro-stepping
+                verts_rope_post = self.rope.get_all_verts()
+                nan_after = np.isnan(verts_rope_post).any(axis=(1, 2))
+                newly_nan_after = nan_after & alive
+                if newly_nan_after.any():
+                    ever_nan[newly_nan_after] = True
+                    alive[newly_nan_after] = False
+
+                # Collect reward here
+                substep_rewards_pre = np.asarray(self.reward(), dtype=np.float32)
+                substep_rewards_nan = np.isnan(substep_rewards_pre)
+
+                substep_rewards = np.full((self.n_envs,), 0.0, dtype=np.float32)
+                failed = ~alive | substep_rewards_nan
+                substep_rewards[failed] = 0.0
+                substep_rewards[~failed] = substep_rewards_pre[~failed] * 0.1 + 3.0
+                reward_accum += substep_rewards
+
+        if not self.use_qpos:
+            self.qpos_seq = self.qpos_seq.transpose(1, 0, 2)  # (n_envs, n_steps * n_steps_sub + 1, n_dofs)
+            self.qpos_seq = self.qpos_seq.astype(np.float32)
+
+        return reward_accum.astype(np.float32)
+
     def compute_observation(self):
         verts_rope = self.rope.get_all_verts_tc()                   # (n_envs, n_verts, 3)
         obs_rope_pos = verts_rope.reshape(self.n_envs, -1).to(torch.float32)

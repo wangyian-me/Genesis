@@ -37,7 +37,10 @@ def main():
                     help="Per-step angle bound for each control point.")
     ap.add_argument('--sigma', type=float, default=0.005)
     ap.add_argument('--exp_name', type=str, required=True)
+    ap.add_argument('--n_envs', type=int, default=10)
     ap.add_argument('--n_steps', type=int, default=10)
+    ap.add_argument('--n_steps_sub', type=int, default=10)
+    ap.add_argument('--eval_version', type=int, default=2)
     ap.add_argument('--max_iter', type=int, default=20)
     ap.add_argument('--scene_version', type=int, default=1)
     args = ap.parse_args()
@@ -66,8 +69,11 @@ def main():
         cmd = ["python", "run_cmaes.py", "--task", args.task, "--seed", str(args.seed), "--bound", str(args.bound), "--sigma", str(args.sigma)]
         if args.exp_name is not None:
             cmd.extend(["--exp_name", str(args.exp_name)])
+        cmd.extend(["--n_envs", str(args.n_envs)])
         cmd.extend(["--n_steps", str(args.n_steps)])
+        cmd.extend(["--n_steps_sub", str(args.n_steps_sub)])
         cmd.extend(["--angle_bound", str(args.angle_bound)])
+        cmd.extend(["--eval_version", str(args.eval_version)])
         cmd.extend(["--scene_version", str(args.scene_version)])
 
     print(f"[supervisor] Starting loop. Will run: {' '.join(cmd)}")
