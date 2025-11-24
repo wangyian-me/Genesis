@@ -12,8 +12,8 @@ class Train_Env_Slingshot(Train_Env):
         initial_gripper_qpos = np.load("target_pos/slingshot_pregrasp_qpos.npy")
         self.initial_gripper_qpos = torch.tensor(initial_gripper_qpos, dtype=gs.tc_float)
 
-    def init_rl_env(self, n_steps=10, pos_bound=0.1, angle_bound=5.0, n_additional_obj=0, steps_interval_split=2, debug=False):
-        super().init_rl_env(n_steps, pos_bound, angle_bound, n_additional_obj, steps_interval_split, debug)
+    def init_rl_env(self, n_steps=10, pos_bound=0.1, angle_bound=5.0, n_additional_obj=0, steps_interval_split=2, l2_limit=None, action_magnitude=None, debug=False):
+        super().init_rl_env(n_steps, pos_bound, angle_bound, n_additional_obj, steps_interval_split, l2_limit, action_magnitude, debug)
 
         # Use the counter to track how many steps have been taken for each env
         self._env_step_counter = np.array([0] * self.n_envs)
