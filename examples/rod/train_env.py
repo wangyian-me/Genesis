@@ -152,9 +152,14 @@ class Train_Env():
         angle_bound = 5.0,
         n_additional_obj=0,
         steps_interval_split=2,
+        l2_limit=None,
+        action_magnitude=None,
         debug=False
     ):
-        self._l2_limit = pos_bound
+        if l2_limit is None:
+            self._l2_limit = pos_bound
+        else:
+            self._l2_limit = l2_limit
         # RL/vectorized env configuration
         self._backend = 'torch'
         if debug:
@@ -178,7 +183,12 @@ class Train_Env():
 
         act_limit = [pos_bound] * (self._act_dim // 2) + [angle_bound] * (self._act_dim // 2)
         act_limit = torch.tensor(act_limit, dtype=torch.float32)
-        self._act_magnitude = act_limit
+        if action_magnitude is None:
+            self._act_magnitude = act_limit
+        else:
+            assert len(action_magnitude) == self._act_dim, \
+                f"action_magnitude length mismatch: expected {self._act_dim}, got {len(action_magnitude)}"
+            self._act_magnitude = torch.tensor(action_magnitude, dtype=torch.float32)
         low_act = -torch.ones((self._act_dim,), dtype=torch.float32) * act_limit
         high_act = torch.ones((self._act_dim,), dtype=torch.float32) * act_limit
         action_space = Box(low_act, high_act)

@@ -127,30 +127,34 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_inner_steps, steps_interv
         scene_version=scene_version,
     )
 
+    # NOTE: SACPolicy already scale the action based on mdp.info.action_space
+    # NOTE: So, we do not manually scale the action in step_all()
+    act_mag = [pos_bound] * 3 * len(mdp.control_idx) + [angle_bound] * 3 * len(mdp.control_idx)
+
     if task == "coiling":
-        mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_additional_obj=1, steps_interval_split=steps_interval_split, debug=args.gui)
+        mdp.init_rl_env(n_outer_steps, 1.0, 1.0, 1, steps_interval_split, l2_limit=pos_bound, action_magnitude=act_mag, debug=args.gui)
     elif task == "gathering":
-        mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_additional_obj=3, steps_interval_split=steps_interval_split, debug=args.gui)
+        mdp.init_rl_env(n_outer_steps, 1.0, 1.0, 3, steps_interval_split, l2_limit=pos_bound, action_magnitude=act_mag, debug=args.gui)
     elif task == "lifting":
-        mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_additional_obj=2, steps_interval_split=steps_interval_split, debug=args.gui)
+        mdp.init_rl_env(n_outer_steps, 1.0, 1.0, 2, steps_interval_split, l2_limit=pos_bound, action_magnitude=act_mag, debug=args.gui)
     elif task == "separation":
-        mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_additional_obj=mdp.rope2.n_vertices, steps_interval_split=steps_interval_split, debug=args.gui)
+        mdp.init_rl_env(n_outer_steps, 1.0, 1.0, mdp.rope2.n_vertices, steps_interval_split, l2_limit=pos_bound, action_magnitude=act_mag, debug=args.gui)
     elif task == "slingshot":
-        mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_additional_obj=2, steps_interval_split=steps_interval_split, debug=args.gui)
+        mdp.init_rl_env(n_outer_steps, 1.0, 1.0, 2, steps_interval_split, l2_limit=pos_bound, action_magnitude=act_mag, debug=args.gui)
     elif task == "wireart":
-        mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_additional_obj=0, steps_interval_split=steps_interval_split, debug=args.gui)
+        mdp.init_rl_env(n_outer_steps, 1.0, 1.0, 0, steps_interval_split, l2_limit=pos_bound, action_magnitude=act_mag, debug=args.gui)
     elif task == "wiring_post":
-        mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_additional_obj=0, steps_interval_split=steps_interval_split, debug=args.gui)
+        mdp.init_rl_env(n_outer_steps, 1.0, 1.0, 0, steps_interval_split, l2_limit=pos_bound, action_magnitude=act_mag, debug=args.gui)
     elif task == "wrapping":
-        mdp.init_rl_env(n_steps=n_outer_steps, pos_bound=pos_bound, angle_bound=angle_bound, n_additional_obj=1, steps_interval_split=steps_interval_split, debug=args.gui)
+        mdp.init_rl_env(n_outer_steps, 1.0, 1.0, 1, steps_interval_split, l2_limit=pos_bound, action_magnitude=act_mag, debug=args.gui)
     else:
         raise ValueError(f"Unknown env_name: {task}")
 
     print(f'Max moving distance {mdp._l2_limit}x{n_outer_steps}={mdp._l2_limit * n_outer_steps} m for each control point')
     print(f'Total substeps: {n_outer_steps}x{n_inner_steps}={n_outer_steps * n_inner_steps}')
     print(f'Total RL steps: {n_steps}x{n_envs}={n_steps * n_envs}')
-    print(f'Bound: {mdp._act_magnitude}')
-    print(f'Observation dimension: {mdp._obs_dim}, Action dimension: {mdp._act_dim}, Target entropy: {-mdp.info.action_space.shape[0] / 2}')
+    print(f'Act scale: {mdp._act_magnitude}, Act space: {mdp.info.action_space._low}~{mdp.info.action_space._high}')
+    print(f'Observation dimension: {mdp._obs_dim}, Action dimension: {mdp._act_dim}, Target entropy: {-mdp.info.action_space.shape[0] * 0.5}')
     print(f'n_steps_per_fit: {n_steps_per_fit}, steps_interval_split: {steps_interval_split}')
 
     curve_dir = Path("logs") / task / exp_name
@@ -201,7 +205,8 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_inner_steps, steps_interv
             info = vars(args)
             alg_info = copy.deepcopy(alg_params)
             alg_info['actor_optimizer']['class'] = alg_info['actor_optimizer']['class'].__name__
-            alg_info['actor_optimizer']['clipping']['method'] = alg_info['actor_optimizer']['clipping']['method'].__name__
+            if alg_info['actor_optimizer'].get('clipping', None) is not None:
+                alg_info['actor_optimizer']['clipping']['method'] = alg_info['actor_optimizer']['clipping']['method'].__name__
             critic_info = copy.deepcopy(critic_params)
             critic_info['network'] = critic_info['network'].__name__
             critic_info['optimizer']['class'] = critic_info['optimizer']['class'].__name__
@@ -220,17 +225,21 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_inner_steps, steps_interv
                 alg_params['batch_size'], alg_params['initial_replay_size'],
                 alg_params['max_replay_size'], alg_params['warmup_transitions'],
                 alg_params['tau'], alg_params['lr_alpha'],
+                use_log_alpha_loss=True,
                 log_std_min=alg_params['log_std_min'], log_std_max=alg_params['log_std_max'],
-                target_entropy=-mdp.info.action_space.shape[0] / 2,
+                target_entropy=-mdp.info.action_space.shape[0] * 0.5,
                 critic_fit_params=None)
     best_so_far = -np.inf
     start_epoch = 0
     if resume:
         if args.test is None:
-            available_ckpts = natsorted(ckpt_dir.glob("*.pkl"))
-            if len(available_ckpts) > 0:
-                print(f"Resuming from checkpoint: {available_ckpts[-1]}")
-                agent = alg.load(path=available_ckpts[-1])
+            # available_ckpts = natsorted(ckpt_dir.glob("*.pkl"))
+            # if len(available_ckpts) > 0:
+            #     print(f"Resuming from checkpoint: {available_ckpts[-1]}")
+            #     agent = alg.load(path=available_ckpts[-1])
+            latest_sac = ckpt_dir / "latest_sac.pkl"
+            print(f"Resuming from checkpoint: {latest_sac}")
+            agent = alg.load(path=latest_sac)
         else:
             if args.test == "best":
                 ckpt_path = curve_dir / "best_sac.pkl"
@@ -396,7 +405,10 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_inner_steps, steps_interv
         FinalReward_opt = np.max(batch_F)
         FinalReward = np.mean(batch_F)
         FinalReward_std = np.std(batch_F)
-        agent.save(path=ckpt_dir / f"{it}_sac.pkl", full_save=False)
+        if it % 10 == 0 or it == n_epochs - 1:
+            agent.save(path=ckpt_dir / f"{it}_sac.pkl", full_save=False)
+        if it % 10 == 0 or it == n_epochs - 1:
+            agent.save(path=ckpt_dir / f"latest_sac.pkl", full_save=True)
         if Return > best_so_far:
             agent.save(path=curve_dir / "best_sac.pkl", full_save=False)
             best_so_far = Return
@@ -451,8 +463,8 @@ if __name__ == "__main__":
     critic_params = dict(
         network=CriticNetwork,
         optimizer={'class': optim.Adam,
-                'params': {'lr': 1e-4}},
-        loss=F.mse_loss,
+                'params': {'lr': 5e-4}},
+        loss=F.smooth_l1_loss,
         output_shape=(1,)
     )
     sac_params = {
@@ -460,7 +472,7 @@ if __name__ == "__main__":
         'critic_n_features': 256,
         'actor_optimizer': {
             'class': optim.Adam,
-            'params': {'lr': 1e-4},
+            'params': {'lr': 5e-4},
             'clipping': {
                 'method': torch.nn.utils.clip_grad_norm_,
                 'params': {'max_norm': 0.5}
@@ -469,11 +481,11 @@ if __name__ == "__main__":
         'batch_size': 2048,
         'initial_replay_size': 10000,
         'max_replay_size': 200000,
-        'warmup_transitions': 20000,
+        'warmup_transitions': 10000,
         'tau': 0.005,
-        'lr_alpha': 5e-5,
+        'lr_alpha': 3e-5,
         'log_std_min': -5.0,
-        'log_std_max': 1.0
+        'log_std_max': 2.0
     }
 
     # Setup for: 10 envs, 10 steps/trajectory, 20 trajectories before policy update
