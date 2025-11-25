@@ -28,6 +28,7 @@ from train_env_separation import Train_Env_Separation
 from train_env_slingshot import Train_Env_Slingshot
 from train_env_wireart import Train_Env_Wireart
 from train_env_wiring_post import Train_Env_Wiring_post
+from train_env_wiring_ring import Train_Env_Wiring_ring
 from train_env_wrapping import Train_Env_Wrapping
 
 class CriticNetwork(nn.Module):
@@ -115,6 +116,7 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_inner_steps, steps_interv
         "slingshot": Train_Env_Slingshot,
         "wireart": Train_Env_Wireart,
         "wiring_post": Train_Env_Wiring_post,
+        "wiring_ring": Train_Env_Wiring_ring,
         "wrapping": Train_Env_Wrapping,
     }
     mdp: Train_Env = env_dict[task](
@@ -123,7 +125,7 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_inner_steps, steps_interv
         n_envs=n_envs,
         n_substeps_per_step=n_inner_steps,
         GUI=args.gui,
-        camera=False,
+        camera=False if args.test is None else True,
         scene_version=scene_version,
     )
 
@@ -144,6 +146,8 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_inner_steps, steps_interv
     elif task == "wireart":
         mdp.init_rl_env(n_outer_steps, 1.0, 1.0, 0, steps_interval_split, l2_limit=pos_bound, action_magnitude=act_mag, debug=args.gui)
     elif task == "wiring_post":
+        mdp.init_rl_env(n_outer_steps, 1.0, 1.0, 0, steps_interval_split, l2_limit=pos_bound, action_magnitude=act_mag, debug=args.gui)
+    elif task == "wiring_ring":
         mdp.init_rl_env(n_outer_steps, 1.0, 1.0, 0, steps_interval_split, l2_limit=pos_bound, action_magnitude=act_mag, debug=args.gui)
     elif task == "wrapping":
         mdp.init_rl_env(n_outer_steps, 1.0, 1.0, 1, steps_interval_split, l2_limit=pos_bound, action_magnitude=act_mag, debug=args.gui)
@@ -302,6 +306,8 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_inner_steps, steps_interv
         print(f"Test | Best Return: {Return_opt}, Best Final Reward: {FinalReward_opt}")
 
         test_log_file.close()
+
+        mdp.save_animation(save_dir=curve_dir.as_posix())
 
         return
 
