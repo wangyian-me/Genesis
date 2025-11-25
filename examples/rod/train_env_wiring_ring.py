@@ -29,6 +29,10 @@ class Train_Env_Wiring_ring(Train_Env):
             ),
             show_viewer=GUI,
         )
+        init_gripper_qpos1 = np.load('target_pos/wiring_ring_pregrasp_qpos1.npy')
+        self.init_gripper_qpos1 = torch.tensor(init_gripper_qpos1, dtype=gs.tc_float)
+        init_gripper_qpos2 = np.load('target_pos/wiring_ring_pregrasp_qpos2.npy')
+        self.init_gripper_qpos2 = torch.tensor(init_gripper_qpos2, dtype=gs.tc_float)
         super().__init__(task, scene=scene, GUI=GUI, camera=camera, n_envs=n_envs, n_substeps_per_step=n_substeps_per_step, log_dir=log_dir, requires_grad=requires_grad, scene_version=scene_version)
 
         self.ring1_center = np.array([0.27, 0.0, self.rope.material.segment_radius], dtype=gs.np_float)
@@ -55,11 +59,7 @@ class Train_Env_Wiring_ring(Train_Env):
 
         # Use the counter to track how many steps have been taken for each env
         self._env_step_counter = np.array([0] * self.n_envs)
-
-        init_gripper_qpos1 = np.load('target_pos/wiring_ring_pregrasp_qpos1.npy')
-        self.init_gripper_qpos1 = torch.tensor(init_gripper_qpos1, dtype=gs.tc_float)
-        init_gripper_qpos2 = np.load('target_pos/wiring_ring_pregrasp_qpos2.npy')
-        self.init_gripper_qpos2 = torch.tensor(init_gripper_qpos2, dtype=gs.tc_float)
+        self._min_z = self.rope.material.segment_radius
 
     def construct_scene(self, camera):
         plane = self.scene.add_entity(
@@ -271,7 +271,7 @@ class Train_Env_Wiring_ring(Train_Env):
         self.gripper_geom_indices = gripper_geom_indices
         self.scene.rod_solver.register_gripper_geom_indices(gripper_geom_indices)
         print('gripper geom rigstered', self.scene.rod_solver._geom_indices)
-        self.scene.build(n_envs=self.n_envs, env_spacing=(1, 1))
+        self.scene.build(n_envs=self.n_envs, env_spacing=(2, 2))
 
         self.control_idx = [3, 22]
         self.action_dim = len(self.control_idx) * 6
@@ -307,7 +307,7 @@ class Train_Env_Wiring_ring(Train_Env):
             initial_pos=init_pos_f2.tolist(),
             initial_gripper_gap=self._open_gap,
         )
-        self.init_gripper_qpos2[self.c2.fingers_dof] = 0.01
+        self.init_gripper_qpos2[self.c2.fingers_dof] = 0.012
 
     def construct_cameras(self):
         cameras = list()
@@ -424,7 +424,9 @@ class Train_Env_Wiring_ring(Train_Env):
     def reward(self):
         # [n_envs, n_verts, 3]
         verts_batch = self.rope.get_all_verts()
-        assert verts_batch.shape[1] == self.target_pos.shape[0]
+        assert verts_batch.shape[1] == self.target_pos_sub1.shape[0]
+        assert verts_batch.shape[1] == self.target_pos_sub2.shape[0]
+        assert verts_batch.shape[1] == self.target_pos_sub3.shape[0]
 
         rewards = []
         for i in range(self.n_envs):
@@ -518,38 +520,77 @@ class Train_Env_Wiring_ring(Train_Env):
 
             self.c1.control_robot(self._open_gap, self._open_gap, envs_idx=envs_idx)
             self.c2.control_robot(-1, -1, g_dof_use_force=True, envs_idx=envs_idx)
-            for i in range(20):
+            for i in range(30):
                 self.scene.step()
                 if i % 10 == 0:
                     for cid, cam in enumerate(self.cameras):
                         img = cam.render()[0]
                         self.frames[cid].append(img)
 
+            self._env_step_counter[np.asarray(envs_idx_)] = 0
+
         fixed_ring1_np = np.ones((self.n_envs, self.ring1.n_vertices), dtype=bool)
         self.ring1.set_fixed(0, fixed_ring1_np)
         fixed_ring2_np = np.ones((self.n_envs, self.ring2.n_vertices), dtype=bool)
         self.ring2.set_fixed(0, fixed_ring2_np)
 
+    def _check_feasible_transition_sub1_to_sub2(self) -> np.ndarray:
+        feasible = torch.ones((self.n_envs,), dtype=torch.bool)
+
+        # check if the 4th vertex has x < ring1 center x
+        vert_pos = self.rope.get_all_verts_tc()[:, 4, :]    # (n_envs, 3)
+        feasible = feasible & (self.ring1_center_tc[0] - vert_pos[:, 0] > 0.05)
+
+        # check if the 4th vertex is through ring1
+        vec_center_to_vert = vert_pos - self.ring1_center_tc   # (n_envs, 3)
+        vec_center_to_vert_ = vec_center_to_vert / (torch.norm(vec_center_to_vert, dim=1, keepdim=True) + 1e-8)    # check alignment with ring normal
+        alignment = torch.einsum('ij, j -> i', vec_center_to_vert_, self.ring1_normal_tc)
+        feasible = feasible & (alignment > 0)
+        return feasible.cpu().numpy()
+    
+    def _check_feasible_transition_sub2_to_sub3(self) -> np.ndarray:
+        feasible = torch.ones((self.n_envs,), dtype=torch.bool)
+
+        # check if the 4th vertex has x < ring1 center x
+        vert_pos = self.rope.get_all_verts_tc()[:, 4, :]    # (n_envs, 3)
+        feasible = feasible & (self.ring1_center_tc[0] - vert_pos[:, 0] > 0.05)
+
+        # check if the 4th vertex is through ring1
+        vec_center_to_vert = vert_pos - self.ring1_center_tc   # (n_envs, 3)
+        vec_center_to_vert_ = vec_center_to_vert / (torch.norm(vec_center_to_vert, dim=1, keepdim=True) + 1e-8)    # check alignment with ring normal
+        alignment = torch.einsum('ij, j -> i', vec_center_to_vert_, self.ring1_normal_tc)
+        feasible = feasible & (alignment > 0)
+
+        # check if the 18th vertex has x < ring1 center x
+        vert_pos = self.rope.get_all_verts_tc()[:, 18, :]    # (n_envs, 3)
+        feasible = feasible & (self.ring1_center_tc[1] - vert_pos[:, 1] > 0.05)
+
+        # check if the 18th vertex is through ring1
+        vec_center_to_vert = vert_pos - self.ring1_center_tc   # (n_envs, 3)
+        vec_center_to_vert_ = vec_center_to_vert / (torch.norm(vec_center_to_vert, dim=1, keepdim=True) + 1e-8)    # check alignment with ring normal
+        alignment = torch.einsum('ij, j -> i', vec_center_to_vert_, self.ring2_normal_tc)
+        feasible = feasible & (alignment > 0)
+        return feasible.cpu().numpy()
+
     def _transition_sub1_to_sub2(self, envs_idx: torch.Tensor):
-        ef1_pos = self.c1.ef.get_pos()
         target_pos = self.rope.get_all_verts_tc()[:, 4]         # fetch the 4th vertex
         target_pos[:, 2] = 0.013
 
-        ef1_pos_ = ef1_pos[envs_idx]
-        target_pos_ = target_pos[envs_idx]
-
-        dxyz = target_pos_ - ef1_pos_
-        self.c1.control_robot(self._open_gap, self._open_gap, dx=dxyz[:, 0], dy=dxyz[:, 1], dz=dxyz[:, 2], envs_idx=envs_idx)
-        self.c2.control_robot(self._open_gap * 2, self._open_gap * 2, envs_idx=envs_idx)
-        for i in range(40):
+        self.c1.set_robot(
+            0.012, 0.012, pos=target_pos, envs_idx=envs_idx, min_z=self._min_z
+        )
+        self.c2.set_robot(
+            self._open_gap, self._open_gap, envs_idx=envs_idx, min_z=self._min_z
+        )
+        for i in range(10):
             self.scene.step()
             if i % 10 == 0:
                 for cid, cam in enumerate(self.cameras):
                     img = cam.render()[0]
                     self.frames[cid].append(img)
 
-        self.c1.control_robot(0, 0, envs_idx=envs_idx)
-        self.c2.control_robot(self._open_gap * 2, self._open_gap * 2, envs_idx=envs_idx)
+        self.c1.control_robot(0, 0, envs_idx=envs_idx, min_z=self._min_z)
+        self.c2.control_robot(self._open_gap * 2, self._open_gap * 2, envs_idx=envs_idx, min_z=self._min_z)
         for i in range(80):
             self.scene.step()
             if i % 10 == 0:
@@ -558,25 +599,24 @@ class Train_Env_Wiring_ring(Train_Env):
                     self.frames[cid].append(img)
 
     def _transition_sub2_to_sub3(self, envs_idx: torch.Tensor):
-        ef2_pos = self.c2.ef.get_pos()
         target_pos = self.rope.get_all_verts_tc()[:, 18]         # fetch the 18th vertex
         target_pos[:, 2] = 0.013
 
-        ef2_pos_ = ef2_pos[envs_idx]
-        target_pos_ = target_pos[envs_idx]
-
-        dxyz = target_pos_ - ef2_pos_
-        self.c1.control_robot(self._open_gap * 2, self._open_gap * 2, envs_idx=envs_idx)
-        self.c2.control_robot(self._open_gap, self._open_gap, dx=dxyz[:, 0], dy=dxyz[:, 1], dz=dxyz[:, 2], envs_idx=envs_idx)
-        for i in range(40):
+        self.c1.set_robot(
+            self._open_gap, self._open_gap, envs_idx=envs_idx, min_z=self._min_z
+        )
+        self.c2.set_robot(
+            0.012, 0.012, pos=target_pos, envs_idx=envs_idx, min_z=self._min_z
+        )
+        for i in range(10):
             self.scene.step()
             if i % 10 == 0:
                 for cid, cam in enumerate(self.cameras):
                     img = cam.render()[0]
                     self.frames[cid].append(img)
 
-        self.c1.control_robot(self._open_gap * 2, self._open_gap * 2, envs_idx=envs_idx)
-        self.c2.control_robot(0, 0, envs_idx=envs_idx)
+        self.c1.control_robot(self._open_gap * 2, self._open_gap * 2, envs_idx=envs_idx, min_z=self._min_z)
+        self.c2.control_robot(0, 0, envs_idx=envs_idx, min_z=self._min_z)
         for i in range(80):
             self.scene.step()
             if i % 10 == 0:
@@ -688,24 +728,22 @@ class Train_Env_Wiring_ring(Train_Env):
 
             if c1_open.all():
                 qpos1 = self.c1.control_robot(
-                    self._open_gap, self._open_gap,
-                    dx=dxyz1[:, 0], dy=dxyz1[:, 1], dz=dxyz1[:, 2], di=drot1[:, 0], dj=drot1[:, 1], dk=drot1[:, 2], min_z=0.013
+                    self._open_gap, self._open_gap, min_z=self._min_z
                 )
                 convergence_c1 = self.c1.convergence
                 qpos2 = self.c2.control_robot(
                     0, 0,
-                    dx=dxyz2[:, 0], dy=dxyz2[:, 1], dz=dxyz2[:, 2], di=drot2[:, 0], dj=drot2[:, 1], dk=drot2[:, 2], min_z=0.013
+                    dx=dxyz2[:, 0], dy=dxyz2[:, 1], dz=dxyz2[:, 2], di=drot2[:, 0], dj=drot2[:, 1], dk=drot2[:, 2], min_z=self._min_z
                 )
                 convergence_c2 = self.c2.convergence
             elif not c1_open.any():
                 qpos1 = self.c1.control_robot(
                     0, 0,
-                    dx=dxyz1[:, 0], dy=dxyz1[:, 1], dz=dxyz1[:, 2], di=drot1[:, 0], dj=drot1[:, 1], dk=drot1[:, 2], min_z=0.013
+                    dx=dxyz1[:, 0], dy=dxyz1[:, 1], dz=dxyz1[:, 2], di=drot1[:, 0], dj=drot1[:, 1], dk=drot1[:, 2], min_z=self._min_z
                 )
                 convergence_c1 = self.c1.convergence
                 qpos2 = self.c2.control_robot(
-                    self._open_gap, self._open_gap,
-                    dx=dxyz2[:, 0], dy=dxyz2[:, 1], dz=dxyz2[:, 2], di=drot2[:, 0], dj=drot2[:, 1], dk=drot2[:, 2], min_z=0.013
+                    self._open_gap, self._open_gap, min_z=self._min_z
                 )
                 convergence_c2 = self.c2.convergence
             else:
@@ -717,14 +755,12 @@ class Train_Env_Wiring_ring(Train_Env):
                 convergence_c2 = np.empty((self.n_envs,), dtype=bool)
 
                 qpos1_open = self.c1.control_robot(
-                    self._open_gap, self._open_gap,
-                    dx=dxyz1[:, 0], dy=dxyz1[:, 1], dz=dxyz1[:, 2], di=drot1[:, 0], dj=drot1[:, 1], dk=drot1[:, 2], min_z=0.013,
-                    envs_idx=c1_open_ids
+                    self._open_gap, self._open_gap, min_z=self._min_z, envs_idx=c1_open_ids
                 )
                 convergence_c1[c1_open_ids] = self.c1.convergence[c1_open_ids]
                 qpos1_close = self.c1.control_robot(
-                    self._open_gap, self._open_gap,
-                    dx=dxyz1[:, 0], dy=dxyz1[:, 1], dz=dxyz1[:, 2], di=drot1[:, 0], dj=drot1[:, 1], dk=drot1[:, 2], min_z=0.013,
+                    0, 0,
+                    dx=dxyz1[:, 0], dy=dxyz1[:, 1], dz=dxyz1[:, 2], di=drot1[:, 0], dj=drot1[:, 1], dk=drot1[:, 2], min_z=self._min_z,
                     envs_idx=c1_close_ids
                 )
                 convergence_c1[c1_close_ids] = self.c1.convergence[c1_close_ids]
@@ -733,14 +769,12 @@ class Train_Env_Wiring_ring(Train_Env):
                 qpos1[c1_close_ids, :] = qpos1_close
 
                 qpos2_open = self.c2.control_robot(
-                    self._open_gap, self._open_gap,
-                    dx=dxyz2[:, 0], dy=dxyz2[:, 1], dz=dxyz2[:, 2], di=drot2[:, 0], dj=drot2[:, 1], dk=drot2[:, 2], min_z=0.013,
-                    envs_idx=c1_close_ids
+                    self._open_gap, self._open_gap, min_z=self._min_z, envs_idx=c1_close_ids
                 )
                 convergence_c2[c1_close_ids] = self.c2.convergence[c1_close_ids]
                 qpos2_close = self.c2.control_robot(
                     0, 0,
-                    dx=dxyz2[:, 0], dy=dxyz2[:, 1], dz=dxyz2[:, 2], di=drot2[:, 0], dj=drot2[:, 1], dk=drot2[:, 2], min_z=0.013,
+                    dx=dxyz2[:, 0], dy=dxyz2[:, 1], dz=dxyz2[:, 2], di=drot2[:, 0], dj=drot2[:, 1], dk=drot2[:, 2], min_z=self._min_z,
                     envs_idx=c1_open_ids
                 )
                 convergence_c2[c1_open_ids] = self.c2.convergence[c1_open_ids]
@@ -795,7 +829,14 @@ class Train_Env_Wiring_ring(Train_Env):
                 absorbing[newly_nan_after] = True
                 alive[newly_nan_after] = False
 
-        self._env_step_counter[~absorbing] += 1
+        self._env_step_counter[alive] += 1
+
+        # Check and perform subtask transitions
+        # if not feasible, mark as failed
+        not_able_to_trans12 = (self._env_step_counter == 40) & alive & ~self._check_feasible_transition_sub1_to_sub2()
+        if not_able_to_trans12.any():
+            absorbing[not_able_to_trans12] = True
+            alive[not_able_to_trans12] = False
 
         needs_trans_12 = (self._env_step_counter == 40) & alive
         if needs_trans_12.any():
@@ -816,6 +857,13 @@ class Train_Env_Wiring_ring(Train_Env):
             if newly_lost.any():
                 absorbing[newly_lost] = True
                 alive[newly_lost] = False
+
+        # Check and perform subtask transitions
+        # if not feasible, mark as failed
+        not_able_to_trans23 = (self._env_step_counter == 80) & alive & ~self._check_feasible_transition_sub2_to_sub3()
+        if not_able_to_trans23.any():
+            absorbing[not_able_to_trans23] = True
+            alive[not_able_to_trans23] = False
 
         needs_trans_23 = (self._env_step_counter == 80) & alive
         if needs_trans_23.any():
@@ -845,7 +893,7 @@ class Train_Env_Wiring_ring(Train_Env):
         rewards = np.full((self.n_envs,), 0.0, dtype=np.float32)
         failed = absorbing | env_rewards_nan
         rewards[failed] = 0.0
-        rewards[~failed] = env_rewards[~failed] + 2.0
+        rewards[~failed] = env_rewards[~failed]
         rewards = torch.as_tensor(rewards).reshape((self.n_envs,))
         absorbing = torch.as_tensor(absorbing).reshape((self.n_envs,))
 

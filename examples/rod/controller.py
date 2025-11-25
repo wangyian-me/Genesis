@@ -649,6 +649,66 @@ class RobotControllerPink:
 
         return self.configuration.q.copy(), converged
 
+    def set_robot(
+        self, g_dof1, g_dof2,
+        pos=None, quat=None,
+        g_dof_use_force=False, envs_idx=None, **kwargs
+    ):
+        """
+        Control robot end-effector to move by specified deltas using Pink IK.
+
+        Note: Requires dxyzijk to be either all scalars or batch shape matching number of envs
+            regardless of whether envs_idx is specified.
+
+        Parameters
+        ----------
+        g_dof1, g_dof2 : float
+            Gripper DOF commands
+        dx, dy, dz : float or torch.Tensor
+            Position delta in meters
+        di, dj, dk : float or torch.Tensor
+            Orientation delta (roll, pitch, yaw) in degrees or radians
+        g_dof_use_force : bool, optional
+            Use force control for gripper (default: False)
+        envs_idx : list of int, optional
+            Indices of environments to control (default: all)
+        **kwargs : optional
+            Additional arguments (e.g., min_z for ground constraint)
+
+        Returns
+        -------
+        qpos : torch.Tensor
+            Computed joint positions
+        """
+        if pos is None:
+            target_pos = self.pos_abs
+        else:
+            target_pos = torch.as_tensor(pos, dtype=gs.tc_float)
+            if target_pos.ndim == 1 and self.pos_abs.ndim == 2:
+                target_pos = torch.stack([target_pos] * self.scene.n_envs) if self.scene.n_envs > 0 else target_pos
+            elif target_pos.ndim != self.pos_abs.ndim:
+                raise ValueError("`pos` and `pos_abs` must have the same number of dimensions.")
+
+        # Handle minimum Z constraint
+        if kwargs.get('min_z', None) is not None:
+            min_z = torch.zeros_like(target_pos[..., 2])
+            min_z.fill_(kwargs.pop('min_z'))
+            kwargs.update({'underground': (target_pos[..., 2] < min_z).any()})
+            target_pos[..., 2] = torch.maximum(target_pos[..., 2], min_z)
+
+        if quat is None:
+            target_quat = self.quat_abs
+        else:
+            target_quat = torch.as_tensor(quat, dtype=gs.tc_float)
+            if target_quat.ndim == 1 and self.quat_abs.ndim == 2:
+                target_quat = torch.stack([target_quat] * self.scene.n_envs) if self.scene.n_envs > 0 else target_quat
+            elif target_quat.ndim != self.quat_abs.ndim:
+                raise ValueError("`quat` and `quat_abs` must have the same number of dimensions.")
+
+        qpos = self._execute_ik_control(target_pos, target_quat, g_dof1, g_dof2, g_dof_use_force, envs_idx=envs_idx, control=False, **kwargs)
+
+        return qpos
+
     def control_robot(
         self, g_dof1, g_dof2,
         dx=0., dy=0., dz=0., di=0., dj=0., dk=0.,
@@ -656,6 +716,9 @@ class RobotControllerPink:
     ):
         """
         Control robot end-effector to move by specified deltas using Pink IK.
+
+        Note: Requires dxyzijk to be either all scalars or batch shape matching number of envs
+            regardless of whether envs_idx is specified.
 
         Parameters
         ----------
@@ -669,6 +732,8 @@ class RobotControllerPink:
             Use force control for gripper (default: False)
         degrees : bool, optional
             Interpret di, dj, dk as degrees (default: True)
+        envs_idx : list of int, optional
+            Indices of environments to control (default: all)
         **kwargs : optional
             Additional arguments (e.g., min_z for ground constraint)
 
@@ -682,6 +747,8 @@ class RobotControllerPink:
             delta_pos = torch.tensor([dx, dy, dz], dtype=gs.tc_float)
         else:
             delta_pos = torch.stack([dx, dy, dz], dim=-1).to(gs.tc_float)
+            assert delta_pos.shape[0] == self.scene.n_envs, \
+                f"dxyz has batch size {delta_pos.shape[0]}, but scene has {self.scene.n_envs} envs."
         target_pos = self.pos_abs + delta_pos
 
         # Handle minimum Z constraint
@@ -696,6 +763,8 @@ class RobotControllerPink:
             delta_orient = torch.tensor([di, dj, dk], dtype=gs.tc_float)
         else:
             delta_orient = torch.stack([di, dj, dk], dim=-1).to(gs.tc_float)
+            assert delta_orient.shape[0] == self.scene.n_envs, \
+                f"dijk has batch size {delta_orient.shape[0]}, but scene has {self.scene.n_envs} envs."
         delta_quat = gu.xyz_to_quat(delta_orient, rpy=True, degrees=degrees)
 
         if delta_quat.ndim == 1 and self.quat_abs.ndim == 2:
@@ -767,7 +836,7 @@ class RobotControllerPink:
 
         return qpos
 
-    def _execute_ik_control(self, target_pos, target_quat, g_dof1, g_dof2, g_dof_use_force, envs_idx=None, **kwargs):
+    def _execute_ik_control(self, target_pos, target_quat, g_dof1, g_dof2, g_dof_use_force, envs_idx=None, control=True, **kwargs):
         """
         Execute inverse kinematics and send control commands using Pink.
 
@@ -783,6 +852,8 @@ class RobotControllerPink:
             Use force control for gripper
         envs_idx : list or None, optional
             Indices of environments to control (default: None, control all)
+        control : bool, optional
+            If True, use control commands; if False, set positions directly (default: True)
         **kwargs : optional
             Additional arguments (e.g., underground flag for debug)
 
@@ -863,22 +934,31 @@ class RobotControllerPink:
             qpos[-1] = g_dof2
 
         # Send control commands
-        self.robot.control_dofs_position(qpos[..., :-2], self.motors_dof, envs_idx=envs_idx)
+        if control:
+            self.robot.control_dofs_position(qpos[..., :-2], self.motors_dof, envs_idx=envs_idx)
+        else:
+            self.robot.set_dofs_position(qpos[..., :-2], self.motors_dof, envs_idx=envs_idx)
 
         n_envs = self.scene.n_envs if envs_idx is None else len(envs_idx)
         if g_dof_use_force:
             gripper_arg = torch.tensor([[g_dof1, g_dof2]] * n_envs) if is_batched else torch.tensor([g_dof1, g_dof2])
-            self.robot.control_dofs_force(gripper_arg, self.fingers_dof, envs_idx=envs_idx)
+            if control:
+                self.robot.control_dofs_force(gripper_arg, self.fingers_dof, envs_idx=envs_idx)
+            else:
+                self.robot.set_dofs_force(gripper_arg, self.fingers_dof, envs_idx=envs_idx)
         else:
             gripper_arg = torch.tensor([[g_dof1, g_dof2]] * n_envs) if is_batched else torch.tensor([g_dof1, g_dof2])
-            self.robot.control_dofs_position(gripper_arg, self.fingers_dof, envs_idx=envs_idx)
+            if control:
+                self.robot.control_dofs_position(gripper_arg, self.fingers_dof, envs_idx=envs_idx)
+            else:
+                self.robot.set_dofs_position(gripper_arg, self.fingers_dof, envs_idx=envs_idx)
 
         # Update internal state
         self.pos_abs = target_pos
         self.quat_abs = target_quat
 
         if is_batched:
-            self.convergence = np.empty(self.scene.n_envs, dtype=bool)
+            self.convergence = np.ones(self.scene.n_envs, dtype=bool)
             if envs_idx is None:
                 self.convergence = convergence
             else:
