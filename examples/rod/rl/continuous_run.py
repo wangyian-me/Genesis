@@ -41,7 +41,7 @@ def main():
         script_file = 'rl/ppo.py'
     elif 'sac' in args.exp_name:
         script_file = 'rl/sac.py'
-    elif 'ruding' in args.exp_name:
+    elif 'rudin' in args.exp_name:
         script_file = 'rl/rudinppo.py'
 
     if script_file is None:
