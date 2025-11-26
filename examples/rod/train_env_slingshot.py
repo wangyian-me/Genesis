@@ -254,7 +254,7 @@ class Train_Env_Slingshot(Train_Env):
         if camera:
             self.construct_cameras()
 
-        self.scene.build(n_envs=self.n_envs, env_spacing=(1, 1))
+        self.scene.build(n_envs=self.n_envs, env_spacing=(10, 10))
 
         self.control_idx = [6]
         self.action_dim = len(self.control_idx) * 6
@@ -882,6 +882,10 @@ class Train_Env_Slingshot(Train_Env):
 
             for k in range(n_intervals_per_substep):
                 self.scene.step()
+                if (k + j * n_intervals_per_substep) % 10 == 0:
+                    for cid, cam in enumerate(self.cameras):
+                        img = cam.render()[0]
+                        self.frames[cid].append(img)
 
             # Post-step: detect NaNs that emerge during micro-stepping
             verts_rope_post = self.rope.get_all_verts()
@@ -899,6 +903,10 @@ class Train_Env_Slingshot(Train_Env):
             self.c1.control_robot(0.08, 0.08, envs_idx=release_envs_idx)
             for s in range(500):
                 self.scene.step()
+                if (k + j * n_intervals_per_substep) % 10 == 0:
+                    for cid, cam in enumerate(self.cameras):
+                        img = cam.render()[0]
+                        self.frames[cid].append(img)
 
         self._env_step_counter[~absorbing] += 1
 

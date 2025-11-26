@@ -311,7 +311,33 @@ class RobotControllerPink:
         self.fingers_dof = torch.arange(n_motors_dofs, n_motors_dofs + n_fingers_dofs)
         self.debug = debug
         self.debug_point_nodes = list()
+
+        if isinstance(initial_pos, np.ndarray):
+            if initial_pos.ndim == 1:
+                assert initial_pos.shape == (3,), "initial_pos must be of shape (3,)"
+                initial_pos = np.stack([initial_pos] * self.scene.n_envs) if self.scene.n_envs > 0 else initial_pos
+            elif initial_pos.ndim == 2:
+                assert initial_pos.shape == (self.scene.n_envs, 3), "initial_pos must be of shape (n_envs, 3)"
+        elif isinstance(initial_pos, (list, tuple)):
+            assert len(initial_pos) == 3, "initial_pos must be a tuple/list of length 3"
+            initial_pos = np.array(initial_pos, dtype=gs.np_float)
+            initial_pos = np.stack([initial_pos] * self.scene.n_envs) if self.scene.n_envs > 0 else initial_pos
+        else:
+            raise ValueError("initial_pos must be a np.ndarray or tuple/list")
         self.initial_pos = initial_pos
+
+        if isinstance(initial_quat, np.ndarray):
+            if initial_quat.ndim == 1:
+                assert initial_quat.shape == (4,), "initial_quat must be of shape (4,)"
+                initial_quat = np.stack([initial_quat] * self.scene.n_envs) if self.scene.n_envs > 0 else initial_quat
+            elif initial_quat.ndim == 2:
+                assert initial_quat.shape == (self.scene.n_envs, 4), "initial_quat must be of shape (n_envs, 4)"
+        elif isinstance(initial_quat, (list, tuple)):
+            assert len(initial_quat) == 4, "initial_quat must be a tuple/list of length 4"
+            initial_quat = np.array(initial_quat, dtype=gs.np_float)
+            initial_quat = np.stack([initial_quat] * self.scene.n_envs) if self.scene.n_envs > 0 else initial_quat
+        else:
+            raise ValueError("initial_quat must be a np.ndarray or tuple/list")
         self.initial_quat = initial_quat
         self.init_gap = initial_gripper_gap
 
@@ -398,12 +424,12 @@ class RobotControllerPink:
         is_batched = self.scene.n_envs > 0
         if envs_idx is None or len(envs_idx) == self.scene.n_envs:
             # Reset all environments
-            self.pos_abs = torch.stack([pos_abs] * self.scene.n_envs) if is_batched else pos_abs
-            self.quat_abs = torch.stack([quat_abs] * self.scene.n_envs) if is_batched else quat_abs
+            self.pos_abs = pos_abs
+            self.quat_abs = quat_abs
         else:
             # Only update specified environments
-            self.pos_abs[envs_idx] = pos_abs
-            self.quat_abs[envs_idx] = quat_abs
+            self.pos_abs[envs_idx] = pos_abs[envs_idx]
+            self.quat_abs[envs_idx] = quat_abs[envs_idx]
 
         # Get current qpos as initial guess
         current_qpos = self.robot.get_qpos()
@@ -492,13 +518,13 @@ class RobotControllerPink:
             if envs_idx is None or len(envs_idx) == self.scene.n_envs:
                 pos_abs = torch.tensor(self.initial_pos, dtype=gs.tc_float)
                 quat_abs = torch.tensor(self.initial_quat, dtype=gs.tc_float)
-                self.pos_abs = torch.stack([pos_abs] * self.scene.n_envs) if is_batched else pos_abs
-                self.quat_abs = torch.stack([quat_abs] * self.scene.n_envs) if is_batched else quat_abs
+                self.pos_abs = pos_abs
+                self.quat_abs = quat_abs
             else:
                 pos_abs = torch.tensor(self.initial_pos, dtype=gs.tc_float)
                 quat_abs = torch.tensor(self.initial_quat, dtype=gs.tc_float)
-                self.pos_abs[envs_idx] = pos_abs
-                self.quat_abs[envs_idx] = quat_abs
+                self.pos_abs[envs_idx] = pos_abs[envs_idx]
+                self.quat_abs[envs_idx] = quat_abs[envs_idx]
         else:
             if envs_idx is None or len(envs_idx) == self.scene.n_envs:
                 self.pos_abs = self.ef.get_pos()

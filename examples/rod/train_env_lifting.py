@@ -182,7 +182,7 @@ class Train_Env_Lifting(Train_Env):
             gripper_geom_indices.append(gi.idx)
 
         self.gripper_geom_indices = gripper_geom_indices
-        self.scene.build(n_envs=self.n_envs, env_spacing=(1, 1))
+        self.scene.build(n_envs=self.n_envs, env_spacing=(10, 10))
 
         self.control_idx = [4, 25]
         self.action_dim = len(self.control_idx) * 6
@@ -769,6 +769,10 @@ class Train_Env_Lifting(Train_Env):
 
             for k in range(n_intervals_per_substep):
                 self.scene.step()
+                if (k + j * n_intervals_per_substep) % 10 == 0:
+                    for cid, cam in enumerate(self.cameras):
+                        img = cam.render()[0]
+                        self.frames[cid].append(img)
 
             # Post-step: detect stretching failures
             if self.control_dist_init is not None:

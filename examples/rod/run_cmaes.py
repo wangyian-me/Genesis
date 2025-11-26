@@ -88,10 +88,10 @@ def evaluate_single(env: Train_Env, traj: np.ndarray, log_dir: str, n_steps: int
         rewards = env.eval_traj(traj[None, ...], debug=True)
     elif env.scene_version == 2:
         # TODO: hack here
-        if getattr(env, "c1", None) is not None:
-            env.c1.debug = True
-        if getattr(env, "c2", None) is not None:
-            env.c2.debug = True
+        # if getattr(env, "c1", None) is not None:
+        #     env.c1.debug = True
+        # if getattr(env, "c2", None) is not None:
+        #     env.c2.debug = True
 
         if os.path.exists(os.path.join(log_dir, "best_traj.npy")):
             placeholder = np.load(os.path.join(log_dir, "best_traj.npy"))

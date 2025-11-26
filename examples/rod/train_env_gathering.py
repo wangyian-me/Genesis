@@ -252,7 +252,7 @@ class Train_Env_Gathering(Train_Env):
         self.gripper_geom_indices = gripper_geom_indices
         self.scene.rod_solver.register_gripper_geom_indices(gripper_geom_indices)
         print('gripper geom rigstered', self.scene.rod_solver._geom_indices)
-        self.scene.build(n_envs=self.n_envs, env_spacing=(1, 1))
+        self.scene.build(n_envs=self.n_envs, env_spacing=(10, 10))
 
         self.control_idx = [1, 43]
         self.action_dim = len(self.control_idx) * 6
@@ -887,6 +887,10 @@ class Train_Env_Gathering(Train_Env):
 
             for k in range(n_intervals_per_substep):
                 self.scene.step()
+                if (k + j * n_intervals_per_substep) % 10 == 0:
+                    for cid, cam in enumerate(self.cameras):
+                        img = cam.render()[0]
+                        self.frames[cid].append(img)
 
             # Post-step: detect whether gripper lost the rod
             lost = np.ones((self.n_envs,), dtype=bool)

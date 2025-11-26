@@ -53,7 +53,7 @@ def main():
         exit(0)
 
     if args.requires_grad:
-        cmd = ["python", "run_cmaes_gd.py", "--task", args.task, "--seed", str(args.seed), "--bound", str(args.bound), "--sigma", str(args.sigma)]
+        cmd = ["python", "run_cmaes_gd.py", "--task", args.task, "--seed", str(args.seed), "--max_iter", str(args.max_iter), "--bound", str(args.bound), "--sigma", str(args.sigma)]
         if args.scale_method is not None:
             cmd.extend(["--scale_method", str(args.scale_method)])
         cmd.extend(["--version", str(args.version)])
@@ -66,7 +66,7 @@ def main():
         if args.scheduler is not None:
             cmd.extend(["--scheduler", str(args.scheduler)])
     else:
-        cmd = ["python", "run_cmaes.py", "--task", args.task, "--seed", str(args.seed), "--bound", str(args.bound), "--sigma", str(args.sigma)]
+        cmd = ["python", "run_cmaes.py", "--task", args.task, "--seed", str(args.seed), "--max_iter", str(args.max_iter), "--bound", str(args.bound), "--sigma", str(args.sigma)]
         if args.exp_name is not None:
             cmd.extend(["--exp_name", str(args.exp_name)])
         cmd.extend(["--n_envs", str(args.n_envs)])

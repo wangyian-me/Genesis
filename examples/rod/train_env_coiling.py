@@ -143,7 +143,7 @@ class Train_Env_Coiling(Train_Env):
             gripper_geom_indices.append(gi.idx)
 
         self.gripper_geom_indices = gripper_geom_indices
-        self.scene.build(n_envs=self.n_envs, env_spacing=(1, 1))
+        self.scene.build(n_envs=self.n_envs, env_spacing=(10, 10))
 
         self.control_idx = [1]
         self.action_dim = len(self.control_idx) * 6
@@ -163,13 +163,13 @@ class Train_Env_Coiling(Train_Env):
         self._ef1 = self.franka1.get_link("panda_grasptarget")
 
         # NOTE: use the first env to initalize gripper pos
-        init_pos_f1 = self.rope.get_all_verts()[0, self.control_idx[0]]
-        init_pos_f1[2] = 0.013
+        init_pos_f1 = self.rope.get_all_verts()[:, self.control_idx[0]]
+        init_pos_f1[..., 2] = 0.013
         open_gap = 0.01
 
         self.c1 = RobotControllerPink(
             self.scene, self.franka1, self._ef1,
-            initial_pos=init_pos_f1.tolist(),
+            initial_pos=init_pos_f1,
             initial_gripper_gap=open_gap,
         )
 
@@ -642,6 +642,10 @@ class Train_Env_Coiling(Train_Env):
 
             for k in range(n_intervals_per_substep):
                 self.scene.step()
+                if (k + j * n_intervals_per_substep) % 10 == 0:
+                    for cid, cam in enumerate(self.cameras):
+                        img = cam.render()[0]
+                        self.frames[cid].append(img)
 
             # Post-step: detect collisions
             collided = self.rope._solver.vertices_collision.collided.to_numpy()  # (n_verts, n_envs)
