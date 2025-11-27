@@ -1,4 +1,5 @@
 import genesis as gs
+import time
 import torch
 import numpy as np
 from train_env import Train_Env
@@ -7,36 +8,62 @@ from controller import (
     rod_vertex_attached_to_gripper,
     rod_vertex_detached_from_gripper,
     RobotController,
-    RobotControllerPink
+    RobotControllerPink,
+    TrajOptimController
 )
 
 class Train_Env_Separation(Train_Env):
     def __init__(self, task='wiring', GUI=False, camera=False, log_dir="xxx/wiring", n_envs=5, n_substeps_per_step=None, requires_grad=False, scene_version=None):
         super().__init__(task, GUI=GUI, camera=camera, n_envs=n_envs, n_substeps_per_step=n_substeps_per_step, log_dir=log_dir, requires_grad=requires_grad, scene_version=scene_version)
     
-    def construct_traj_optim(self, max_ddist=0.1, max_grad_norm=1000, debug=False):
+    def construct_traj_optim(self, max_ddist=0.1, max_grad_norm=1000, controller=False, debug=False, **kwargs):
         if not self.requires_grad:
             return
 
-        self.c1 = TrajOptimCMAES(
-            scene=self.scene,
-            rod=self.rope,
-            grasp_point_ids=[self.control_idx[0]],
-            n_optim_dofs=3,
-            max_ddist=max_ddist,
-            max_grad_norm=max_grad_norm,
-            debug=debug,
-        )
+        if controller:
+            self.ca = TrajOptimController(
+                scene=self.scene,
+                rod=self.rope,
+                grasp_point_ids=[self.control_idx[0]],
+                n_stages=self._n_steps,
+                n_optim_dofs=3,
+                max_ddist=max_ddist,
+                max_grad_norm=max_grad_norm,
+                debug=debug,
+                **kwargs
+            )
 
-        self.c2 = TrajOptimCMAES(
-            scene=self.scene,
-            rod=self.rope2,
-            grasp_point_ids=[self.control_idx[1]],
-            n_optim_dofs=3,
-            max_ddist=max_ddist,
-            max_grad_norm=max_grad_norm,
-            debug=debug,
-        )
+            self.cb = TrajOptimController(
+                scene=self.scene,
+                rod=self.rope2,
+                grasp_point_ids=[self.control_idx[1]],
+                n_stages=self._n_steps,
+                n_optim_dofs=3,
+                max_ddist=max_ddist,
+                max_grad_norm=max_grad_norm,
+                debug=debug,
+                **kwargs
+            )
+        else:
+            self.ca = TrajOptimCMAES(
+                scene=self.scene,
+                rod=self.rope,
+                grasp_point_ids=[self.control_idx[0]],
+                n_optim_dofs=3,
+                max_ddist=max_ddist,
+                max_grad_norm=max_grad_norm,
+                debug=debug,
+            )
+
+            self.cb = TrajOptimCMAES(
+                scene=self.scene,
+                rod=self.rope2,
+                grasp_point_ids=[self.control_idx[1]],
+                n_optim_dofs=3,
+                max_ddist=max_ddist,
+                max_grad_norm=max_grad_norm,
+                debug=debug,
+            )
 
     def construct_scene(self, camera):
         plane = self.scene.add_entity(
@@ -304,7 +331,7 @@ class Train_Env_Separation(Train_Env):
 
             qpos1 = self.c1.set_initial_position(envs_idx=envs_idx)
             qpos2 = self.c2.set_initial_position(envs_idx=envs_idx)
-            if not self.rl_initialized:
+            if self.cmaes_initialized or self.gd_initialized:
                 if not self.use_qpos:
                     qpos1 = qpos1.cpu().numpy()
                     qpos2 = qpos2.cpu().numpy()
@@ -509,11 +536,11 @@ class Train_Env_Separation(Train_Env):
             traj_i_1 = traj_i[:, 0, :].unsqueeze(1)  # (n_envs, 1, 3)
             traj_i_2 = traj_i[:, 1, :].unsqueeze(1)  # (n_envs, 1, 3)
 
-            hpos_1, _ = self.c1.pre_apply_grad(dpos=traj_i_1, num_horizons=n_horizons)
-            hpos_2, _ = self.c2.pre_apply_grad(dpos=traj_i_2, num_horizons=n_horizons)
+            hpos_1, _ = self.ca.pre_apply_grad(dpos=traj_i_1, num_horizons=n_horizons)
+            hpos_2, _ = self.cb.pre_apply_grad(dpos=traj_i_2, num_horizons=n_horizons)
             for j in range(n_horizons):
-                self.c1.on_apply_grad(hpos_1[j])
-                self.c2.on_apply_grad(hpos_2[j])
+                self.ca.on_apply_grad(hpos_1[j])
+                self.cb.on_apply_grad(hpos_2[j])
                 self.scene.step()
 
             state = self.rope.get_state()
@@ -534,9 +561,9 @@ class Train_Env_Separation(Train_Env):
         deltas_1 = list()
         deltas_2 = list()
         for horizon_idx in horizon_ids:
-            delta_1 = self.c1.gather_grad(horizon_idx=horizon_idx)
+            delta_1 = self.ca.gather_grad(horizon_idx=horizon_idx)
             deltas_1.append(delta_1)
-            delta_2 = self.c2.gather_grad(horizon_idx=horizon_idx)
+            delta_2 = self.cb.gather_grad(horizon_idx=horizon_idx)
             deltas_2.append(delta_2)
 
         # (n_envs, n_steps, 1, 3)
@@ -1049,3 +1076,124 @@ class Train_Env_Separation(Train_Env):
         next_obs = self.compute_observation()
 
         return next_obs, rewards, absorbing, [{}] * self.n_envs
+
+    def train_one_iter_gd(self, it=None, max_it=None, skip_backward=False):
+        self.qpos_seq = np.zeros((self._n_steps + 1, self.n_envs, len(self.control_idx) * 9))
+        self.use_qpos = False
+
+        self.reset()
+
+        loss = 0.
+        total_horizon = 0
+        horizon_ids = list()
+
+        alive = np.ones((self.n_envs,), dtype=bool)
+        reward_accum = np.zeros((self.n_envs,), dtype=np.float32)
+
+        forward_elapsed = 0.0
+
+        for i in range(self._n_steps):
+            local_loss = 0.
+            n_horizons = self.steps_interval
+            # Do not move already-failed envs
+            delta_pos1 = self.ca.pre_apply_grad(stage_idx=i)
+            delta_pos2 = self.cb.pre_apply_grad(stage_idx=i)
+
+            delta_pos_list = [delta_pos1, delta_pos2]  # list of (n_envs, n_ctrl, 3)
+
+            step_qpos = list()
+            for i_g in range(len(self.control_idx)):
+                controller = getattr(self, f"c{i_g+1}")
+                qpos = controller.control_robot(
+                    0, 0,
+                    dx=delta_pos_list[i_g][:, 0, 0],
+                    dy=delta_pos_list[i_g][:, 0, 1],
+                    dz=delta_pos_list[i_g][:, 0, 2],
+                    min_z=self._min_z,
+                )
+                step_qpos.append(qpos.cpu().numpy())
+            step_qpos = np.concatenate(step_qpos, axis=-1) # (n_envs, n_ctrl * 9)
+            self.qpos_seq[i + 1] = step_qpos
+
+            forward_start_time = time.time()
+            for j in range(n_horizons):
+                self.scene.step()
+                if j % 10 == 0:
+                    for cid, cam in enumerate(self.cameras):
+                        img = cam.render()[0]
+                        self.frames[cid].append(img)
+            forward_elapsed += time.time() - forward_start_time
+
+            # Post-step: detect NaNs that emerge during micro-stepping
+            verts_rope_post = self.rope.get_all_verts()
+            nan_after = np.isnan(verts_rope_post).any(axis=(1, 2))
+            verts_rope2_post = self.rope2.get_all_verts()
+            nan_after2 = np.isnan(verts_rope2_post).any(axis=(1, 2))
+            newly_nan_after = (nan_after | nan_after2) & alive
+            if newly_nan_after.any():
+                alive[newly_nan_after] = False
+                print(f'Iteration {it}, Step {i}: envs failed due to NaNs after micro-stepping.')
+
+            # Compute loss
+            state = self.rope.get_state()
+            state2 = self.rope2.get_state()
+            total_horizon += n_horizons
+            horizon_ids.append(total_horizon)
+
+            loss_c = self.loss_criterion(state, state2)
+            loss_c += self.loss_above_plane(state)
+            loss_c += self.loss_above_plane(state2)
+            local_loss += loss_c.mean()
+
+            scale = self.scale_array[i]
+            loss += scale * local_loss
+
+            self.ca.post_check(stage_idx=i, alive=torch.as_tensor(alive))
+            self.cb.post_check(stage_idx=i, alive=torch.as_tensor(alive))
+
+            # Collect reward here
+            substep_rewards_pre = np.asarray(self.reward(), dtype=np.float32)
+            substep_rewards_nan = np.isnan(substep_rewards_pre)
+
+            substep_rewards = np.full((self.n_envs,), 0.0, dtype=np.float32)
+            failed = ~alive | substep_rewards_nan
+            substep_rewards[failed] = 0.0
+            substep_rewards[~failed] = substep_rewards_pre[~failed]
+            reward_accum += substep_rewards
+
+        out = dict()
+        out['loss'] = loss.item()
+        out['reward'] = reward_accum
+
+        backward_elapsed = 0.0
+
+        if not skip_backward:
+
+            backward_start_time = time.time()
+            loss.backward()
+            backward_elapsed = time.time() - backward_start_time
+
+            for stage_idx, horizon_idx in enumerate(horizon_ids):
+                self.ca.gather_grad(
+                    stage_idx=stage_idx,
+                    horizon_idx=horizon_idx,
+                    cur_step=it,
+                    max_step=max_it,
+                    lr=self.lr,
+                    lr_min=self.lr_min,
+                )
+                self.cb.gather_grad(
+                    stage_idx=stage_idx,
+                    horizon_idx=horizon_idx,
+                    cur_step=it,
+                    max_step=max_it,
+                    lr=self.lr,
+                    lr_min=self.lr_min,
+                )
+
+        out['forward_time'] = forward_elapsed
+        out['backward_time'] = backward_elapsed
+        out['lr'] = self.ca._lr
+
+        out['qpos_seq'] = self.qpos_seq # (n_steps, n_envs, n_ctrl * 9)
+        return out

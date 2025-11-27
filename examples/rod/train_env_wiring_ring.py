@@ -1,8 +1,10 @@
 import genesis as gs
+import time
 import torch
 import numpy as np
 from train_env import Train_Env
-from controller import RobotController, RobotControllerPink
+from gd.traj_optim_cmaes import TrajOptimCMAES
+from controller import RobotController, RobotControllerPink, TrajOptimController
 
 class Train_Env_Wiring_ring(Train_Env):
     def __init__(self, task='wiring', GUI=False, camera=False, log_dir="xxx/wiring", n_envs=5, n_substeps_per_step=None, requires_grad=False, scene_version=None):
@@ -50,8 +52,11 @@ class Train_Env_Wiring_ring(Train_Env):
 
         # NOTE: assume running from "examples/rod"
         self.target_pos_sub1 = np.load("target_pos/wiring_ring_subtask1.npy")
+        self.target_pos_sub1_tc = torch.tensor(self.target_pos_sub1, dtype=gs.tc_float)
         self.target_pos_sub2 = np.load("target_pos/wiring_ring_subtask2.npy")
+        self.target_pos_sub2_tc = torch.tensor(self.target_pos_sub2, dtype=gs.tc_float)
         self.target_pos_sub3 = np.load("target_pos/wiring_ring_finalpos.npy")
+        self.target_pos_sub3_tc = torch.tensor(self.target_pos_sub3, dtype=gs.tc_float)
         print(f'Loaded target pos from "wiring_ring_subtask1.npy", shape = {self.target_pos_sub1.shape}')
         print(f'Loaded target pos from "wiring_ring_subtask2.npy", shape = {self.target_pos_sub2.shape}')
         print(f'Loaded target pos from "wiring_ring_finalpos.npy", shape = {self.target_pos_sub3.shape}')
@@ -60,6 +65,34 @@ class Train_Env_Wiring_ring(Train_Env):
         # Use the counter to track how many steps have been taken for each env
         self._env_step_counter = np.array([0] * self.n_envs)
         self._min_z = self.rope.material.segment_radius
+
+    def construct_traj_optim(self, max_ddist=0.1, max_grad_norm=1000, controller=False, debug=False, **kwargs):
+        if not self.requires_grad:
+            return
+
+        if controller:
+            self.c = TrajOptimController(
+                scene=self.scene,
+                rod=self.rope,
+                # NOTE: Grasp point ids changes throughout the task!
+                grasp_point_ids=[self.control_idx[1]],
+                n_stages=self._n_steps,
+                n_optim_dofs=3,
+                max_ddist=max_ddist,
+                max_grad_norm=max_grad_norm,
+                debug=debug,
+                **kwargs
+            )
+        else:
+            self.c = TrajOptimCMAES(
+                scene=self.scene,
+                rod=self.rope,
+                grasp_point_ids=self.control_idx,
+                n_optim_dofs=3,
+                max_ddist=max_ddist,
+                max_grad_norm=max_grad_norm,
+                debug=debug,
+            )
 
     def construct_scene(self, camera):
         plane = self.scene.add_entity(
@@ -445,58 +478,48 @@ class Train_Env_Wiring_ring(Train_Env):
 
         return rewards
 
-    def loss_criterion(self, state):
-        # (n_envs, n_verts, 3), torch tensor
-        verts_batch = state.pos
-
-        target = torch.tensor(self.target_pos, dtype=verts_batch.dtype, device=verts_batch.device)
-
-        ring1_center = self.ring1_center_tc
-        ring2_center = self.ring2_center_tc
-        ring1_normal = self.ring1_normal_tc
-        ring2_normal = self.ring2_normal_tc
-
-        # 1. get close to the center of the rings
-        dists_ring1 = torch.norm(verts_batch - ring1_center[None, None, :], dim=2)
-        min_dists_ring1 = torch.min(dists_ring1, dim=1)[0]
-        
-        dists_ring2 = torch.norm(verts_batch - ring2_center[None, None, :], dim=2)
-        min_dists_ring2 = torch.min(dists_ring2, dim=1)[0]
-
-        # 2. encourage the rope to point through the rings
-        min_idx_ring1 = torch.argmin(dists_ring1, dim=1)
-        # avoid index out of range when accessing verts_batch[:, min_idx_ring1 + 1]
-        min_idx_ring1 = torch.minimum(min_idx_ring1, torch.tensor(verts_batch.shape[1] - 2, device=verts_batch.device))
-        # direction of the rope at the closest point to ring1
-        dir_rope_ring1 = (
-            verts_batch[torch.arange(verts_batch.shape[0]), min_idx_ring1] - 
-            verts_batch[torch.arange(verts_batch.shape[0]), min_idx_ring1 + 1]
-        )
-        dir_rope_ring1 = dir_rope_ring1 / (torch.norm(dir_rope_ring1, dim=1, keepdim=True) + 1e-8)  # normalize
-        dir_alignment_ring1 = torch.einsum('ij, j -> i', dir_rope_ring1, ring1_normal)
-        score_dir_ring1 = torch.sigmoid(dir_alignment_ring1 * 5)
-
-        min_idx_ring2 = torch.argmin(dists_ring2, dim=1)
-        # avoid index out of range when accessing verts_batch[:, min_idx_ring2 + 1]
-        min_idx_ring2 = torch.minimum(min_idx_ring2, torch.tensor(verts_batch.shape[1] - 2, device=verts_batch.device))
-        # direction of the rope at the closest point to ring2
-        dir_rope_ring2 = (
-            verts_batch[torch.arange(verts_batch.shape[0]), min_idx_ring2] - 
-            verts_batch[torch.arange(verts_batch.shape[0]), min_idx_ring2 + 1]
-        )
-        dir_rope_ring2 = dir_rope_ring2 / (torch.norm(dir_rope_ring2, dim=1, keepdim=True) + 1e-8)
-        dir_alignment_ring2 = torch.einsum('ij, j -> i', dir_rope_ring2, ring2_normal)
-        score_dir_ring2 = torch.sigmoid(dir_alignment_ring2 * 5)
-
-        # 3. follow the curve
-        # (n_envs, n_verts)
-        dists_curve = torch.norm(verts_batch - target[None, :, :], dim=2)
-
-        # combine the losses
-        loss = torch.mean(dists_curve, dim=1) + 0.1 * torch.std(dists_curve, dim=1)   # (n_envs,)
-        loss += min_dists_ring1 + min_dists_ring2 - score_dir_ring1 - score_dir_ring2
-
+    def _loss_sub1(self, verts):
+        # verts: [n_verts, 3]
+        target = self.target_pos_sub1_tc
+        dists = torch.norm(verts - target, dim=1)
+        loss = torch.mean(dists) + 0.1 * torch.std(dists)
         return loss
+
+    def _loss_sub2(self, verts):
+        # verts: [n_verts, 3]
+        target = self.target_pos_sub2_tc
+        dists = torch.norm(verts - target, dim=1)
+        loss = torch.mean(dists) + 0.1 * torch.std(dists)
+        return loss
+
+    def _loss_sub3(self, verts):
+        # verts: [n_verts, 3]
+        target = self.target_pos_sub3_tc
+        dists = torch.norm(verts - target, dim=1)
+        loss = torch.mean(dists) + 0.1 * torch.std(dists)
+        return loss
+
+    def loss_criterion(self, state):
+        # state.pos: [n_envs, n_verts, 3]
+        assert state.pos.shape[1] == self.target_pos_sub1_tc.shape[0]
+        assert state.pos.shape[1] == self.target_pos_sub2_tc.shape[0]
+        assert state.pos.shape[1] == self.target_pos_sub3_tc.shape[0]
+
+        losses = list()
+        for i in range(self.n_envs):
+            verts = state.pos[i]
+            env_step = self._env_step_counter[i]
+
+            if env_step < 40:
+                loss = self._loss_sub1(verts)
+            elif env_step < 80:
+                loss = self._loss_sub2(verts)
+            else:
+                loss = self._loss_sub3(verts)
+            losses.append(loss)
+
+        losses = torch.stack(losses)
+        return losses
 
     def reset(self, envs_idx=None):
         self.scene.reset(envs_idx=envs_idx)
@@ -598,6 +621,10 @@ class Train_Env_Wiring_ring(Train_Env):
                     img = cam.render()[0]
                     self.frames[cid].append(img)
 
+        if self.gd_initialized and isinstance(self.c, TrajOptimController):
+            # control point changed from 22 to 4
+            self.c.grasp_point_ids = [4]
+
     def _transition_sub2_to_sub3(self, envs_idx: torch.Tensor):
         target_pos = self.rope.get_all_verts_tc()[:, 18]         # fetch the 18th vertex
         target_pos[:, 2] = 0.013
@@ -623,6 +650,10 @@ class Train_Env_Wiring_ring(Train_Env):
                 for cid, cam in enumerate(self.cameras):
                     img = cam.render()[0]
                     self.frames[cid].append(img)
+
+        if self.gd_initialized and isinstance(self.c, TrajOptimController):
+            # control point changed from 4 to 18
+            self.c.grasp_point_ids = [18]
 
     def eval_traj_v3(self, trajs, **kwargs):
         """
@@ -789,6 +820,8 @@ class Train_Env_Wiring_ring(Train_Env):
                     ever_nan[newly_nan_after] = True
                     alive[newly_nan_after] = False
 
+                self._env_step_counter[alive] += 1
+
                 # Check and perform subtask transitions
                 # if not feasible, mark as failed
                 not_able_to_trans12 = (cur_substep == 39) & alive & (~self._check_feasible_transition_sub1_to_sub2())
@@ -846,7 +879,7 @@ class Train_Env_Wiring_ring(Train_Env):
                 substep_rewards = np.full((self.n_envs,), 0.0, dtype=np.float32)
                 failed = ~alive | substep_rewards_nan
                 substep_rewards[failed] = 0.0
-                substep_rewards[~failed] = np.clip(substep_rewards_pre[~failed] + 1.0, a_min=0.0)
+                substep_rewards[~failed] = np.clip(substep_rewards_pre[~failed] + 1.0, a_min=0.0, a_max=np.inf)
                 reward_accum += substep_rewards
 
         if not self.use_qpos:
@@ -1128,10 +1161,199 @@ class Train_Env_Wiring_ring(Train_Env):
         rewards = np.full((self.n_envs,), 0.0, dtype=np.float32)
         failed = absorbing | env_rewards_nan
         rewards[failed] = 0.0
-        rewards[~failed] = np.clip(env_rewards[~failed] + 1.0, a_min=0.0)
+        rewards[~failed] = np.clip(env_rewards[~failed] + 1.0, a_min=0.0, a_max=np.inf)
         rewards = torch.as_tensor(rewards).reshape((self.n_envs,))
         absorbing = torch.as_tensor(absorbing).reshape((self.n_envs,))
 
         next_obs = self.compute_observation()
 
         return next_obs, rewards, absorbing, [{}] * self.n_envs
+
+    def train_one_iter_gd(self, it=None, max_it=None, skip_backward=False):
+        self.qpos_seq = np.zeros((self._n_steps + 1, self.n_envs, len(self.control_idx) * 9))
+        self.use_qpos = False
+
+        self.reset()
+
+        loss = 0.
+        total_horizon = 0
+        horizon_ids = list()
+
+        alive = np.ones((self.n_envs,), dtype=bool)
+        reward_accum = np.zeros((self.n_envs,), dtype=np.float32)
+        
+        forward_elapsed = 0.0
+
+        for i in range(self._n_steps):
+            local_loss = 0.
+            n_horizons = self.steps_interval
+            # Do not move already-failed envs
+            delta_pos = self.c.pre_apply_grad(stage_idx=i)
+
+            c1_open = (i < 40) | (i >= 80)
+
+            step_qpos = list()
+            if c1_open:
+                qpos1 = self.c1.control_robot(
+                    self._open_gap, self._open_gap, min_z=self._min_z
+                )
+                qpos2 = self.c2.control_robot(
+                    0, 0,
+                    dx=delta_pos[:, 0, 0], dy=delta_pos[:, 0, 1], dz=delta_pos[:, 0, 2], min_z=self._min_z
+                )
+            else:
+                qpos1 = self.c1.control_robot(
+                    0, 0,
+                    dx=delta_pos[:, 0, 0], dy=delta_pos[:, 0, 1], dz=delta_pos[:, 0, 2], min_z=self._min_z
+                )
+                qpos2 = self.c2.control_robot(
+                    self._open_gap, self._open_gap, min_z=self._min_z
+                )
+            qpos1 = qpos1.cpu().numpy()
+            qpos2 = qpos2.cpu().numpy()
+            # (n_envs, n_dofs * 2)
+            qpos = np.concatenate([qpos1, qpos2], axis=-1)
+            step_qpos.append(qpos)
+            step_qpos = np.concatenate(step_qpos, axis=-1) # (n_envs, n_ctrl * 9)
+            self.qpos_seq[i + 1] = step_qpos
+
+            forward_start_time = time.time()
+            for j in range(n_horizons):
+                self.scene.step()
+                if j % 10 == 0:
+                    for cid, cam in enumerate(self.cameras):
+                        img = cam.render()[0]
+                        self.frames[cid].append(img)
+            forward_elapsed += time.time() - forward_start_time
+
+            # Post-step: detect whether gripper lost the rod
+            lost = np.ones((self.n_envs,), dtype=bool)
+            for i_b in range(self.n_envs):
+                grasp_info = self.scene.sim.coupler.get_rod_rigid_gripper_contact_info(envs_idx=i_b)
+                c1_retained = False
+                c2_retained = False
+                for k, v in grasp_info.items():
+                    if v == self.gripper_geom_indices[0] or v == self.gripper_geom_indices[1]:
+                        c1_retained = True
+                    if v == self.gripper_geom_indices[2] or v == self.gripper_geom_indices[3]:
+                        c2_retained = True
+                if c1_open:
+                    c1_retained = True  # ignore gripper 1 when it is open
+                else:
+                    c2_retained = True  # ignore gripper 2 when it is open
+                # lost either gripper
+                lost[i_b] = not (c1_retained and c2_retained)
+            newly_lost = lost & alive
+            if newly_lost.any():
+                alive[newly_lost] = False
+
+            # Post-step: detect NaNs that emerge during micro-stepping
+            verts_rope_post = self.rope.get_all_verts()
+            nan_after = np.isnan(verts_rope_post).any(axis=(1, 2))
+            newly_nan_after = nan_after & alive
+            if newly_nan_after.any():
+                alive[newly_nan_after] = False
+
+            self._env_step_counter[alive] += 1
+
+            # Check and perform subtask transitions
+            # if not feasible, mark as failed
+            not_able_to_trans12 = (i == 39) & alive & (~self._check_feasible_transition_sub1_to_sub2())
+            if not_able_to_trans12.any():
+                alive[not_able_to_trans12] = False
+
+            needs_trans_12 = (i == 39) & alive
+            if needs_trans_12.any():
+                trans_12_idx = np.where(needs_trans_12)[0]
+                trans_12_idx = torch.as_tensor(trans_12_idx)
+                self._transition_sub1_to_sub2(trans_12_idx)
+
+                # Check whether gripper 1 holds after transition
+                lost = np.ones((self.n_envs,), dtype=bool)
+                for i_b in range(self.n_envs):
+                    grasp_info = self.scene.sim.coupler.get_rod_rigid_gripper_contact_info(envs_idx=i_b)
+                    c1_retained = False
+                    for k, v in grasp_info.items():
+                        if v == self.gripper_geom_indices[0] or v == self.gripper_geom_indices[1]:
+                            c1_retained = True
+                    lost[i_b] = not c1_retained
+                newly_lost = lost & alive
+                if newly_lost.any():
+                    alive[newly_lost] = False
+
+            # Check and perform subtask transitions
+            # if not feasible, mark as failed
+            not_able_to_trans23 = (i == 79) & alive & (~self._check_feasible_transition_sub2_to_sub3())
+            if not_able_to_trans23.any():
+                alive[not_able_to_trans23] = False
+
+            needs_trans_23 = (i == 79) & alive
+            if needs_trans_23.any():
+                trans_23_idx = np.where(needs_trans_23)[0]
+                trans_23_idx = torch.as_tensor(trans_23_idx)
+                self._transition_sub2_to_sub3(trans_23_idx)
+
+                # Check whether gripper 2 holds after transition
+                lost = np.ones((self.n_envs,), dtype=bool)
+                for i_b in range(self.n_envs):
+                    grasp_info = self.scene.sim.coupler.get_rod_rigid_gripper_contact_info(envs_idx=i_b)
+                    c2_retained = False
+                    for k, v in grasp_info.items():
+                        if v == self.gripper_geom_indices[2] or v == self.gripper_geom_indices[3]:
+                            c2_retained = True
+                    lost[i_b] = not c2_retained
+                newly_lost = lost & alive
+                if newly_lost.any():
+                    alive[newly_lost] = False
+
+            # Compute loss
+            state = self.rope.get_state()
+            total_horizon += n_horizons
+            horizon_ids.append(total_horizon)
+
+            loss_c = self.loss_criterion(state) + self.loss_above_plane(state)
+            local_loss += loss_c.mean()
+
+            scale = self.scale_array[i]
+            loss += scale * local_loss
+
+            self.c.post_check(stage_idx=i, alive=torch.as_tensor(alive))
+
+            # Collect reward here
+            substep_rewards_pre = np.asarray(self.reward(), dtype=np.float32)
+            substep_rewards_nan = np.isnan(substep_rewards_pre)
+
+            substep_rewards = np.full((self.n_envs,), 0.0, dtype=np.float32)
+            failed = ~alive | substep_rewards_nan
+            substep_rewards[failed] = 0.0
+            substep_rewards[~failed] = np.clip(substep_rewards_pre[~failed] + 1.0, a_min=0.0, a_max=np.inf)
+            reward_accum += substep_rewards
+
+        out = dict()
+        out['loss'] = loss.item()
+        out['reward'] = reward_accum
+
+        backward_elapsed = 0.0
+
+        if not skip_backward:
+
+            backward_start_time = time.time()
+            loss.backward()
+            backward_elapsed = time.time() - backward_start_time
+
+            for stage_idx, horizon_idx in enumerate(horizon_ids):
+                self.c.gather_grad(
+                    stage_idx=stage_idx,
+                    horizon_idx=horizon_idx + 30,
+                    cur_step=it,
+                    max_step=max_it,
+                    lr=self.lr,
+                    lr_min=self.lr_min,
+                )
+        
+        out['forward_time'] = forward_elapsed
+        out['backward_time'] = backward_elapsed
+        out['lr'] = self.c._lr
+
+        out['qpos_seq'] = self.qpos_seq  # (n_steps, n_envs, n_ctrl * 9)
+        return out

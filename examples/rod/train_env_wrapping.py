@@ -1,4 +1,5 @@
 import genesis as gs
+import time
 import torch
 import numpy as np
 from train_env import Train_Env
@@ -299,7 +300,7 @@ class Train_Env_Wrapping(Train_Env):
 
             qpos1 = self.c1.set_initial_position(envs_idx=envs_idx)
             qpos2 = self.c2.set_initial_position(envs_idx=envs_idx)
-            if not self.rl_initialized:
+            if self.cmaes_initialized or self.gd_initialized:
                 if not self.use_qpos:
                     qpos1 = qpos1.cpu().numpy()
                     qpos2 = qpos2.cpu().numpy()
@@ -851,3 +852,123 @@ class Train_Env_Wrapping(Train_Env):
         next_obs = self.compute_observation()
 
         return next_obs, rewards, absorbing, [{}] * self.n_envs
+
+    def train_one_iter_gd(self, it=None, max_it=None, skip_backward=False):
+        self.qpos_seq = np.zeros((self._n_steps + 1, self.n_envs, len(self.control_idx) * 9))
+        self.use_qpos = False
+
+        self.reset()
+
+        loss = 0.
+        total_horizon = 0
+        horizon_ids = list()
+
+        alive = np.ones((self.n_envs,), dtype=bool)
+        reward_accum = np.zeros((self.n_envs,), dtype=np.float32)
+        
+        forward_elapsed = 0.0
+
+        for i in range(self._n_steps):
+            local_loss = 0.
+            n_horizons = self.steps_interval
+            # Do not move already-failed envs
+            delta_pos = self.c.pre_apply_grad(stage_idx=i)
+
+            step_qpos = list()
+            for i_g in range(len(self.control_idx)):
+                controller = getattr(self, f"c{i_g+1}")
+                qpos = controller.control_robot(
+                    0, 0,
+                    dx=delta_pos[:, i_g, 0],
+                    dy=delta_pos[:, i_g, 1],
+                    dz=delta_pos[:, i_g, 2],
+                    min_z=self._min_z,
+                )
+                step_qpos.append(qpos.cpu().numpy())
+            step_qpos = np.concatenate(step_qpos, axis=-1) # (n_envs, n_ctrl * 9)
+            self.qpos_seq[i + 1] = step_qpos
+
+            forward_start_time = time.time()
+            for j in range(n_horizons):
+                self.scene.step()
+                if j % 10 == 0:
+                    for cid, cam in enumerate(self.cameras):
+                        img = cam.render()[0]
+                        self.frames[cid].append(img)
+            forward_elapsed += time.time() - forward_start_time
+
+            # Post-step: detect whether gripper lost the rod
+            lost = np.ones((self.n_envs,), dtype=bool)
+            for i_b in range(self.n_envs):
+                grasp_info = self.scene.sim.coupler.get_rod_rigid_gripper_contact_info(envs_idx=i_b)
+                c1_retained = False
+                c2_retained = False
+                for k, v in grasp_info.items():
+                    if v == self.gripper_geom_indices[0] or v == self.gripper_geom_indices[1]:
+                        c1_retained = True
+                    if v == self.gripper_geom_indices[2] or v == self.gripper_geom_indices[3]:
+                        c2_retained = True
+                # lost either gripper
+                lost[i_b] = not (c1_retained and c2_retained)
+            newly_lost = lost & alive
+            if newly_lost.any():
+                alive[newly_lost] = False
+
+            # Post-step: detect NaNs that emerge during micro-stepping
+            verts_rope_post = self.rope.get_all_verts()
+            nan_after = np.isnan(verts_rope_post).any(axis=(1, 2))
+            newly_nan_after = nan_after & alive
+            if newly_nan_after.any():
+                alive[newly_nan_after] = False
+
+            # Compute loss
+            state = self.rope.get_state()
+            total_horizon += n_horizons
+            horizon_ids.append(total_horizon)
+
+            loss_c = self.loss_criterion(state) + self.loss_above_plane(state)
+            local_loss += loss_c.mean()
+
+            scale = self.scale_array[i]
+            loss += scale * local_loss
+
+            self.c.post_check(stage_idx=i, alive=torch.as_tensor(alive))
+
+            # Collect reward here
+            substep_rewards_pre = np.asarray(self.reward(), dtype=np.float32)
+            substep_rewards_nan = np.isnan(substep_rewards_pre)
+
+            substep_rewards = np.full((self.n_envs,), 0.0, dtype=np.float32)
+            failed = ~alive | substep_rewards_nan
+            substep_rewards[failed] = 0.0
+            substep_rewards[~failed] = substep_rewards_pre[~failed] + 2.0
+            reward_accum += substep_rewards
+
+        out = dict()
+        out['loss'] = loss.item()
+        out['reward'] = reward_accum
+
+        backward_elapsed = 0.0
+
+        if not skip_backward:
+
+            backward_start_time = time.time()
+            loss.backward()
+            backward_elapsed = time.time() - backward_start_time
+
+            for stage_idx, horizon_idx in enumerate(horizon_ids):
+                self.c.gather_grad(
+                    stage_idx=stage_idx,
+                    horizon_idx=horizon_idx + 100,
+                    cur_step=it,
+                    max_step=max_it,
+                    lr=self.lr,
+                    lr_min=self.lr_min,
+                )
+        
+        out['forward_time'] = forward_elapsed
+        out['backward_time'] = backward_elapsed
+        out['lr'] = self.c._lr
+
+        out['qpos_seq'] = self.qpos_seq  # (n_steps, n_envs, n_ctrl * 9)
+        return out

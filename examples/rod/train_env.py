@@ -8,6 +8,7 @@ from collections import defaultdict
 from mushroom_rl.core import MDPInfo
 from mushroom_rl.rl_utils.spaces import Box
 
+from controller import TrajOptimController
 from gd.traj_optim_cmaes import (
     create_linear_array,
     create_exp_array,
@@ -73,20 +74,34 @@ class Train_Env():
 
         self.cmaes_initialized = False
         self.rl_initialized = False
+        self.gd_initialized = False
 
-    def construct_traj_optim(self, max_ddist=0.1, max_grad_norm=1000, debug=False):
+    def construct_traj_optim(self, max_ddist=0.1, max_grad_norm=1000, controller=False, debug=False, **kwargs):
         if not self.requires_grad:
             return
 
-        self.c = TrajOptimCMAES(
-            scene=self.scene,
-            rod=self.rope,
-            grasp_point_ids=self.control_idx,
-            n_optim_dofs=3,
-            max_ddist=max_ddist,
-            max_grad_norm=max_grad_norm,
-            debug=debug,
-        )
+        if controller:
+            self.c = TrajOptimController(
+                scene=self.scene,
+                rod=self.rope,
+                grasp_point_ids=self.control_idx,
+                n_stages=self._n_steps,
+                n_optim_dofs=3,
+                max_ddist=max_ddist,
+                max_grad_norm=max_grad_norm,
+                debug=debug,
+                **kwargs
+            )
+        else:
+            self.c = TrajOptimCMAES(
+                scene=self.scene,
+                rod=self.rope,
+                grasp_point_ids=self.control_idx,
+                n_optim_dofs=3,
+                max_ddist=max_ddist,
+                max_grad_norm=max_grad_norm,
+                debug=debug,
+            )
 
     def construct_scale_array(self, scale_method, n_steps, exp_base=1.1):
         if scale_method is None:
@@ -248,6 +263,53 @@ class Train_Env():
     # # # # # # RL Utils # # # # # #
     def stop(self):
         pass
+
+    def init_gd_env(
+        self,
+        n_steps=100,
+        pos_bound = 0.01,
+        angle_bound = 0.1,
+        min_z=0.013,
+        feasible_region=None,
+        scale_method=None,
+        exp_base=1.1,
+        lr=0.01,
+        lr_min=1e-6,
+        debug=False
+    ):
+        self._n_steps = n_steps
+        self._max_ddist = pos_bound
+        self._min_z = min_z
+        if feasible_region is not None:
+            assert len(feasible_region) == 6, "feasible_region must be a tuple of (x_min, x_max, y_min, y_max, z_min, z_max)"
+            self._feasible_region = list()
+            for val in feasible_region:
+                if val is not None:
+                    self._feasible_region.append(torch.tensor(val, dtype=gs.tc_float))
+                else:
+                    self._feasible_region.append(None)
+        else:
+            self._feasible_region = None
+        self.lr = lr
+        self.lr_min = lr_min
+
+        self.construct_scale_array(
+            scale_method=scale_method,
+            n_steps=n_steps,
+            exp_base=exp_base,
+        )
+
+        if debug:
+            # TODO: hack here
+            if getattr(self, "c1", None) is not None:
+                self.c1.debug = True
+            if getattr(self, "c2", None) is not None:
+                self.c2.debug = True
+        
+        self.gd_initialized = True
+
+    def train_one_iter_gd(self, it=None, max_it=None):
+        raise NotImplementedError()
 
     def eval_traj(self, trajs, debug=False, **kwargs):
         assert self.cmaes_initialized, "CMA-ES environment not initialized. Call init_cmaes_env() first."

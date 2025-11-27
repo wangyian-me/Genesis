@@ -8,6 +8,7 @@ import pinocchio as pin
 import pink
 from pink.tasks import FrameTask, PostureTask
 import qpsolvers
+from typing import List
 
 from genesis.engine.entities import RodEntity
 
@@ -784,6 +785,14 @@ class RobotControllerPink:
             kwargs.update({'underground': (target_pos[..., 2] < min_z).any()})
             target_pos[..., 2] = torch.maximum(target_pos[..., 2], min_z)
 
+        # Handle feasible region constraint
+        if kwargs.get('feasible_region', None) is not None:
+            feasible_region = kwargs.pop('feasible_region')
+            x_min, x_max, y_min, y_max, z_min, z_max = feasible_region
+            target_pos[..., 0] = torch.clamp(target_pos[..., 0], x_min, x_max)
+            target_pos[..., 1] = torch.clamp(target_pos[..., 1], y_min, y_max)
+            target_pos[..., 2] = torch.clamp(target_pos[..., 2], z_min, z_max)
+
         # Compute target orientation
         if isinstance(di, (float, int)) and isinstance(dj, (float, int)) and isinstance(dk, (float, int)):
             delta_orient = torch.tensor([di, dj, dk], dtype=gs.tc_float)
@@ -1242,3 +1251,148 @@ class DLOControllerOptim:
             d_pos = -lr * contact_grad
 
         self.traj[:, stage_idx, :, :] += d_pos
+
+def cosine_learning_rate_scheduler(base_lr, cur_iter, max_iter, min_lr=1e-6):
+    if cur_iter >= max_iter:
+        return min_lr
+    cosine_decay = 0.5 * (1 + np.cos(np.pi * cur_iter / max_iter))
+    lr = min_lr + (base_lr - min_lr) * cosine_decay
+    return lr
+
+class TrajOptimController:
+    def __init__(
+        self,
+        scene,
+        rod: RodEntity,
+        grasp_point_ids,
+        n_stages=10,
+        n_optim_dofs=3,
+        max_ddist=0.05,
+        max_grad_norm=1000.,
+        use_adam=False,
+        adam_config=None,
+        debug=False,
+        # lr scheduler
+        lr_scheduler=None,
+    ):
+        self.scene = scene
+        self.rod = rod
+        self.grasp_point_ids = grasp_point_ids
+        self.n_grasp_points = len(grasp_point_ids)
+
+        self.traj = torch.zeros(
+            size=(self.scene.n_envs, n_stages, self.n_grasp_points, n_optim_dofs), dtype=gs.tc_float
+        )
+
+        # for Adam optimizer
+        self.use_adam = use_adam
+        if self.use_adam:
+            self.m_buffer = torch.zeros_like(self.traj)
+            self.v_buffer = torch.zeros_like(self.traj)
+            if adam_config is None:
+                adam_config = {
+                    "beta1": 0.9,
+                    "beta2": 0.99,
+                    "eps": 1e-8,
+                }
+            else:
+                if "beta1" not in adam_config:
+                    adam_config["beta1"] = 0.9
+                if "beta2" not in adam_config:
+                    adam_config["beta2"] = 0.99
+                if "eps" not in adam_config:
+                    adam_config["eps"] = 1e-8
+            self.adam_config = adam_config
+            print(f'Using Adam optimizer with config:\n{self.adam_config}')
+
+        if lr_scheduler is None:
+            self.lr_scheduler = None
+            print('No learning rate scheduler used.')
+        elif lr_scheduler == 'cosine':
+            self.lr_scheduler = cosine_learning_rate_scheduler
+            print('Using cosine learning rate scheduler.')
+        else:
+            raise ValueError(f'Unknown learning rate scheduler: {lr_scheduler}')
+
+        self.n_stages = n_stages
+        self.n_optim_dofs = n_optim_dofs
+        self.max_ddist = max_ddist
+        self.max_grad_norm = max_grad_norm
+
+        self._lr = 0.
+
+        self.debug = debug
+        self.debug_point_nodes = list()
+
+    def pre_apply_grad(self, stage_idx):
+        dpos = self.traj[:, stage_idx, :, :]
+        return dpos   # (n_envs, n_grasp_points, 3)
+
+    def post_check(self, stage_idx, alive):
+        # zero out the traj for dead envs from this stage onwards
+        self.traj[~alive, stage_idx:, :, :] = 0.0
+
+    def gather_grad(self, stage_idx, horizon_idx, cur_step=None, max_step=None, lr=0.01, lr_min=1e-6):
+        if self.lr_scheduler is not None:
+            lr = self.lr_scheduler(base_lr=lr, cur_iter=cur_step, max_iter=max_step, min_lr=lr_min)
+
+        self._lr = lr
+
+        grad = self.rod._queried_states[horizon_idx][0].pos.grad
+
+        # [n_envs, n_grasp_points, 3]
+        contact_grad = grad[:, self.grasp_point_ids, :]
+        # replace NaN or Inf with 0
+        contact_grad = torch.where(torch.isnan(contact_grad), torch.zeros_like(contact_grad), contact_grad)
+        contact_grad = torch.where(torch.isinf(contact_grad), torch.zeros_like(contact_grad), contact_grad)
+
+        # clip gradient
+        grad_norm = torch.linalg.norm(contact_grad, dim=-1)
+        weight = self.max_grad_norm / (grad_norm + gs.EPS)
+        contact_grad = contact_grad * torch.minimum(weight, torch.ones_like(weight))[:, :, None]
+
+        if self.use_adam:
+            # Adam
+            beta1 = self.adam_config["beta1"]
+            beta2 = self.adam_config["beta2"]
+            eps = self.adam_config["eps"]
+
+            m_t = beta1 * self.m_buffer[:, stage_idx, :, :] + (1 - beta1) * contact_grad
+            v_t = beta2 * self.v_buffer[:, stage_idx, :, :] + (1 - beta2) * (contact_grad ** 2)
+            self.m_buffer[:, stage_idx, :, :] = m_t
+            self.v_buffer[:, stage_idx, :, :] = v_t
+
+            m_cap = m_t / (1 - beta1 ** (cur_step + 1))
+            v_cap = v_t / (1 - beta2 ** (cur_step + 1))
+
+            d_pos = -lr * m_cap / (torch.sqrt(v_cap) + eps)
+        else:
+            # SGD
+            d_pos = -lr * contact_grad
+
+        # # Post-step: detect collisions and correct the trajectory if necessary.
+        # collided = self.rod._queried_states[horizon_idx][0].collided
+        # # [n_envs, n_grasp_points]
+        # contact_collided = collided[:, self.grasp_point_ids]
+        # if contact_collided.any():
+        #     collision_normal = self.rod._queried_states[horizon_idx][0].collision_normal
+        #     collision_penetration = self.rod._queried_states[horizon_idx][0].collision_penetration
+
+        #     contact_col_normal = collision_normal[:, self.grasp_point_ids, :]
+        #     contact_col_pen = collision_penetration[:, self.grasp_point_ids]
+
+        #     # For each collided point, we will push it out along the collision normal by the penetration depth.
+        #     # This is a simple way to correct for collisions in the trajectory optimization.
+        #     correction = contact_col_normal * contact_col_pen[:, :, None]
+        #     # We will apply this correction to the trajectory if the point is collided.
+        #     d_pos = torch.where(
+        #         contact_collided[:, :, None], correction, d_pos
+        #     )
+
+        self.traj[:, stage_idx, :, :] += d_pos
+
+        # ensure the max step distance constraint
+        delta_dis = self.traj[:, stage_idx, :, :]
+        ddist = torch.linalg.norm(delta_dis, dim=-1)
+        weight = self.max_ddist / (ddist + gs.EPS)
+        self.traj[:, stage_idx, :, :] = delta_dis * torch.minimum(weight, torch.ones_like(weight))[:, :, None]
