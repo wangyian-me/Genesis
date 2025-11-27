@@ -678,7 +678,7 @@ class Train_Env_Wiring_ring(Train_Env):
         self.reset()
 
         steps_interval = self.steps_interval
-        total_micro_steps = int(n_steps * steps_interval)
+        total_micro_steps = int(n_steps * n_steps_sub)
         if total_micro_steps <= 0:
             # Degenerate case: no steps → everyone "survives"; defer to env reward (or -100 if NaN)
             rewards = np.asarray(self.reward(), dtype=np.float32)
@@ -688,8 +688,11 @@ class Train_Env_Wiring_ring(Train_Env):
         # Per-env status
         alive = np.ones((self.n_envs,), dtype=bool)              # True until first failure (collision or NaN)
         ever_nan = np.zeros((self.n_envs,), dtype=bool)          # True if verts ever became NaN
+        first_fail_step = np.full((self.n_envs,), total_micro_steps, dtype=np.int32)  # micro-step index of first failure
 
         reward_accum = np.zeros((self.n_envs,), dtype=np.float32)
+
+        forward_elapsed = 0.0
 
         for i in range(n_steps):
             # Check NaNs BEFORE micro-stepping this macro-step
@@ -697,6 +700,9 @@ class Train_Env_Wiring_ring(Train_Env):
             nan_now = np.isnan(verts_rope).any(axis=(1, 2))
             newly_nan = nan_now & alive
             if newly_nan.any():
+                step_at_nan = i * n_steps_sub
+                step_at_nan = max(1, step_at_nan)
+                first_fail_step[newly_nan] = step_at_nan
                 ever_nan[newly_nan] = True
                 alive[newly_nan] = False
 
@@ -772,6 +778,7 @@ class Train_Env_Wiring_ring(Train_Env):
                     qpos = np.concatenate([qpos1, qpos2], axis=-1)
                     self.qpos_seq[i * n_steps_sub + j + 1] = qpos
 
+                forward_start_time = time.time()
                 for k in range(n_intervals_per_substep):
                     self.scene.step()
 
@@ -779,7 +786,9 @@ class Train_Env_Wiring_ring(Train_Env):
                         for cid, cam in enumerate(self.cameras):
                             img = cam.render()[0]
                             self.frames[cid].append(img)
+                forward_elapsed += time.time() - forward_start_time
 
+                global_step = i * n_steps_sub + (j + 1)
                 # Post-step: detect whether gripper lost the rod
                 lost = np.ones((self.n_envs,), dtype=bool)
                 for i_b in range(self.n_envs):
@@ -799,17 +808,20 @@ class Train_Env_Wiring_ring(Train_Env):
                     lost[i_b] = not (c1_retained and c2_retained)
                 newly_lost = lost & alive
                 if newly_lost.any():
+                    first_fail_step[newly_lost] = np.minimum(first_fail_step[newly_lost], global_step)
                     alive[newly_lost] = False
 
                 # Post-step: detect ik convergence
                 if hasattr(self.c1, 'convergence'):
                     newly_not_converged = ~self.c1.convergence & alive
                     if newly_not_converged.any():
+                        first_fail_step[newly_not_converged] = np.minimum(first_fail_step[newly_not_converged], global_step)
                         alive[newly_not_converged] = False
 
                 if hasattr(self.c2, 'convergence'):
                     newly_not_converged2 = ~self.c2.convergence & alive
                     if newly_not_converged2.any():
+                        first_fail_step[newly_not_converged2] = np.minimum(first_fail_step[newly_not_converged2], global_step)
                         alive[newly_not_converged2] = False
 
                 # Post-step: detect NaNs that emerge during micro-stepping
@@ -817,6 +829,7 @@ class Train_Env_Wiring_ring(Train_Env):
                 nan_after = np.isnan(verts_rope_post).any(axis=(1, 2))
                 newly_nan_after = nan_after & alive
                 if newly_nan_after.any():
+                    first_fail_step[newly_nan_after] = np.minimum(first_fail_step[newly_nan_after], global_step)
                     ever_nan[newly_nan_after] = True
                     alive[newly_nan_after] = False
 
@@ -826,6 +839,7 @@ class Train_Env_Wiring_ring(Train_Env):
                 # if not feasible, mark as failed
                 not_able_to_trans12 = (cur_substep == 39) & alive & (~self._check_feasible_transition_sub1_to_sub2())
                 if not_able_to_trans12.any():
+                    first_fail_step[not_able_to_trans12] = np.minimum(first_fail_step[not_able_to_trans12], global_step)
                     alive[not_able_to_trans12] = False
 
                 needs_trans_12 = (cur_substep == 39) & alive
@@ -845,12 +859,14 @@ class Train_Env_Wiring_ring(Train_Env):
                         lost[i_b] = not c1_retained
                     newly_lost = lost & alive
                     if newly_lost.any():
+                        first_fail_step[newly_lost] = np.minimum(first_fail_step[newly_lost], global_step)
                         alive[newly_lost] = False
 
                 # Check and perform subtask transitions
                 # if not feasible, mark as failed
                 not_able_to_trans23 = (cur_substep == 79) & alive & (~self._check_feasible_transition_sub2_to_sub3())
                 if not_able_to_trans23.any():
+                    first_fail_step[not_able_to_trans23] = np.minimum(first_fail_step[not_able_to_trans23], global_step)
                     alive[not_able_to_trans23] = False
 
                 needs_trans_23 = (cur_substep == 79) & alive
@@ -870,6 +886,7 @@ class Train_Env_Wiring_ring(Train_Env):
                         lost[i_b] = not c2_retained
                     newly_lost = lost & alive
                     if newly_lost.any():
+                        first_fail_step[newly_lost] = np.minimum(first_fail_step[newly_lost], global_step)
                         alive[newly_lost] = False
 
                 # Collect reward here
@@ -882,11 +899,32 @@ class Train_Env_Wiring_ring(Train_Env):
                 substep_rewards[~failed] = np.clip(substep_rewards_pre[~failed] + 1.0, a_min=0.0, a_max=np.inf)
                 reward_accum += substep_rewards
 
+        # Compute final state rewards (same as v2)
+        env_rewards = np.asarray(self.reward(), dtype=np.float32)
+        env_rewards_nan = np.isnan(env_rewards)
+        # Compose final rewards
+        final = np.empty((n_envs,), dtype=np.float32)
+        failed = ~alive  # failed due to collision or NaN during rollout
+        survived = alive
+        # Failed: reward = survival_ratio (counts both collision and NaN cases)
+        if failed.any():
+            survival_ratio = first_fail_step.astype(np.float32) / float(total_micro_steps)
+            final[failed] = survival_ratio[failed] - 100
+        # Survived full rollout: take env reward; if it's NaN, clamp to -100
+        final[survived] = env_rewards[survived]
+        if env_rewards_nan.any():
+            final[env_rewards_nan] = -100.0
+
         if not self.use_qpos:
             self.qpos_seq = self.qpos_seq.transpose(1, 0, 2)  # (n_envs, n_steps * n_steps_sub + 1, n_dofs)
             self.qpos_seq = self.qpos_seq.astype(np.float32)
 
-        return reward_accum.astype(np.float32)
+        out = dict()
+        out['forward_time'] = forward_elapsed
+        out['final_reward'] = final.astype(np.float32)
+        out['cum_reward'] = reward_accum.astype(np.float32)
+
+        return out
 
     def compute_observation(self):
         verts_rope = self.rope.get_all_verts_tc()                   # (n_envs, n_verts, 3)

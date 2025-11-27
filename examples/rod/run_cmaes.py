@@ -72,20 +72,24 @@ def project_deltas(traj: np.ndarray,
 # ----------------------------
 # Parallel evaluation (batch)
 # ----------------------------
-def evaluate_batch(env, traj_list: List[np.ndarray]) -> np.ndarray:
+def evaluate_batch(env, traj_list: List[np.ndarray]):
     n_envs = env.n_envs
     n_steps = traj_list[0].shape[0]
     act_dim = traj_list[0].shape[1]
     trajs = np.zeros((n_envs, n_steps, act_dim), dtype=np.float32)
     for i, tr in enumerate(traj_list):
         trajs[i] = tr
-    rewards = env.eval_traj(trajs)
-    return np.asarray(rewards, dtype=np.float32)
+    # rewards = env.eval_traj(trajs)
+    # return np.asarray(rewards, dtype=np.float32)
+
+    # only for eval_traj_v3
+    return env.eval_traj(trajs)
 
 def evaluate_single(env: Train_Env, traj: np.ndarray, log_dir: str, n_steps: int) -> float:
     print(f'Traj shape: {traj.shape}')
     if env.scene_version == 1:
         rewards = env.eval_traj(traj[None, ...], debug=True)
+        print(f'Single traj reward: {rewards[0]:.4f}')
     elif env.scene_version == 2:
         # TODO: hack here
         # if getattr(env, "c1", None) is not None:
@@ -100,8 +104,12 @@ def evaluate_single(env: Train_Env, traj: np.ndarray, log_dir: str, n_steps: int
             # Resolve shapes
             act_dim = _infer_act_dim(env)
             placeholder = np.zeros((1, n_steps, act_dim), dtype=np.float32)
-        rewards = env.eval_traj(placeholder, debug=True, qpos=traj)
-    print(f'Single traj reward: {rewards[0]:.4f}')
+        out = env.eval_traj(placeholder, debug=True, qpos=traj)
+        cum_rewards = out['cum_reward']
+        final_rewards = out['final_reward']
+        print(f'Single traj cum reward: {cum_rewards[0]:.4f}, final reward: {final_rewards[0]:.4f}')
+        rewards = cum_rewards
+
     env.save_animation(save_dir=log_dir)
     return rewards[0]
 
@@ -117,27 +125,28 @@ def _maybe_write_header(path: str, header: List[str]):
         with open(path, "w", newline="") as f:
             csv.writer(f).writerow(header)
 
-def _append_rewards(log_dir: str, iteration: int, rewards: np.ndarray):
+def _append_rewards(log_dir: str, iteration: int, final: np.ndarray, cum: np.ndarray):
     path = os.path.join(log_dir, "rewards_all.csv")
-    _maybe_write_header(path, ["iter", "idx", "reward"])
+    _maybe_write_header(path, ["iter", "idx", "final", "cum"])
     with open(path, "a", newline="") as f:
         w = csv.writer(f)
-        for idx, r in enumerate(rewards.tolist()):
-            w.writerow([iteration, idx, float(r)])
+        for idx in range(len(final)):
+            w.writerow([iteration, idx, float(final[idx]), float(cum[idx])])
 
 def _append_summary(log_dir: str, iteration: int, pop: int, n_chunks: int,
                     mean: float, std: float, rmin: float, rmax: float,
                     best_so_far: float, sigma_now: float,
+                    forward_time: float,
                     t_iter_sec: float, t_total_sec: float):
     path = os.path.join(log_dir, "summary.csv")
     _maybe_write_header(path, [
         "iter", "pop", "chunks", "mean", "std", "min", "max",
-        "best_so_far", "sigma", "t_iter_s", "t_total_s"
+        "best_so_far", "sigma", "forward_time", "t_iter_s", "t_total_s"
     ])
     with open(path, "a", newline="") as f:
         csv.writer(f).writerow([
             iteration, pop, n_chunks, mean, std, rmin, rmax,
-            best_so_far, sigma_now, t_iter_sec, t_total_sec
+            best_so_far, sigma_now, forward_time, t_iter_sec, t_total_sec
         ])
 
 def _save_best_traj(log_dir: str, best_traj: np.ndarray):
@@ -239,6 +248,7 @@ def optimize_trajectory(
     resume: bool = False,
     save_every: int = 1,
     scene_version: int = 1,
+    use_last_state_reward: bool = False,
 ) -> Tuple[np.ndarray, float]:
     """
     Adds CMA-ES checkpointing via (work_dir/trial_name)/cmaes_ckpt.pkl.
@@ -283,6 +293,7 @@ def optimize_trajectory(
             "work_dir": work_dir,
             "trial_name": trial_name,
             "scene_version": scene_version,
+            "use_last_state_reward": use_last_state_reward,
         })
 
     dim = n_steps * act_dim
@@ -354,7 +365,9 @@ def optimize_trajectory(
         n_chunks = (pop + batch_size - 1) // batch_size
         qpos_list = list()
 
-        all_rewards = []
+        all_final_rewards = []
+        all_cum_rewards = []
+        forward_time = 0.0
         for ci, start in enumerate(range(0, pop, batch_size), 1):
             t_chunk = time.time()
             chunk = X[start:start + batch_size]
@@ -364,20 +377,33 @@ def optimize_trajectory(
                 tr = reshape_to_traj(x_arr, n_steps, act_dim)
                 tr = project_deltas(tr, pcb, l2_bound, scene_version=scene_version)
                 trajs.append(tr)
-            rewards = evaluate_batch(env, trajs)
+            out = evaluate_batch(env, trajs)
             if scene_version == 2:
                 qpos_list.extend(env.qpos_seq.tolist())
-            all_rewards.extend(rewards.tolist())
+            if out.get('final_reward') is not None:
+                all_final_rewards.extend(out['final_reward'].tolist())
+            if out.get('cum_reward') is not None:
+                all_cum_rewards.extend(out['cum_reward'].tolist())
+            if out.get('forward_time') is not None:
+                forward_time += out['forward_time']
             print(f"  └─ chunk {ci:>2}/{n_chunks}: {len(chunk):>3} evals | t={time.time() - t_chunk:.3f}s")
 
-        all_rewards = np.asarray(all_rewards, dtype=np.float32)
+        all_rewards = np.asarray(all_cum_rewards, dtype=np.float32)
+        assert all_rewards.shape[0] == len(X), f"all_rewards {all_rewards.shape[0]} vs X {len(X)} length mismatch"
 
         # Log raw rewards for this generation
         if log_dir is not None:
-            _append_rewards(log_dir, it, all_rewards)
+            _append_rewards(
+                log_dir, it,
+                np.asarray(all_final_rewards, dtype=np.float32), 
+                np.asarray(all_cum_rewards, dtype=np.float32)
+            )
 
         # CMA-ES minimizes; negate to maximize reward
-        es.tell(X, (-all_rewards).tolist())
+        if use_last_state_reward:
+            es.tell(X, (-np.asarray(all_final_rewards, dtype=np.float32)).tolist())
+        else:
+            es.tell(X, (-all_rewards).tolist())
 
         # Track best of gen
         gen_best_idx = int(np.argmax(all_rewards))
@@ -425,7 +451,7 @@ def optimize_trajectory(
               f"{t_iter_sec:8.3f} | {t_total_sec:9.3f}")
 
         if log_dir is not None:
-            _append_summary(log_dir, it, pop, n_chunks, m, s, mn, mx, best_reward, sigma_now, t_iter_sec, t_total_sec)
+            _append_summary(log_dir, it, pop, n_chunks, m, s, mn, mx, best_reward, sigma_now, forward_time, t_iter_sec, t_total_sec)
 
         # Save checkpoint periodically
         if save_every > 0 and (it % save_every == 0):
@@ -493,6 +519,10 @@ if __name__ == "__main__":
         '--eval_version', type=int, default=2,
     )
     parser.add_argument(
+        '--use_last_state_reward', action='store_true',
+        help="Whether to use the last state reward instead of accumulated reward."
+    )
+    parser.add_argument(
         '--vis_traj', type=str, default=None, 
         help="Path to saved trajectory .npy for visualization. If None, runs optimization."
     )
@@ -538,7 +568,7 @@ if __name__ == "__main__":
             env,
             n_steps=n_steps,
             act_dim=None,           # infer if available
-            popsize=200,
+            popsize=100,
             sigma0=args.sigma,
             per_comp_bound=args.bound,
             l2_bound=args.bound,          # use env.l2_bound if present
@@ -552,6 +582,7 @@ if __name__ == "__main__":
             resume=True,            # set True to load if checkpoint exists
             save_every=1,           # save each generation
             scene_version=args.scene_version,
+            use_last_state_reward=args.use_last_state_reward,
         )
 
     else:

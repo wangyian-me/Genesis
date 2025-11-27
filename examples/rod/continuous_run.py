@@ -43,6 +43,7 @@ def main():
     ap.add_argument('--eval_version', type=int, default=2)
     ap.add_argument('--max_iter', type=int, default=20)
     ap.add_argument('--scene_version', type=int, default=1)
+    ap.add_argument('--use_last_state_reward', action='store_true')
     args = ap.parse_args()
 
     if not args.requires_grad and "gd" in args.exp_name:
@@ -75,6 +76,8 @@ def main():
         cmd.extend(["--angle_bound", str(args.angle_bound)])
         cmd.extend(["--eval_version", str(args.eval_version)])
         cmd.extend(["--scene_version", str(args.scene_version)])
+        if args.use_last_state_reward:
+            cmd.append("--use_last_state_reward")
 
     print(f"[supervisor] Starting loop. Will run: {' '.join(cmd)}")
     try:

@@ -1,4 +1,5 @@
 import genesis as gs
+import time
 import torch
 import numpy as np
 from train_env import Train_Env
@@ -663,7 +664,12 @@ class Train_Env_Slingshot(Train_Env):
             self.qpos_seq = self.qpos_seq.transpose(1, 0, 2)  # (n_envs, n_steps * n_steps_sub, n_dofs)
             self.qpos_seq = self.qpos_seq.astype(np.float32)
 
-        return final.astype(np.float32)
+        out = dict()
+        out['forward_time'] = 0.0
+        out['final_reward'] = final.astype(np.float32)
+        out['cum_reward'] = final.astype(np.float32)
+
+        return out
 
     def eval_traj_v3(self, trajs, **kwargs):
         """
@@ -688,7 +694,7 @@ class Train_Env_Slingshot(Train_Env):
         self.reset()
 
         steps_interval = self.steps_interval
-        total_micro_steps = int(n_steps * steps_interval)
+        total_micro_steps = int(n_steps * n_steps_sub)
         if total_micro_steps <= 0:
             # Degenerate case: no steps → everyone "survives"; defer to env reward (or -100 if NaN)
             rewards = np.asarray(self.reward(), dtype=np.float32)
@@ -700,6 +706,8 @@ class Train_Env_Slingshot(Train_Env):
         ever_nan = np.zeros((self.n_envs,), dtype=bool)          # True if verts ever became NaN
 
         reward_accum = np.zeros((self.n_envs,), dtype=np.float32)
+
+        forward_elapsed = 0.0
 
         for i in range(n_steps):
             # Check NaNs BEFORE micro-stepping this macro-step
@@ -750,6 +758,7 @@ class Train_Env_Slingshot(Train_Env):
                     )
                     self.qpos_seq[i * n_steps_sub + j] = qpos.cpu().numpy()
 
+                forward_start_time = time.time()
                 for k in range(n_intervals_per_substep):
                     self.scene.step()
 
@@ -757,6 +766,7 @@ class Train_Env_Slingshot(Train_Env):
                         for cid, cam in enumerate(self.cameras):
                             img = cam.render()[0]
                             self.frames[cid].append(img)
+                forward_elapsed += time.time() - forward_start_time
 
                 # Post-step: detect NaNs that emerge during micro-stepping
                 verts_rope_post = self.rope.get_all_verts()
@@ -792,7 +802,12 @@ class Train_Env_Slingshot(Train_Env):
             self.qpos_seq = self.qpos_seq.transpose(1, 0, 2)  # (n_envs, n_steps * n_steps_sub, n_dofs)
             self.qpos_seq = self.qpos_seq.astype(np.float32)
 
-        return reward_accum.astype(np.float32)
+        out = dict()
+        out['forward_time'] = forward_elapsed
+        out['final_reward'] = reward_accum.astype(np.float32)
+        out['cum_reward'] = reward_accum.astype(np.float32)
+
+        return out
 
     def compute_observation(self):
         verts_rope = self.rope.get_all_verts_tc()                   # (n_envs, n_verts, 3)
