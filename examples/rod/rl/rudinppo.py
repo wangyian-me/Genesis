@@ -91,6 +91,7 @@ def experiment(alg, n_envs, n_epochs, n_outer_steps, n_inner_steps, steps_interv
         n_substeps_per_step=n_inner_steps,
         GUI=args.gui,
         camera=False if args.test is None else True,
+        raytracer=args.raytracer,
         scene_version=scene_version,
     )
 
@@ -390,6 +391,7 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=123)
     parser.add_argument('--gui', action='store_true')
     parser.add_argument('--test', type=str, default=None)
+    parser.add_argument('--raytracer', '-r', action='store_true', help='Enable raytracer for rendering')
     args = parser.parse_args()
 
     # Set random seed for reproducibility

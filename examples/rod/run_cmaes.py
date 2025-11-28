@@ -469,7 +469,11 @@ def optimize_trajectory(
 # Example usage
 # ----------------------------
 
-def _build_env(task: str, log_dir: str, n_envs: int, vis_traj: Optional[str] = None, gui: bool = False, scene_version: int = 1) -> Train_Env:
+def _build_env(
+        task: str, log_dir: str, n_envs: int,
+        vis_traj: Optional[str] = None, gui: bool = False,
+        scene_version: int = 1, raytracer: bool = False
+    ) -> Train_Env:
     task = task.lower()
     task_to_env = {
         "wiring_ring": Train_Env_Wiring_ring,
@@ -491,7 +495,7 @@ def _build_env(task: str, log_dir: str, n_envs: int, vis_traj: Optional[str] = N
         n_envs = 1
         camera = True
 
-    return EnvCls(task=task, log_dir=log_dir, n_envs=n_envs, GUI=gui, camera=camera, scene_version=scene_version)
+    return EnvCls(task=task, log_dir=log_dir, n_envs=n_envs, GUI=gui, camera=camera, raytracer=raytracer, scene_version=scene_version)
 
 
 if __name__ == "__main__":
@@ -544,12 +548,13 @@ if __name__ == "__main__":
         '--scene_version', type=int, default=1,
     )
     parser.add_argument('--gui', action='store_true', help="Whether to show GUI.")
+    parser.add_argument('--raytracer', '-r', action='store_true', help='Enable raytracer for rendering')
     args = parser.parse_args()
 
     exp_name = f"{args.exp_name}" if args.exp_name is not None else "cmaes"
     trial_name = f"trial_{args.task}/{exp_name}"
     log_dir = f"logs/{args.task}/{exp_name}"
-    env = _build_env(args.task, log_dir, args.n_envs, args.vis_traj, args.gui, args.scene_version)
+    env = _build_env(args.task, log_dir, args.n_envs, args.vis_traj, args.gui, args.scene_version, args.raytracer)
     env.init_cmaes_env(
         n_steps_sub=args.n_steps_sub,
         eval_version=args.eval_version,

@@ -11,8 +11,8 @@ from controller import (
 )
 
 class Train_Env_Lifting(Train_Env):
-    def __init__(self, task='wiring', GUI=False, camera=False, log_dir="xxx/wiring", n_envs=5, n_substeps_per_step=None, requires_grad=False, scene_version=None):
-        super().__init__(task, GUI=GUI, camera=camera, n_envs=n_envs, n_substeps_per_step=n_substeps_per_step, log_dir=log_dir, requires_grad=requires_grad, scene_version=scene_version)
+    def __init__(self, task='wiring', GUI=False, camera=False, raytracer=False, log_dir="xxx/wiring", n_envs=5, n_substeps_per_step=None, requires_grad=False, scene_version=None):
+        super().__init__(task, GUI=GUI, camera=camera, raytracer=raytracer, n_envs=n_envs, n_substeps_per_step=n_substeps_per_step, log_dir=log_dir, requires_grad=requires_grad, scene_version=scene_version)
 
         # initial distance between control points
         self.control_dist_init = self.rope.get_geodesic_distance(self.control_idx[0], self.control_idx[1])
@@ -89,8 +89,25 @@ class Train_Env_Lifting(Train_Env):
             material=gs.materials.Rigid(
                 needs_coup=True, coup_friction=0.1,
             ),
-            morph=gs.morphs.URDF(file="urdf/plane/plane.urdf", fixed=True),
+            morph=gs.morphs.URDF(
+                file="urdf/plane/plane.urdf",
+                fixed=True,
+                visualization=not self.raytracer
+            ),
         )
+
+        if self.raytracer:
+            table = self.scene.add_entity(
+                morph=gs.morphs.Mesh(
+                    file="meshes/wooden_table.glb",
+                    pos=(-0., 0, -0.799418 * 2),
+                    euler=(90, 0, 0),
+                    scale=2,
+                    collision=False,
+                    fixed=True,
+                ),
+                surface=gs.surfaces.Default()
+            )
 
         segment_radius = 0.01
         self.rope = self.scene.add_entity(
@@ -123,7 +140,7 @@ class Train_Env_Lifting(Train_Env):
             ),
             morph=gs.morphs.Mesh(
                 file="meshes/nut_open.glb",
-                pos= (0.53, 0, 0.05),
+                pos= (0.53, 0, 0.06),
                 euler=(0, 180, 90),
                 scale=(1, 1, 1),
             )
@@ -135,7 +152,7 @@ class Train_Env_Lifting(Train_Env):
             ),
             morph=gs.morphs.Mesh(
                 file="meshes/nut_open.glb",
-                pos= (0.67, 0, 0.05),
+                pos= (0.67, 0, 0.06),
                 euler=(0, 180, 90),
                 scale=(1, 1, 1),
             )
@@ -229,10 +246,11 @@ class Train_Env_Lifting(Train_Env):
             res=(1200, 900), pos=(1., 1.7, 1.), up=(0, 0, 1),
             lookat=(0.5, 0., 0), fov=24, GUI=False
         ))
-        cameras.append(self.scene.add_camera(
-            res=(1200, 900), pos=(0.2, 1.7, 0.6), up=(0, 0, 1),
-            lookat=(0.6, 0., 0), fov=24, GUI=False
-        ))
+        if not self.raytracer:
+            cameras.append(self.scene.add_camera(
+                res=(1200, 900), pos=(0.2, 1.7, 0.6), up=(0, 0, 1),
+                lookat=(0.6, 0., 0), fov=24, GUI=False
+            ))
 
         self.cameras = cameras
 

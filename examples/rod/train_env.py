@@ -18,9 +18,13 @@ from gd.traj_optim_cmaes import (
 
 
 class Train_Env():
-    def __init__(self, task, scene=None, GUI=False, camera=False, log_dir=None, n_envs=None, n_substeps_per_step=None, requires_grad=False, scene_version=None):
+    def __init__(
+            self, task, scene=None, GUI=False, camera=False, raytracer=False, log_dir=None, n_envs=None,
+            n_substeps_per_step=None, requires_grad=False, scene_version=None
+        ):
         self.task = task
         self.GUI = GUI
+        self.raytracer = raytracer
         self.n_envs = n_envs
         self.requires_grad = requires_grad
         self.steps_interval = n_substeps_per_step or 200
@@ -50,6 +54,17 @@ class Train_Env():
                     n_pbd_iters=20,
                 ),
                 show_viewer=self.GUI,
+                renderer=gs.renderers.RayTracer(
+                    env_surface=gs.surfaces.Emission(
+                        emissive_texture=gs.textures.ImageTexture( 
+                            image_path='textures/brown_photostudio_02_4k.exr',
+                            image_color=(0.6, 0.6, 0.6),
+                        ),
+                    ),
+                    env_radius=15.0,
+                    env_euler=(0, 0, 180),
+                    lights=[],
+                ) if self.raytracer else gs.renderers.Rasterizer(),
             )
         else:
             # Use provided scene, this means genesis already initialized

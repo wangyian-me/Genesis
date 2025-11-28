@@ -6,7 +6,7 @@ from train_env import Train_Env
 from controller import RobotController, RobotControllerPink
 
 class Train_Env_Gathering(Train_Env):
-    def __init__(self, task='wiring', GUI=False, camera=False, log_dir="xxx/wiring", n_envs=5, n_substeps_per_step=None, requires_grad=False, scene_version=None):
+    def __init__(self, task='wiring', GUI=False, camera=False, raytracer=False, log_dir="xxx/wiring", n_envs=5, n_substeps_per_step=None, requires_grad=False, scene_version=None):
         gs.init(seed=0, precision="64", logging_level="error", backend=gs.gpu, performance_mode=True)
         viewer_options = gs.options.ViewerOptions(
             camera_pos=(3, -1, 1.5),
@@ -33,8 +33,19 @@ class Train_Env_Gathering(Train_Env):
                 n_pbd_iters=20,
             ),
             show_viewer=GUI,
+            renderer=gs.renderers.RayTracer(
+                env_surface=gs.surfaces.Emission(
+                    emissive_texture=gs.textures.ImageTexture( 
+                        image_path='textures/brown_photostudio_02_4k.exr',
+                        image_color=(0.6, 0.6, 0.6),
+                    ),
+                ),
+                env_radius=15.0,
+                env_euler=(0, 0, 180),
+                lights=[],
+            ) if raytracer else gs.renderers.Rasterizer(),
         )
-        super().__init__(task, scene=scene, GUI=GUI, camera=camera, n_envs=n_envs, n_substeps_per_step=n_substeps_per_step, log_dir=log_dir, requires_grad=requires_grad, scene_version=scene_version)
+        super().__init__(task, scene=scene, GUI=GUI, camera=camera, raytracer=raytracer, n_envs=n_envs, n_substeps_per_step=n_substeps_per_step, log_dir=log_dir, requires_grad=requires_grad, scene_version=scene_version)
 
         # initial total length
         self.control_dist_init = self.rope.get_total_length()   # (n_envs,)
@@ -134,8 +145,25 @@ class Train_Env_Gathering(Train_Env):
             material=gs.materials.Rigid(
                 needs_coup=True, coup_friction=0.1,
             ),
-            morph=gs.morphs.URDF(file="urdf/plane/plane.urdf", fixed=True),
+            morph=gs.morphs.URDF(
+                file="urdf/plane/plane.urdf",
+                fixed=True,
+                visualization=not self.raytracer,
+            ),
         )
+
+        if self.raytracer:
+            table = self.scene.add_entity(
+                morph=gs.morphs.Mesh(
+                    file="meshes/wooden_table.glb",
+                    pos=(-0., 0, -0.799418 * 2),
+                    euler=(90, 0, 0),
+                    scale=2,
+                    collision=False,
+                    fixed=True,
+                ),
+                surface=gs.surfaces.Default()
+            )
 
         segment_radius = 0.01
         self.rope = self.scene.add_entity(
@@ -299,10 +327,11 @@ class Train_Env_Gathering(Train_Env):
             res=(1200, 900), pos=(0.4, 2., 0.7), up=(0, 0, 1),
             lookat=(0.25, 0., 0), fov=30, GUI=False
         ))
-        cameras.append(self.scene.add_camera(
-            res=(1200, 900), pos=(1.5, 0.75, 1.5), up=(0, 0, 1),
-            lookat=(0.25, -0.1, 0.), fov=30, GUI=False
-        ))
+        if not self.raytracer:
+            cameras.append(self.scene.add_camera(
+                res=(1200, 900), pos=(1.5, 0.75, 1.5), up=(0, 0, 1),
+                lookat=(0.25, -0.1, 0.), fov=30, GUI=False
+            ))
 
         self.cameras = cameras
 
