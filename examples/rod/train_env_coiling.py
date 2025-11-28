@@ -131,7 +131,7 @@ class Train_Env_Coiling(Train_Env):
                 fixed=True,
             ),
             surface=gs.surfaces.Default(
-                color=(1.0, 1.0, 1.0),
+                color=(1., 1., 0.7),
             ),
         )
 
