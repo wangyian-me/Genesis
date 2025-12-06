@@ -466,7 +466,7 @@ class RasterizerContext:
                         tfs = np.tile(np.eye(4), (mpm_entity.n_particles, 1, 1))
                         tfs[:, :3, 3] = mpm_entity.init_particles
                         self.add_static_node(
-                            mpm_entity, pyrender.Mesh.from_trimesh(mesh, smooth=True, poses=tfs), i_b=idx
+                            mpm_entity, pyrender.Mesh.from_trimesh(mesh, smooth=True, poses=tfs)
                         )
 
                 elif mpm_entity.surface.vis_mode == "visual":
@@ -515,7 +515,7 @@ class RasterizerContext:
                         tfs = np.tile(np.eye(4), (mpm_entity.n_particles, 1, 1))
                         tfs[:, :3, 3] = particles_all[mpm_entity.particle_start : mpm_entity.particle_end, idx]
 
-                        node = self._scene.get_buffer_id(self.static_nodes[(idx, mpm_entity.uid)], "model")
+                        node = self._scene.get_buffer_id(self.static_nodes[mpm_entity.uid], "model")
                         buffer_updates[node] = tfs.transpose((0, 2, 1))
 
                     elif mpm_entity.surface.vis_mode == "visual":
