@@ -362,6 +362,30 @@ class RigidLink(RBC):
         for geom in self._geoms:
             geom.set_friction(friction)
 
+    @gs.assert_built
+    def detect_collision(self, env_idx=0):
+        """
+        Detects collision for the entity. This only supports a single environment.
+
+        Note
+        ----
+        This function re-detects real-time collision for the entity, so it doesn't rely on scene.step() and can be used for applications like motion planning, which doesn't require physical simulation during state sampling.
+
+        Parameters
+        ----------
+        env_idx : int, optional
+            The index of the environment. Defaults to 0.
+        """
+
+        all_collision_pairs = self._solver.detect_collision(env_idx)
+        collision_pairs = all_collision_pairs[
+            np.logical_and(
+                all_collision_pairs >= self.geom_start,
+                all_collision_pairs < self.geom_end,
+            ).any(axis=1)
+        ]
+        return collision_pairs
+
     # ------------------------------------------------------------------------------------
     # ----------------------------------- properties -------------------------------------
     # ------------------------------------------------------------------------------------

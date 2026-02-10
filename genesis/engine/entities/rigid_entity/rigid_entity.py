@@ -2753,6 +2753,82 @@ class RigidEntity(Entity):
         return collision_pairs
 
     @gs.assert_built
+    def detect_collision_parallel(
+        self,
+        with_entity=None,
+        exclude_self_contact=False,
+        envs_idx=None,
+        *,
+        unsafe=False,
+    ):
+        """
+        Detects collision with other entity. Self-collision will be ignored.
+
+        Parameters
+        ----------
+        with_entity: Entity
+            note that this is NOT the RigidEntity but the Entity wrapper class
+        exclude_self_contact: bool
+        envs_idx: list[int]
+            indices of environments to detect collision
+        unsafe: bool
+            if True, the collision detection will be performed before retrieving the contacts
+
+        Returns
+        -------
+        numpy.ndarray
+            bool array indicating collision for envs in `envs_idx` (or all envs if None)
+        """
+        import numpy as np
+
+        if not unsafe:
+            self.solver.collider.clear()
+            self.solver.collider.detection()
+
+        # Pull current contact buffers
+        n_collision = self.solver.collider._collider_state.n_contacts.to_numpy()
+        geom_A = self.solver.collider._collider_state.contact_data.geom_a.to_numpy()
+        geom_B = self.solver.collider._collider_state.contact_data.geom_b.to_numpy()
+
+        # Ensure expected shapes/types
+        n_collision = np.asarray(n_collision).reshape(-1)  # [B]
+        geom_A = np.asarray(geom_A)                        # [max_contacts, B]
+        geom_B = np.asarray(geom_B)                        # [max_contacts, B]
+
+        max_contacts, B = geom_A.shape
+
+        # Determine which envs to report
+        if envs_idx is None:
+            envs_idx = np.arange(B, dtype=int)
+        else:
+            envs_idx = np.asarray(envs_idx, dtype=int)
+
+        # Mask rows beyond the per-env contact count
+        valid_rows = (np.arange(max_contacts)[:, None] < n_collision[None, :])
+
+        # Membership checks for this entity's geom id range
+        selfA = (geom_A >= self.geom_start) & (geom_A < self.geom_end)
+        selfB = (geom_B >= self.geom_start) & (geom_B < self.geom_end)
+
+        if with_entity is not None:
+            # Only count contacts between `self` and `with_entity`
+            otherA = (geom_A >= with_entity.geom_start) & (geom_A < with_entity.geom_end)
+            otherB = (geom_B >= with_entity.geom_start) & (geom_B < with_entity.geom_end)
+            hits = ((selfA & otherB) | (selfB & otherA)) & valid_rows
+        else:
+            # Any contact that touches this entity on either side
+            hits = (selfA | selfB) & valid_rows
+            if exclude_self_contact:
+                # Ignore contacts where both sides are this entity (true self-self)
+                hits &= ~(selfA & selfB)
+
+        # Per-env collision flag
+        collided = np.any(hits, axis=0)  # [B], dtype=bool
+
+        # Return only the requested envs as a NumPy bool array
+        return collided[envs_idx]
+
+    @gs.assert_built
     def get_contacts(self, with_entity=None, exclude_self_contact=False):
         """
         Returns contact information computed during the most recent `scene.step()`.
